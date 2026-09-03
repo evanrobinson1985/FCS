@@ -52,6 +52,48 @@
       return originalFetch(input, init);
     };
   })();
+
+  // Companion to the fetch wrapper above, for the requests fetch() can't
+  // cover: <img src>, <iframe src>, direct download links, and map-tile
+  // libraries all load resources with plain GETs that carry no Authorization
+  // header no matter what. For the protected asset routes (/cave-pictures,
+  // /cave-maps, /cave-maps-collection, /tiles/sqlite-hillshades), the server
+  // also accepts the session token as a ?token= query parameter (see
+  // authenticateToken in server.js) - this appends it. Only use this for
+  // those same-origin asset URLs, never for API calls (use fetch for those,
+  // which already sends the token in a header instead of the URL).
+  window.withAuthToken = function (url) {
+    if (!url) return url;
+    var token;
+    try {
+      token = sessionStorage.getItem("sessionToken");
+    } catch (e) {
+      token = null;
+    }
+    if (!token) return url;
+    var separator = url.indexOf("?") === -1 ? "?" : "&";
+    return url + separator + "token=" + encodeURIComponent(token);
+  };
+
+  // Reverses withAuthToken(). Session tokens expire in a few hours and must
+  // never end up saved into stored content (a narrative's HTML, an
+  // "images" field, etc.) - only ever attached at the moment something is
+  // actually displayed in the browser. Called before anything derived from
+  // an editor's live DOM (which may contain withAuthToken()'d <img> src
+  // values used just to preview them) is sent back to the server.
+  window.stripAuthToken = function (url) {
+    if (!url) return url;
+    try {
+      var parsed = new URL(url, window.location.href);
+      parsed.searchParams.delete("token");
+      var qs = parsed.searchParams.toString();
+      return parsed.origin === window.location.origin
+        ? parsed.pathname + (qs ? "?" + qs : "")
+        : parsed.origin + parsed.pathname + (qs ? "?" + qs : "");
+    } catch (e) {
+      return url;
+    }
+  };
 </script>
 
 </head>
@@ -61,7 +103,7 @@
 <div class="header">
 <div class="header-content">
 <div class="logo-container">
-<img alt="Florida Cave Survey Logo" class="header-logo" src="https://fcs.caves.org/fcs-logo.png"/>
+<img alt="Florida Cave Survey Logo" class="header-logo" src="fcs-logo.png"/>
 </div>
 <div class="title-container">
 <h1>Florida Cave Survey - Webmaster Portal</h1>
@@ -6434,6 +6476,14 @@ window.addEventListener('error', function(e) {
       }, 200);
     }
 
+    // Wired to the "Download Updated Database" buttons in the markup, which
+    // call this with no arguments - it was missing entirely (the buttons
+    // threw a ReferenceError on click), so this just supplies the data those
+    // buttons expect from the current in-memory database.
+    function downloadUpdatedCaveData() {
+      downloadUpdatedCaveDataWithProperFormat(window.caveDataStore || window.caveDatabase || []);
+    }
+
     function downloadUpdatedCaveDataWithProperFormat(data) {
       let formattedData = "const caveDatabase = [\n";
 
@@ -8868,12 +8918,45 @@ function normalizeCoordinates(cave) {
   // Remove the old single-layer functions and update the initialization
   // Remove these old functions: toggleCaveMapLayer, removeCaveMapLayer, loadSelectedCaveMap, updateCaveMapOpacity, getCaveMapOpacity
 
+  // Wired to the "Upload Maps" button in the Cave Maps admin panel, which
+  // had no matching function defined at all (a ReferenceError on click, and
+  // the file input beside it did nothing). Sends the selected GeoTIFF/
+  // shapefile files to the server, which now actually stores them (see
+  // POST /api/cave-maps/upload in server.js).
+  async function uploadCaveMaps() {
+    const input = document.getElementById('cave-map-upload');
+    if (!input || !input.files || input.files.length === 0) {
+      alert('Please choose one or more files to upload first.');
+      return;
+    }
+
+    const formData = new FormData();
+    Array.from(input.files).forEach(file => formData.append('mapFiles', file));
+
+    try {
+      const response = await fetch('/api/cave-maps/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Upload failed');
+      }
+      alert(result.message || 'Upload complete.');
+      input.value = '';
+      if (typeof loadAvailableCaveMaps === 'function') loadAvailableCaveMaps();
+    } catch (error) {
+      console.error('Cave map upload failed:', error);
+      alert('Upload failed: ' + error.message);
+    }
+  }
+
   // Load available cave maps from server
   async function loadAvailableCaveMaps() {
     console.log("Loading available cave maps from server...");
     
     try {
-      const response = await fetch('https://fcs.caves.org/api/cave-maps/list');
+      const response = await fetch('/api/cave-maps/list');
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -9393,7 +9476,7 @@ function normalizeCoordinates(cave) {
     selectedCaveMap = map;
 
     // Safe URL (encodeURIComponent handles special characters like #)
-    const safeUrl = map.url || `https://fcs.caves.org/cave-maps/cavemaps/${encodeURIComponent(map.filename)}`;
+    const safeUrl = withAuthToken(map.url || `/cave-maps/cavemaps/${encodeURIComponent(map.filename)}`);
 
     // Show loading spinner
     if (loadingIndicator) loadingIndicator.style.display = 'block';
@@ -9496,7 +9579,7 @@ function normalizeCoordinates(cave) {
     
     // Create download link
     const link = document.createElement('a');
-    link.href = `https://fcs.caves.org/api/cave-maps-collection/download/${selectedCaveMap.filename}`;
+    link.href = withAuthToken(`/api/cave-maps-collection/download/${selectedCaveMap.filename}`);
     link.download = selectedCaveMap.filename;
     document.body.appendChild(link);
     link.click();
@@ -9535,7 +9618,7 @@ function populateNarrativeDropdown(filter = "") {
 
 async function loadCavesWithNarratives() {
   try {
-    const response = await fetch('https://fcs.caves.org/get-caves-with-narratives');
+    const response = await fetch('/get-caves-with-narratives');
     if (response.ok) {
       const caveIds = await response.json();
       cavesWithNarratives = new Set(caveIds);
@@ -9548,7 +9631,7 @@ async function loadCavesWithNarratives() {
 
 // Load from server
 function fetchNarrative(caveId) {
-  fetch(`https://fcs.caves.org/get-narrative?id=${encodeURIComponent(caveId)}`)
+  fetch(`/get-narrative?id=${encodeURIComponent(caveId)}`)
     .then(res => {
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
@@ -9753,6 +9836,14 @@ async function loadNarrativeEditor() {
             // Load this narrative into the editor
             if (window.dynamicQuill) {
               window.dynamicQuill.root.innerHTML = narrative.html || '';
+              // Saved narrative HTML can contain <img src="/cave-pictures/...">
+              // from when it was written; that route now requires login, and
+              // an <img> tag has no way to carry the Authorization header
+              // fetch() uses, so without this the photos would show as
+              // broken images inside the editor.
+              window.dynamicQuill.root.querySelectorAll('img[src^="/cave-pictures/"]').forEach(img => {
+                img.src = withAuthToken(img.src);
+              });
               isEditingExistingNarrative = true;
               window.editingNarrativeTimestamp = narrative.timestamp; // Store timestamp for editing
             }
@@ -9901,6 +9992,10 @@ async function loadNarrativeEditor() {
             } else if (!correctedUrl.startsWith('http')) {
               correctedUrl = `${window.location.origin}/${correctedUrl.replace(/^\/+/, '')}`;
             }
+            // /cave-pictures requires login (see server.js); img tags can't
+            // send the Authorization header fetch() uses, so the token has
+            // to travel as a query param instead.
+            correctedUrl = withAuthToken(correctedUrl);
 
             imgEl.src = correctedUrl;
             imgEl.alt = img.alt || '';
@@ -10116,7 +10211,7 @@ async function deleteNarrative(caveId, timestamp, narrativeUser) {
   try {
     console.log(`Deleting narrative for cave ${caveId}, timestamp: ${timestamp}, user: ${narrativeUser}`);
     
-    const response = await fetch('https://fcs.caves.org/delete-narrative', {
+    const response = await fetch('/delete-narrative', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -10181,7 +10276,7 @@ function setupImageUploadForDynamicEditor() {
         const formData = new FormData();
         formData.append('image', file);
         
-        const response = await fetch('https://fcs.caves.org/upload-narrative-image', {
+        const response = await fetch('/upload-narrative-image', {
           method: 'POST',
           body: formData
         });
@@ -10203,19 +10298,22 @@ function setupImageUploadForDynamicEditor() {
       // Clear the uploading message
       imageContainer.innerHTML = '';
       
-      // Insert images into the Quill editor
+      // Insert images into the Quill editor. Displayed with a token
+      // appended (/cave-pictures requires login - see server.js); the
+      // token is stripped back out before this ever gets saved, in
+      // saveNarrativeToServer().
       uploadedImages.forEach(image => {
         if (window.dynamicQuill) {
           const range = window.dynamicQuill.getLength();
-          window.dynamicQuill.insertEmbed(range - 1, 'image', image.url);
+          window.dynamicQuill.insertEmbed(range - 1, 'image', withAuthToken(image.url));
           window.dynamicQuill.insertText(range, '\n'); // Add a line break after the image
         }
-        
+
         // Also show in the container for reference
         const imgDiv = document.createElement('div');
         imgDiv.style.marginBottom = '10px';
         imgDiv.innerHTML = `
-          <img src="${image.url}" alt="${image.alt}" style="max-width: 200px; max-height: 150px; border: 1px solid #ccc;">
+          <img src="${withAuthToken(image.url)}" alt="${image.alt}" style="max-width: 200px; max-height: 150px; border: 1px solid #ccc;">
           <p style="font-size: 12px; margin: 5px 0;">Uploaded: ${image.originalName}</p>
         `;
         imageContainer.appendChild(imgDiv);
@@ -10236,28 +10334,44 @@ function setupImageUploadForDynamicEditor() {
 
 async function saveNarrativeToServer() {
   const caveId = document.getElementById('narrative-cave-select').value;
-  const html = window.dynamicQuill ? window.dynamicQuill.root.innerHTML : '';
   const user = localStorage.getItem('username') || 'Anonymous';
-  
+
+  // Build the HTML to save from a detached clone of the editor content, with
+  // any withAuthToken() query params stripped back out of image src values
+  // first. Those tokens only exist so the editor could preview /cave-pictures
+  // images (see the "Edit" button handler above) - they expire in hours and
+  // must never be written into stored narrative content.
+  let html = '';
+  if (window.dynamicQuill) {
+    const clone = window.dynamicQuill.root.cloneNode(true);
+    clone.querySelectorAll('img').forEach(img => {
+      img.src = stripAuthToken(img.src);
+    });
+    html = clone.innerHTML;
+  }
+
   if (!caveId || !html.trim()) {
     alert('Please select a cave and enter some narrative content.');
     return;
   }
-	
-	
-	
+
+
+
   // look up the cave name from your in-memory store
   const caveObj = caveDataStore.find(c => c.id === caveId);
-  const caveName = caveObj ? caveObj.name : '';	
+  const caveName = caveObj ? caveObj.name : '';
 
   // Collect any images that are currently in the editor
   const images = [];
   if (window.dynamicQuill) {
     const imgElements = window.dynamicQuill.root.querySelectorAll('img');
     imgElements.forEach(img => {
-      if (img.src && img.src.includes('https://fcs.caves.org/cave-pictures/')) {
+      // Origin-agnostic (was hardcoded to https://fcs.caves.org, which never
+      // matched on any other host - localhost during development included -
+      // so this silently produced an empty images[] everywhere but prod).
+      if (img.src && img.src.includes('/cave-pictures/')) {
         images.push({
-          url: img.src,
+          url: stripAuthToken(img.src),
           alt: img.alt || '',
           caption: img.title || ''
         });
@@ -10287,7 +10401,7 @@ async function saveNarrativeToServer() {
       console.log('Updating existing narrative');
     }
 
-    const response = await fetch('https://fcs.caves.org/save-narrative', {
+    const response = await fetch('/save-narrative', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody)
@@ -10920,8 +11034,11 @@ async function handleCreateAccount() {
     return;
   }
 
-  if (password.length < 8) {
-    alert('Password must be at least 8 characters long.');
+  if (password.length < 10) {
+    // Must match MIN_PASSWORD_LENGTH in server.js - otherwise a password
+    // that passes this check still gets rejected by the server with a
+    // confusing error after the user thinks they're done.
+    alert('Password must be at least 10 characters long.');
     return;
   }
 

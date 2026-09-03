@@ -160,6 +160,60 @@ already secure.
   being defined - a `ReferenceError` waiting to crash the process the first
   time anyone edited a cave record.
 
+## Follow-up pass: regressions from the hardening itself, plus a few more bugs
+
+A real-browser test (Playwright, since curl can't see CSP violations, broken
+`onclick` handlers, or 401s on `<img>` tags) turned up issues the first pass
+missed - some caused by the hardening itself, some pre-existing:
+
+- **Every inline `onclick="..."`/`onchange="..."` handler in the app was
+  silently dead.** `helmet`'s default CSP sets `script-src-attr: 'none'`,
+  a *separate* directive from `script-src` that specifically blocks inline
+  event-handler attributes - and this app uses dozens of them. The browser
+  just logs a console warning and does nothing, so this was invisible to
+  every curl-based test in the first pass. Fixed by explicitly setting
+  `scriptSrcAttr: ["'unsafe-inline'"]` (server.js).
+- **Cave photos and map previews 401'd after login**, for the same reason
+  in reverse: `<img src>`, `<iframe src>`, and download links have no way to
+  carry the `Authorization` header `fetch()` uses, so gating `/cave-pictures`,
+  `/cave-maps`, and `/cave-maps-collection` behind that header broke every
+  actual display of an image or map. Fixed with a `?token=` query-parameter
+  fallback in `authenticateToken` (server-side) plus a `withAuthToken()`
+  helper (client-side) applied at every place those URLs get built. Session
+  tokens are stripped back out of narrative HTML/image URLs before saving
+  (`stripAuthToken()`) so they never end up persisted to disk.
+- **`/cave-pictures` images were reachable without logging in at all**,
+  despite the auth-gated mount added for them - a second, general
+  `express.static(httpdocs)` mount was registered *before* it, and Express
+  matches static file middleware in registration order, not by path
+  specificity, so the general mount served files out of the subdirectory
+  before the auth check ever ran. Fixed by reordering the two mounts.
+- **The CSP sent `upgrade-insecure-requests` even in local development**,
+  which tells the browser to rewrite every `http:` request the page makes
+  (including its own same-origin API calls) to `https:` - breaking the app
+  entirely when run locally without TLS. Now conditional on
+  `NODE_ENV=production`.
+- **The account-creation password minimum didn't match between client and
+  server** (client checked 8 characters, server required 10) - an 8- or
+  9-character password would pass the form's validation and then fail with
+  a confusing server error. Client now matches the server's 10.
+- **Two buttons called functions that didn't exist**: "Download Updated
+  Database" called `downloadUpdatedCaveData()`, which was never defined
+  (only a differently-named helper that takes a data argument existed);
+  "Upload Maps" called `uploadCaveMaps()`, which didn't exist at all, and
+  its server endpoint was an unfinished stub that always returned 501. Both
+  are now implemented end-to-end (client function + working multer-based
+  upload route, extension-validated and path-traversal-safe).
+- **Several `fetch()` calls and one `<img>` hardcoded the production
+  domain** (`https://fcs.caves.org/...`) instead of using a relative path,
+  so narrative save/delete/upload, the caves-with-narratives loader, and
+  the cave-maps list all silently failed on any other host (local dev,
+  staging, or a future domain change). Normalized to relative paths.
+- A narrative's "attach uploaded images" logic used the same hardcoded-
+  domain string to detect which `<img>` tags were the app's own uploads,
+  so it silently produced an empty image list everywhere but production.
+  Made origin-agnostic (checks the path, not the full URL).
+
 ## What this pass did *not* do
 
 Being upfront about the tradeoffs and what's left:

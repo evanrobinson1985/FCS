@@ -91,6 +91,22 @@ app.use(
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'self'"],
+        // helmet defaults this to 'none', which is stricter than scriptSrc's
+        // 'unsafe-inline' above: it specifically blocks inline event-handler
+        // attributes (onclick="...", onchange="...", etc.), which this app
+        // uses throughout (dozens of buttons across the page). Without this,
+        // every one of those buttons is silently inert - CSP blocks the
+        // handler and logs a console warning, nothing else, so it's easy to
+        // miss outside of an actual browser test.
+        scriptSrcAttr: ["'unsafe-inline'"],
+        // helmet includes this directive by default, which tells the browser
+        // to rewrite every http: subresource request on the page to https: -
+        // including this app's own same-origin requests. That's correct once
+        // this is actually served over HTTPS in production, but it silently
+        // breaks every asset/API call when running locally over plain HTTP
+        // (nothing is listening on 443, so the "upgraded" requests just fail).
+        // Only send it once we're actually in production.
+        "upgrade-insecure-requests": isProduction ? [] : null,
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -141,7 +157,20 @@ const authLimiter = rateLimit({
 // req.user with the token's payload ({ id, username, role, fullName }).
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  let token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  // Fall back to a ?token= query parameter. This exists for the handful of
+  // routes browsers request without any way to attach a custom header:
+  // <img src>, <iframe src>, direct download links, and map-tile libraries
+  // (Leaflet etc.) all issue plain GETs with no Authorization header, no
+  // matter what the page's own JS does. Without this fallback, every cave
+  // photo, map preview, and tile image would 401 the instant these routes
+  // required a login (see the client-side withAuthToken() helper, which
+  // appends this to every such URL). The header is still tried first and
+  // is what every fetch()-based API call uses.
+  if (!token && typeof req.query.token === "string") {
+    token = req.query.token;
+  }
 
   if (!token) {
     return res.status(401).json({ error: "Authentication required" });
@@ -330,18 +359,25 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
 });
 
-// Serve static files - the public site shell (login page, styles, logo).
-// Nothing sensitive lives under httpdocs/ any more; the cave database and
-// user list live in the private data/ directory instead (see above).
-app.use(express.static(path.join(__dirname, "httpdocs")));
-
 // Narrative photos are member content - require login to view them, same as
-// the narratives themselves.
+// the narratives themselves. This MUST be registered before the general
+// httpdocs static mount below: httpdocs/cave-pictures is a subdirectory of
+// httpdocs, and Express matches middleware in registration order, not by
+// specificity - if the unauthenticated catch-all mount ran first, it would
+// happily serve files out of cave-pictures/ itself before this auth check
+// ever ran, silently defeating it.
 app.use(
   "/cave-pictures",
   authenticateToken,
   express.static(path.join(__dirname, "httpdocs", "cave-pictures"))
 );
+
+// Serve static files - the public site shell (login page, styles, logo).
+// Nothing sensitive lives directly under httpdocs/ any more; the cave
+// database and user list live in the private data/ directory instead (see
+// above), and cave-pictures/ is intercepted by the authenticated mount above
+// before requests ever reach here.
+app.use(express.static(path.join(__dirname, "httpdocs")));
 
 // Add better-sqlite3 import (optional - only if you want SQLite support)
 let Database;
@@ -1226,17 +1262,72 @@ app.get(
 // logged in - so this, like every other cave-maps route, requires a token.
 app.use("/cave-maps-collection", authenticateToken, express.static(caveMapsCollectionDir));
 
-// Optional: Upload endpoint for cave maps
+// Upload endpoint for cave maps. This used to be a stub that always
+// returned 501, while the client had a matching "Upload Maps" button and
+// file input wired to a function that didn't even exist - so the whole
+// upload feature was non-functional on both ends. Both sides are now wired
+// up: GeoTIFFs go to geotiffDir, shapefile components (.shp/.shx/.dbf/...)
+// go to shapefilesDir, matched by extension.
+const CAVE_MAP_EXTENSIONS = new Set([
+  ".tif",
+  ".tiff",
+  ".shp",
+  ".shx",
+  ".dbf",
+  ".prj",
+  ".cpg",
+  ".sbn",
+  ".sbx",
+  ".zip",
+]);
+
+const caveMapUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (ext === ".tif" || ext === ".tiff") {
+        cb(null, geotiffDir);
+      } else {
+        cb(null, shapefilesDir);
+      }
+    },
+    filename: (req, file, cb) => {
+      // Unlike narrative image uploads, we can't fully randomize this name:
+      // a shapefile is only recognized as complete when its .shp/.shx/.dbf/
+      // .prj components share an identical base filename (see
+      // /api/cave-maps/list above). So the original name is kept, just
+      // stripped of anything that isn't a safe filename character.
+      const base = path.basename(file.originalname).replace(/[^A-Za-z0-9._-]/g, "_");
+      cb(null, base);
+    },
+  }),
+  limits: { fileSize: 200 * 1024 * 1024, files: 20 }, // GeoTIFFs can be large
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!CAVE_MAP_EXTENSIONS.has(ext)) {
+      return cb(new Error(`Unsupported file type: ${ext || "(no extension)"}`));
+    }
+    cb(null, true);
+  },
+});
+
 app.post(
   "/api/cave-maps/upload",
   authenticateToken,
   requireRole("admin", "webmaster"),
   (req, res) => {
-    // This would require multer middleware for file uploads
-    // For now, users can manually add files to the cave-maps folders
-    res.status(501).json({
-      message:
-        "File upload not implemented. Please add files directly to cave-maps/geotiff/ or cave-maps/shapefiles/ folders.",
+    caveMapUpload.array("mapFiles", 20)(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || "Upload failed" });
+      }
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: "No files uploaded" });
+      }
+      console.log(`Uploaded ${req.files.length} cave map file(s)`);
+      res.json({
+        message: `Uploaded ${req.files.length} file(s) successfully.`,
+        files: req.files.map((f) => f.filename),
+      });
     });
   }
 );
