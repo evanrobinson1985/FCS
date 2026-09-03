@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+*.out
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+#Data Files
+cave-database.js
+cave-database.json
+users.json
+*.sqlite
+*.db
+*.bak
+dump.sql
+*.geojson
+
+# Private data directory (cave database, user list) - never committed
+data/
+
+# Cave Pictures and Maps
+cave-pictures/
+cave-maps/
+narratives/
