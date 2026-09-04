@@ -3246,6 +3246,297 @@ function createElevationDistributionChart() {
   }, 100);
 }
 
+// Minimal HTML-escaping for the stat cards below that interpolate member
+// names into innerHTML (narrative authors, submitters).
+function escapeStatsHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ----- Documentation Coverage -----
+// What fraction of the database actually has a written narrative/trip
+// report. Backed by /get-caves-with-narratives, the same real,
+// server-side narrative system the Narrative tab itself uses.
+function createDocumentationCoverageCard() {
+  const statsGrid = document.querySelector('.stats-grid');
+  const card = document.createElement('div');
+  card.className = 'stats-card';
+  card.innerHTML = `
+    <div class="stats-card-header">
+      <h4>Documentation Coverage</h4>
+    </div>
+    <div class="stats-card-body">
+      <div class="stat-item">
+        <span class="stat-label">Caves with a Narrative:</span>
+        <span class="stat-value" id="documented-caves-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Caves without a Narrative:</span>
+        <span class="stat-value" id="undocumented-caves-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Coverage:</span>
+        <span class="stat-value" id="documentation-coverage-pct">0%</span>
+      </div>
+    </div>
+  `;
+  statsGrid.appendChild(card);
+}
+
+async function updateDocumentationCoverage() {
+  const countEl = document.getElementById('documented-caves-count');
+  if (!countEl) return;
+  try {
+    const response = await fetch('/get-caves-with-narratives');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const caveIds = await response.json();
+    const documentedSet = new Set(caveIds);
+
+    const total = caveDataStore.length;
+    const documented = caveDataStore.filter(cave => documentedSet.has(cave.id)).length;
+    const undocumented = total - documented;
+    const pct = total ? Math.round((documented / total) * 100) : 0;
+
+    countEl.textContent = documented;
+    document.getElementById('undocumented-caves-count').textContent = undocumented;
+    document.getElementById('documentation-coverage-pct').textContent = `${pct}%`;
+  } catch (error) {
+    console.error('Failed to load documentation coverage:', error);
+  }
+}
+
+// ----- Top Contributors -----
+// Leaderboard by narratives written (real server data, /get-all-narratives-log)
+// and submissions made. Submission authorship currently only exists in the
+// localStorage-backed "fcsSubmissions" record the Pending/Approved
+// Submissions tabs and the Recent Activity card on this same page already
+// read from - the New Cave / Edit Cave forms don't post to the server's
+// /api/pending-submissions, so that endpoint has no real activity to count.
+function createTopContributorsCard() {
+  const statsGrid = document.querySelector('.stats-grid');
+  const card = document.createElement('div');
+  card.className = 'stats-card full-width';
+  card.innerHTML = `
+    <div class="stats-card-header">
+      <h4>Top Contributors</h4>
+    </div>
+    <div class="stats-card-body">
+      <table class="stats-table" id="top-contributors-table">
+        <thead>
+          <tr><th>Member</th><th>Narratives</th><th>Submissions</th><th>Total</th></tr>
+        </thead>
+        <tbody><tr><td colspan="4">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  `;
+  statsGrid.appendChild(card);
+}
+
+async function updateTopContributors() {
+  const tbody = document.querySelector('#top-contributors-table tbody');
+  if (!tbody) return;
+
+  const counts = {};
+  const bump = (name, field) => {
+    if (!name) return;
+    if (!counts[name]) counts[name] = { narratives: 0, submissions: 0 };
+    counts[name][field]++;
+  };
+
+  try {
+    const response = await fetch('/get-all-narratives-log');
+    if (response.ok) {
+      const narratives = await response.json();
+      narratives.forEach(n => {
+        if (!n.isDeleted) bump(n.user, 'narratives');
+      });
+    }
+  } catch (error) {
+    console.error('Failed to load narrative activity for contributors:', error);
+  }
+
+  try {
+    const localSubmissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
+    localSubmissions.forEach(sub => {
+      bump(sub.submitter?.name, 'submissions');
+    });
+  } catch (error) {
+    console.error('Failed to read local submissions for contributors:', error);
+  }
+
+  const rows = Object.entries(counts)
+    .map(([name, c]) => ({ name, ...c, total: c.narratives + c.submissions }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 8);
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4">No contributor activity yet.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeStatsHtml(r.name)}</td>
+      <td>${r.narratives}</td>
+      <td>${r.submissions}</td>
+      <td>${r.total}</td>
+    </tr>
+  `).join('');
+}
+
+// ----- Map / Survey Status Coverage -----
+// mapType and mapStatus exist on every cave record but nothing charts them
+// today. Codes match the <select> options in the Edit Cave form.
+function createMapStatusChart() {
+  const statsGrid = document.querySelector('.stats-grid');
+  const card = document.createElement('div');
+  card.className = 'stats-card chart-card';
+  card.innerHTML = `
+    <div class="stats-card-header">
+      <h4>Map / Survey Status</h4>
+    </div>
+    <div class="stats-card-body">
+      <div id="map-status-chart" class="chart-container"></div>
+      <div class="stat-item" style="margin-top: 10px;">
+        <span class="stat-label">Unmapped Caves:</span>
+        <span class="stat-value" id="unmapped-caves-count">0</span>
+      </div>
+    </div>
+  `;
+  statsGrid.appendChild(card);
+
+  setTimeout(() => {
+    const mapTypeLabels = {
+      'K': 'Knotted Line & Compass',
+      'M': 'Mixed Methods',
+      'P': 'Pace & Compass',
+      'S': 'Sketch',
+      'T': 'Tape/Compass/Inclinometer',
+      'U': 'Unmapped',
+      '': 'Unknown'
+    };
+
+    const counts = {};
+    let unmapped = 0;
+    caveDataStore.forEach(cave => {
+      const code = cave.mapType || '';
+      const label = mapTypeLabels[code] || code || 'Unknown';
+      counts[label] = (counts[label] || 0) + 1;
+      if (code === 'U') unmapped++;
+    });
+
+    const labels = Object.keys(counts);
+    const data = labels.map(label => counts[label]);
+
+    const ctx = document.createElement('canvas');
+    ctx.id = 'map-status-canvas';
+    ctx.height = 220;
+    document.getElementById('map-status-chart').innerHTML = '';
+    document.getElementById('map-status-chart').appendChild(ctx);
+
+    new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: ['#2a4d69', '#4b86b4', '#adcbe3', '#e4572e', '#f3a712', '#a8a8a8', '#7b3294'],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    document.getElementById('unmapped-caves-count').textContent = unmapped;
+  }, 100);
+}
+
+// ----- Submission Review Funnel -----
+// Pending/changes-requested/approved/rejected counts and average time to
+// approval, from the same localStorage "fcsSubmissions" record the Recent
+// Activity card and the Pending/Approved Submissions tabs already use.
+function createSubmissionFunnelCard() {
+  const statsGrid = document.querySelector('.stats-grid');
+  const card = document.createElement('div');
+  card.className = 'stats-card';
+  card.innerHTML = `
+    <div class="stats-card-header">
+      <h4>Submission Review Funnel</h4>
+    </div>
+    <div class="stats-card-body">
+      <div class="stat-item">
+        <span class="stat-label">Pending Review:</span>
+        <span class="stat-value" id="funnel-pending-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Changes Requested:</span>
+        <span class="stat-value" id="funnel-changes-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Approved:</span>
+        <span class="stat-value" id="funnel-approved-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Rejected:</span>
+        <span class="stat-value" id="funnel-rejected-count">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Avg. Time to Approval:</span>
+        <span class="stat-value" id="funnel-avg-turnaround">N/A</span>
+      </div>
+    </div>
+  `;
+  statsGrid.appendChild(card);
+}
+
+function updateSubmissionFunnel() {
+  const pendingEl = document.getElementById('funnel-pending-count');
+  if (!pendingEl) return;
+
+  let pending = 0, changesRequested = 0, approved = 0, rejected = 0;
+  const turnaroundDays = [];
+
+  try {
+    const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
+    submissions.forEach(sub => {
+      if (sub.status === 'approved') {
+        approved++;
+        const submittedDate = sub.submitter?.date;
+        if (submittedDate && sub.approvedDate) {
+          const days = (new Date(sub.approvedDate) - new Date(submittedDate)) / (1000 * 60 * 60 * 24);
+          if (!isNaN(days) && days >= 0) turnaroundDays.push(days);
+        }
+      } else if (sub.status === 'rejected') {
+        rejected++;
+      } else if (sub.status === 'changes_requested') {
+        changesRequested++;
+      } else {
+        pending++;
+      }
+    });
+  } catch (error) {
+    console.error('Failed to read local submissions for the review funnel:', error);
+  }
+
+  pendingEl.textContent = pending;
+  document.getElementById('funnel-changes-count').textContent = changesRequested;
+  document.getElementById('funnel-approved-count').textContent = approved;
+  document.getElementById('funnel-rejected-count').textContent = rejected;
+
+  document.getElementById('funnel-avg-turnaround').textContent = turnaroundDays.length
+    ? (turnaroundDays.reduce((a, b) => a + b, 0) / turnaroundDays.length).toFixed(1) + ' days'
+    : 'N/A';
+}
+
 // Update the statistics page with real data
 function updateStatistics() {
   console.log("Updating statistics with cave data...");
@@ -3303,7 +3594,26 @@ if (!document.getElementById('avg-cave-length')) {
   if (!document.getElementById('discovery-timeline-chart')) {
     createHistoricalDataChart();
   }
-  
+
+  if (!document.getElementById('documented-caves-count')) {
+    createDocumentationCoverageCard();
+  }
+  updateDocumentationCoverage();
+
+  if (!document.getElementById('top-contributors-table')) {
+    createTopContributorsCard();
+  }
+  updateTopContributors();
+
+  if (!document.getElementById('map-status-chart')) {
+    createMapStatusChart();
+  }
+
+  if (!document.getElementById('funnel-pending-count')) {
+    createSubmissionFunnelCard();
+  }
+  updateSubmissionFunnel();
+
   // Call hazard stats update
   updateHazardStats();
   
