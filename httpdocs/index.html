@@ -1247,11 +1247,19 @@
      /api/cave-database instead, which requires a valid login (see the
      DOMContentLoaded handler below and the fetch wrapper in <head>). -->
 
-<!-- Leaflet (Base mapping library) -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Leaflet (Base mapping library). leaflet.css is already loaded once in
+     <head>; this used to load leaflet.js itself three times (twice from
+     unpkg, once from cdnjs) and esri-leaflet.js twice - browsers don't
+     dedupe classic <script src> tags, so that was three full fetch+parse+
+     execute cycles of the same library on every page load for no benefit.
+     Kept the version with a Subresource Integrity hash. -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
 <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
+<script src="https://unpkg.com/esri-leaflet-renderers@3.0.1/dist/esri-leaflet-renderers.js"></script>
 <script src="https://unpkg.com/leaflet-compass@1.5.6/dist/leaflet-compass.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 
 <!-- GeoTIFF Support -->
 <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
@@ -1260,40 +1268,9 @@
 <script src="https://unpkg.com/georaster-layer-for-leaflet@3.7.0/dist/georaster-layer-for-leaflet.min.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-        crossorigin=""></script>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js">
-
-</script> <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js">
-
-</script> <script src="https://unpkg.com/esri-leaflet-renderers@3.0.1/dist/esri-leaflet-renderers.js">
-
-</script> <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js">
-
-</script> <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js">
-
-</script> <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
-function saveCaveDatabaseToServer() {
-  fetch('/api/save-cave-database', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(caveDataStore)
-  })
-  .then(res => res.json())
-  .then(result => {
-    alert(result.message || "Cave database saved.");
-  })
-  .catch(err => {
-    console.error("Failed to save cave database:", err);
-    alert("Failed to save cave database.");
-  });
-}
-
-</script>
+<!-- Charting / spreadsheet export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- Consolidated Custom JS -->
 <script>
 // ===== Consolidated JavaScript =====
@@ -2473,20 +2450,6 @@ function saveCaveDatabaseToServer() {
       applyMapFilters();
     }
 
-    // Add/update the showSubmissionOnMap function
-    function showSubmissionOnMap(submissionId) {
-      // Set active submission ID
-      activeSubmissionId = submissionId;
-      
-      // Reset other filters
-      document.getElementById('map-filter-county').value = 'all';
-      document.getElementById('map-filter-type').value = 'all';
-      document.getElementById('map-filter-status').value = 'all';
-      
-      // Apply filters to show only caves from this submission
-      applyMapFilters();
-    }
-
     // Add this function right before or after your applyMapFilters function
     function styleTooltips() {
       // Find all tooltip elements and apply styles
@@ -2860,35 +2823,6 @@ function saveCaveDatabaseToServer() {
       }, 200);
     }
     
-    function editCaveFromMap(caveId) {
-      console.log(`Opening edit form for cave ${caveId}`);
-      
-      // Find the cave data
-      const cave = caveDataStore.find(c => c.id === caveId);
-      if (!cave) {
-        alert(`Cave ${caveId} not found`);
-        return;
-      }
-      
-      // Switch to the edit cave tab
-      document.querySelector('[data-tab="edit-cave-tab"]').click();
-      
-      // Wait a short time for the tab to load
-      setTimeout(() => {
-        // Set the dropdown value to select this cave
-        const editCaveSelect = document.getElementById('edit-cave-select');
-        if (editCaveSelect) {
-          editCaveSelect.value = caveId;
-          
-          // Trigger the change event to populate the form
-          const changeEvent = new Event('change');
-          editCaveSelect.dispatchEvent(changeEvent);
-        } else {
-          console.error("Edit cave select dropdown not found");
-        }
-      }, 200);
-    }
-
 // Create the Dimensions Stats Card
 function createDimensionsStatsCard() {
   const statsGrid = document.querySelector('.stats-grid');
@@ -3616,187 +3550,6 @@ function updateRecentActivity() {
   }
 }
 
-// Update equipment chart with real data
-function createEquipmentChart(caveData) {
-  const equipmentCtx = document.createElement('canvas');
-  equipmentCtx.id = 'equipment-canvas';
-  equipmentCtx.height = 220;
-  document.getElementById('equipment-chart').innerHTML = '';
-  document.getElementById('equipment-chart').appendChild(equipmentCtx);
-  
-  // Count equipment usage
-  const equipmentCounts = {
-    'B': 0, // Boat or flotation
-    'D': 0, // Diving gear
-    'H': 0, // Handline
-    'K': 0, // Kneepads
-    'L': 0, // Ladder
-    'N': 0, // Normal speleo gear
-    'R': 0, // Rope
-    'S': 0, // Shovel/dig/blasting
-    'W': 0, // Wetsuit
-    'X': 0  // Other special equipment
-  };
-  
-  // Map equipment codes to labels
-  const equipmentLabels = {
-    'B': 'Boat/Flotation',
-    'D': 'Diving Gear',
-    'H': 'Handline',
-    'K': 'Kneepads',
-    'L': 'Ladder',
-    'N': 'Normal Gear',
-    'R': 'Rope',
-    'S': 'Shovel/Dig',
-    'W': 'Wetsuit',
-    'X': 'Special Equipment'
-  };
-  
-  // Count how many caves need each type of equipment
-  caveData.forEach(cave => {
-    if (cave.equipment) {
-      cave.equipment.forEach(code => {
-        if (equipmentCounts.hasOwnProperty(code)) {
-          equipmentCounts[code]++;
-        }
-      });
-    }
-  });
-  
-  // Convert to array for Chart.js
-  const equipmentData = Object.keys(equipmentCounts)
-    .filter(code => equipmentCounts[code] > 0) // Only include equipment that's used
-    .map(code => ({
-      equipment: equipmentLabels[code] || code,
-      count: equipmentCounts[code]
-    }))
-    .sort((a, b) => b.count - a.count); // Sort by count descending
-  
-  // Create chart with Chart.js
-  new Chart(equipmentCtx, {
-    type: 'bar',
-    data: {
-      labels: equipmentData.map(item => item.equipment),
-      datasets: [{
-        label: 'Caves Requiring Equipment',
-        data: equipmentData.map(item => item.count),
-        backgroundColor: '#2a4d69',
-        borderWidth: 1
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          beginAtZero: true,
-          ticks: {
-            stepSize: 1
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          display: false
-        }
-      }
-    }
-  });
-}
-
-// Add recent activity table update function
-function updateRecentActivity() {
-  const activityTable = document.getElementById('recent-activity-table');
-  if (!activityTable) return;
-  
-  // Clear existing rows
-  activityTable.innerHTML = '';
-  
-  // Get submissions for activity
-  const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-  
-  // Create activity entries
-  const activities = [];
-  
-  // Add submission activities
-  submissions.forEach(sub => {
-    // Add submission activity
-    activities.push({
-      date: new Date(sub.submitter.date),
-      action: 'New Submission',
-      user: sub.submitter.name,
-      details: `Submitted ${sub.existingCaves.length} existing caves and ${sub.newCaves.length} new caves`
-    });
-    
-    // Add approval/rejection activities
-    if (sub.status === 'approved' && sub.approvedDate) {
-      activities.push({
-        date: new Date(sub.approvedDate),
-        action: 'Submission Approved',
-        user: sub.approvedBy,
-        details: `Approved submission #${sub.submissionId}`
-      });
-    } else if (sub.status === 'rejected' && sub.rejectedDate) {
-      activities.push({
-        date: new Date(sub.rejectedDate),
-        action: 'Submission Rejected',
-        user: sub.rejectedBy,
-        details: `Rejected submission #${sub.submissionId}`
-      });
-    }
-    
-    // Add new cave approval/rejection activities
-    sub.newCaves.forEach(cave => {
-      const parts = cave.formattedString.split('|');
-      const caveName = parts[6];
-      
-      if (cave.approved && cave.approvedDate) {
-        activities.push({
-          date: new Date(cave.approvedDate),
-          action: 'New Cave Approved',
-          user: cave.approvedBy,
-          details: `Approved new cave "${caveName}" with ID ${cave.approvedId}`
-        });
-      } else if (cave.rejected && cave.rejectedDate) {
-        activities.push({
-          date: new Date(cave.rejectedDate),
-          action: 'New Cave Rejected',
-          user: cave.rejectedBy,
-          details: `Rejected new cave "${caveName}"`
-        });
-      }
-    });
-  });
-  
-  // Sort activities by date (newest first)
-  activities.sort((a, b) => b.date - a.date);
-  
-  // Take the 10 most recent activities
-  const recentActivities = activities.slice(0, 10);
-  
-  // Add rows to the table
-  recentActivities.forEach(activity => {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formatDate(activity.date.toISOString())}</td>
-      <td>${activity.action}</td>
-      <td>${activity.user}</td>
-      <td>${activity.details}</td>
-    `;
-    activityTable.appendChild(row);
-  });
-  
-  // If no activities, show a message
-  if (recentActivities.length === 0) {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td colspan="4">No recent activity found.</td>
-    `;
-    activityTable.appendChild(row);
-  }
-}
-
 // Create the cave types pie chart
 function createCaveTypesChart(landCaves, underwaterCaves) {
   const caveTypesCtx = document.createElement('canvas');
@@ -3989,56 +3742,6 @@ function createEntryStatusChart(commercial, government, private, other) {
       plugins: {
         legend: {
           position: 'bottom'
-        }
-      }
-    }
-  });
-}
-
-// Create the equipment requirements chart (sample data)
-function createEquipmentChart() {
-  const equipmentCtx = document.createElement('canvas');
-  equipmentCtx.id = 'equipment-canvas';
-  equipmentCtx.height = 220;
-  document.getElementById('equipment-chart').innerHTML = '';
-  document.getElementById('equipment-chart').appendChild(equipmentCtx);
-  
-  // Sample data - in a real implementation, this would come from your database
-  const equipmentData = [
-    { equipment: 'Diving Gear', count: 2 },
-    { equipment: 'Wetsuit', count: 3 },
-    { equipment: 'Rope', count: 4 },
-    { equipment: 'Ladder', count: 1 },
-    { equipment: 'Kneepads', count: 3 },
-    { equipment: 'Normal Gear', count: 4 }
-  ];
-  
-  const chart = new Chart(equipmentCtx, {
-    type: 'bar',
-    data: {
-      labels: equipmentData.map(item => item.equipment),
-      datasets: [{
-        label: 'Caves Requiring Equipment',
-        data: equipmentData.map(item => item.count),
-        backgroundColor: '#2a4d69',
-        borderWidth: 1
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          beginAtZero: true,
-          ticks: {
-            stepSize: 1
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          display: false
         }
       }
     }
@@ -4432,98 +4135,6 @@ const fcsHeaders = [
       
       // Generate the Excel file and trigger download
       XLSX.writeFile(wb, "FCS_Cave_Database.xlsx");
-    }
-
-    function approveSubmission(button) {
-      const submissionId = button.getAttribute('data-submission-id');
-
-      let submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      const index = submissions.findIndex(s => String(s.id) === String(submissionId));
-      if (index === -1) {
-        console.error("Submission not found:", submissionId);
-        return;
-      }
-
-      submissions[index].status = 'approved';
-
-      const cave = {
-        id: submissions[index].id || '',
-        name: submissions[index].name || '',
-        county: submissions[index].county || '',
-        type: submissions[index].type || '',
-        latitude: submissions[index].latitude || '',
-        longitude: submissions[index].longitude || ''
-      };
-
-      // Check if cave already exists
-      const existingIndex = caveDatabase.findIndex(c => c.id === cave.id);
-
-      if (existingIndex !== -1) {
-        Object.keys(cave).forEach(key => {
-          if (cave[key]) {
-            caveDatabase[existingIndex][key] = cave[key];
-          }
-        });
-      } else {
-        caveDatabase.push(cave);
-      }
-
-      // 🔧 Normalize coordinates for all caves before saving
-      for (let entry of caveDatabase) {
-        if (entry.lat !== undefined && entry.latitude === undefined) {
-          entry.latitude = entry.lat;
-          delete entry.lat;
-        }
-        if (entry.lng !== undefined && entry.longitude === undefined) {
-          entry.longitude = entry.lng;
-          delete entry.lng;
-        }
-      }
-
-      // 🔧 Generate JS syntax output
-      function convertToJSObjectSyntax(objArray) {
-        return 'const caveDatabase = [\n' + objArray.map(obj => {
-          return '  {\n' + Object.entries(obj).map(([key, value]) => {
-            const formattedValue = typeof value === 'string' ? `"${value}"` : value;
-            return `    ${key}: ${formattedValue}`;
-          }).join(',\n') + '\n  }';
-        }).join(',\n') + '\n];';
-      }
-
-      // Normalize coordinate keys across entire database
-      caveDatabase.forEach(cave => {
-        if ('lat' in cave) {
-          cave.latitude = cave.latitude ?? cave.lat;
-          delete cave.lat;
-        }
-        if ('lng' in cave) {
-          cave.longitude = cave.longitude ?? cave.lng;
-          delete cave.lng;
-        }
-      });
-
-      const outputJS = convertToJSObjectSyntax(caveDatabase);
-
-      // Save to server
-      fetch('https://fcs.caves.org/api/cave-database', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(caveDataStore)
-      })
-      .then(() => {
-        loadCavesToMap();
-        loadFcsDatabaseTable();
-        updateStatistics();
-        localStorage.setItem('fcsSubmissions', JSON.stringify(submissions));
-        const card = button.closest('.submission-card');
-        if (card) card.remove();
-      })
-      .catch(err => {
-        console.error("Failed to save cave data:", err);
-      });
-
     }
 
     // Format a date string
@@ -6022,23 +5633,6 @@ const fcsHeaders = [
       }
     }
 
-    // Helper to set select field by option text
-    function setSelectByText(selectId, text) {
-      const select = document.getElementById(selectId);
-      if (!select || !text) {
-        select.selectedIndex = 0; // fallback
-        return;
-      }
-      const options = Array.from(select.options);
-      const match = options.find(opt => opt.text.trim() === text.trim());
-      if (match) {
-        select.value = match.value;
-      } else {
-        select.selectedIndex = 0; // fallback to first option
-      }
-    }
-
-
     populateEditCaveDropdown();
 
     // Add these debugging functions to help troubleshoot
@@ -6319,126 +5913,6 @@ window.addEventListener('error', function(e) {
       }
     }, true);
 
-    // Function to update a cave in the database
-    function updateCave(caveId, updatedData) {
-      console.log(`Updating cave ${caveId}`, updatedData);
-      
-      // Find the cave in our data store
-      const index = caveDataStore.findIndex(cave => cave.id === caveId);
-      if (index === -1) {
-        console.error(`Cave ${caveId} not found in data store`);
-        return false;
-      }
-      
-      // Update the data
-      caveDataStore[index] = {
-        ...caveDataStore[index],
-        ...updatedData
-      };
-      
-      // Update the original database too for persistence
-      updateOriginalDatabase(caveId, updatedData);
-      
-      // Refresh the map if it exists
-      if (map && cavesLayer) {
-        loadCavesToMap();
-      }
-      
-      return true;
-    }
-
-    // Function to update the original database (for persistence) 
-    function updateOriginalDatabase(caveId, updatedData) {
-      if (!window.caveDatabase) return;
-
-      const index = window.caveDatabase.findIndex(cave => cave.id === caveId);
-      if (index === -1) return;
-
-      const cave = window.caveDatabase[index];
-
-      if (updatedData.name !== undefined) cave.name = updatedData.name;
-      if (updatedData.county !== undefined) cave.county = updatedData.county;
-      if (updatedData.type !== undefined) cave.type = updatedData.type;
-      
-      // COORDINATE PROPERTY HANDLING - Update both pairs consistently
-      if (updatedData.latitude !== undefined) {
-        cave.latitude = updatedData.latitude;
-        cave.lat = updatedData.latitude; // Also update lat when latitude changes
-      } else if (updatedData.lat !== undefined) {
-        cave.lat = updatedData.lat;
-        cave.latitude = updatedData.lat; // Also update latitude when lat changes
-      }
-      
-      if (updatedData.longitude !== undefined) {
-        cave.longitude = updatedData.longitude;
-        cave.lng = updatedData.longitude; // Also update lng when longitude changes
-      } else if (updatedData.lng !== undefined) {
-        cave.lng = updatedData.lng;
-        cave.longitude = updatedData.lng; // Also update longitude when lng changes
-      }
-      
-      if (updatedData.locationAccuracy !== undefined) cave.locationAccuracy = updatedData.locationAccuracy;
-      if (updatedData.entryStatus !== undefined) cave.entryStatus = updatedData.entryStatus;
-      if (updatedData.ownerInfo !== undefined) cave.ownerInfo = updatedData.ownerInfo;
-      if (updatedData.entranceType !== undefined) cave.entranceType = updatedData.entranceType;
-      if (updatedData.elevation !== undefined) cave.elevation = updatedData.elevation;
-      if (updatedData.mapType !== undefined) cave.mapType = updatedData.mapType;
-      if (updatedData.mapStatus !== undefined) cave.mapStatus = updatedData.mapStatus;
-      if (updatedData.geology !== undefined) cave.geology = updatedData.geology;
-      if (updatedData.topoProvince !== undefined) cave.topoProvince = updatedData.topoProvince;
-      if (updatedData.topoMap !== undefined) cave.topoMap = updatedData.topoMap;
-      if (updatedData.fieldIndication !== undefined) cave.fieldIndication = updatedData.fieldIndication;
-      // Dimension fields - update ALL property name variations for compatibility
-      if (updatedData.length !== undefined || updatedData.caveLength !== undefined) {
-        const lengthValue = updatedData.caveLength || updatedData.length || '';
-        cave.length = lengthValue;
-        cave.caveLength = lengthValue;
-      }
-
-      if (updatedData.vertical !== undefined || updatedData.verticalExtent !== undefined) {
-        const verticalValue = updatedData.verticalExtent || updatedData.vertical || '';
-        cave.vertical = verticalValue;
-        cave.verticalExtent = verticalValue;
-      }
-
-      if (updatedData.waterDepth !== undefined || updatedData.water !== undefined || updatedData.maxWaterDepth !== undefined) {
-        const waterValue = updatedData.maxWaterDepth || updatedData.waterDepth || updatedData.water || '';
-        cave.waterDepth = waterValue;
-        cave.water = waterValue;
-        cave.maxWaterDepth = waterValue;
-      }
-
-      if (updatedData.pitch !== undefined || updatedData.deepestPitch !== undefined) {
-        const pitchValue = updatedData.deepestPitch || updatedData.pitch || '';
-        cave.pitch = pitchValue;
-        cave.deepestPitch = pitchValue;
-      }
-      if (updatedData.notes !== undefined) cave.notes = updatedData.notes;
-
-      // Add the missing fields handling
-      if (updatedData.reporterName !== undefined) cave.reporterName = updatedData.reporterName;
-      if (updatedData.reporterNSS !== undefined) cave.reporterNSS = updatedData.reporterNSS;
-      if (updatedData.narrative !== undefined) cave.narrative = updatedData.narrative;
-        // ADD THIS: elevation for main entrance
-      if (updatedData.elevation !== undefined) cave.elevation = updatedData.elevation;
-
-      if (Array.isArray(updatedData.equipment)) cave.equipment = updatedData.equipment;
-      if (Array.isArray(updatedData.exploration)) cave.exploration = updatedData.exploration;
-      if (Array.isArray(updatedData.entrances)) cave.entrances = updatedData.entrances;
-      if (Array.isArray(updatedData.entrances)) cave.entrances = JSON.parse(JSON.stringify(updatedData.entrances));
-
-      if (updatedData.hazards) {
-        cave.hazards = {
-          ...cave.hazards,
-          ...updatedData.hazards
-        };
-      }
-
-      cave.lastUpdated = new Date().toISOString();
-      cave.updatedBy = updatedData.updatedBy || "admin";
-
-      console.log(`✅ Updated cave ${caveId} in original database.`);
-    }
 
     function editCaveFromMap(caveId) {
       console.log(`Opening edit form for cave ${caveId}`);
@@ -6622,49 +6096,6 @@ window.addEventListener('error', function(e) {
       URL.revokeObjectURL(url);
     }
 
-    // Update the original function to use the new one
-    function downloadCaveDatabase(data) {
-      // Normalize:
-      data.forEach(c => {
-        if (c.lat  !== undefined) { c.latitude  = c.lat;  delete c.lat; }
-        if (c.lng  !== undefined) { c.longitude = c.lng;  delete c.lng; }
-      });
-
-      // Format lines:
-      const lines = data.map(obj => {
-        const replacer = (key, value) => {
-          // Properly stringify nested entrance arrays
-          if (key === 'entrances' && Array.isArray(value)) {
-            return value.map(entrance => {
-              return Object.entries(entrance).reduce((acc, [k, v]) => {
-                acc[k] = v;
-                return acc;
-              }, {});
-            });
-          }
-          return value;
-        };
-
-        let json = JSON.stringify(obj, replacer, 2)
-          .replace(/^{/, "{ ")
-          .replace(/}$/, " }")
-          .replace(/"([^"]+)":/g, '$1:') // Remove quotes from keys
-          .replace(/"/g, '"'); // Keep quotes around string values
-
-        return `  ${json},`;
-      });
-
-
-      const js = ["const caveDatabase = [", ...lines, "];"].join("\n");
-      const blob = new Blob([js], { type: "text/javascript" });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = "cave-database.js";
-      a.click();
-      URL.revokeObjectURL(url);
-    }
-
     document.getElementById('cancel-edit').addEventListener('click', function() {
       // Reset the form
       document.getElementById('edit-cave-form').reset();
@@ -6674,14 +6105,6 @@ window.addEventListener('error', function(e) {
         document.getElementById('edit-cave-form').classList.remove('active');
       }
     });
-
-    function isValidDecimalDegree(value, type) {
-      const num = parseFloat(value);
-      if (isNaN(num)) return false;
-      if (type === 'lat') return num >= -90 && num <= 90;
-      if (type === 'lng') return num >= -180 && num <= 180;
-      return false;
-    }
 
     function initializeHeatmap() {
       console.log("Initializing heatmap...");
@@ -6898,29 +6321,6 @@ window.addEventListener('error', function(e) {
       } catch (err) {
         console.error("Error resetting heatmap gradient:", err);
       }
-    }
-
-    function getHeatmapGradient(name) {
-      switch (name) {
-        case 'fire':
-          return { 0.1: 'black', 0.3: 'red', 0.5: 'orange', 0.7: 'yellow', 1.0: 'white' };
-        case 'cool':
-          return { 0.1: 'blue', 0.4: 'cyan', 0.7: 'lime', 1.0: 'white' };
-        case 'grayscale':
-          return { 0.1: '#333', 0.5: '#777', 1.0: '#fff' };
-        default:
-          return { 0.1: 'blue', 0.4: 'lime', 0.7: 'orange', 1.0: 'red' };
-      }
-    }
-
-    function generateGradient(colorArray) {
-      const gradient = {};
-      const stops = colorArray.length - 1;
-      colorArray.forEach((color, i) => {
-        // This creates a gradient with the proper stops from 0 to 1.0
-        gradient[i / stops] = color;
-      });
-      return gradient;
     }
 
     function initializeLabelControls() {
@@ -7981,25 +7381,6 @@ window.addEventListener('error', function(e) {
       }
     });
   });
-  
-function saveCaveDatabaseToServer() {
-  fetch('/api/save-cave-database', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(caveDataStore)
-  })
-  .then(res => res.json())
-  .then(result => {
-    alert(result.message || "Cave database saved.");
-  })
-  .catch(err => {
-    console.error("Failed to save cave database:", err);
-    alert("Failed to save cave database.");
-  });
-}
-
 </script>
 <script>
   document.addEventListener('DOMContentLoaded', function () {
@@ -8131,26 +7512,6 @@ function saveCaveDatabaseToServer() {
     map.on('click', onMapClick);
   }
 
-  function saveCaveDatabaseToServer() {
-    fetch('/api/update-cave-location', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id: cave.id,
-      latitude: lat,
-      longitude: lng
-    })
-  })
-  .then(res => {
-    if (!res.ok) throw new Error("Failed to update cave location.");
-    console.log(`Location updated for cave ${cave.id}`);
-  })
-  .catch(err => {
-    console.error("Error updating cave location:", err);
-  });
-
-  }
-
 </script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -8182,41 +7543,6 @@ function saveCaveDatabaseToServer() {
         setTimeout(() => roundToSixDecimals(lngInput), 10);
       });
     });
-    
-function saveCaveDatabaseToServer() {
-  fetch('/api/save-cave-database', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(caveDataStore)
-  })
-  .then(res => res.json())
-  .then(result => {
-    alert(result.message || "Cave database saved.");
-  })
-  .catch(err => {
-    console.error("Failed to save cave database:", err);
-    alert("Failed to save cave database.");
-  });
-}
-
-function normalizeCoordinates(cave) {
-  // Ensure both coordinate formats exist for consistency
-  if (cave.latitude !== undefined && cave.lat === undefined) {
-    cave.lat = cave.latitude;
-  } else if (cave.lat !== undefined && cave.latitude === undefined) {
-    cave.latitude = cave.lat;
-  }
-  
-  if (cave.longitude !== undefined && cave.lng === undefined) {
-    cave.lng = cave.longitude;
-  } else if (cave.lng !== undefined && cave.longitude === undefined) {
-    cave.longitude = cave.lng;
-  }
-  
-  return cave;
-}
 
 </script>
 <script>
@@ -9044,239 +8370,6 @@ function normalizeCoordinates(cave) {
     }
   }
 
-  // Load GeoTIFF file
-  async function loadGeoTIFF(selectedMap) {
-    console.log("Checking GeoTIFF library availability...");
-    
-    // Wait a bit for libraries to fully load
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Add this before the GeoRasterLayer check
-    if (typeof GeoRasterLayer === 'undefined' && window.GeoRasterLayer) {
-      window.GeoRasterLayer = window.GeoRasterLayer;
-    }
-
-    if (typeof parseGeoraster === 'undefined') {
-      throw new Error("parseGeoraster function not available. Check if georaster library loaded correctly.");
-    }
-    
-    if (typeof GeoRasterLayer === 'undefined') {
-      throw new Error("GeoRasterLayer not available. Check if georaster-layer-for-leaflet library loaded correctly.");
-    }
-    
-    try {
-      console.log("Loading GeoTIFF from:", selectedMap.url);
-      
-      // Add cache-busting parameter to ensure fresh load
-      const url = selectedMap.url + '?t=' + Date.now();
-      
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      console.log("Fetched GeoTIFF, parsing...");
-      const arrayBuffer = await response.arrayBuffer();
-      
-      if (arrayBuffer.byteLength === 0) {
-        throw new Error("Empty file received");
-      }
-      
-      console.log(`GeoTIFF file size: ${arrayBuffer.byteLength} bytes`);
-      
-      // ✅ Define EPSG:4269 projection for NAD83
-      if (typeof proj4 !== 'undefined' && proj4 && !proj4.defs["EPSG:4269"]) {
-        proj4.defs("EPSG:4269", "+proj=longlat +datum=NAD83 +no_defs");
-      }
-
-      const georaster = await parseGeoraster(arrayBuffer);
-      console.log("GeoTIFF parsed successfully:", georaster);
-      
-      // Validate the georaster
-      if (!georaster.width || !georaster.height) {
-        throw new Error("Invalid GeoTIFF - missing dimensions");
-      }
-
-      // ✅ Create custom pane for cave maps if not already present
-      if (!map.getPane('caveMapsPane')) {
-        map.createPane('caveMapsPane');
-        map.getPane('caveMapsPane').style.zIndex = 450; // higher than base layers
-      }
-      
-      caveMapLayer = new GeoRasterLayer({
-        georaster,
-        pane: 'caveMapsPane',
-        opacity: getCaveMapOpacity(),
-        resolution: 1000, // Smaller = finer detail
-        pixelValuesToColorFn: function(pixelValues) {
-          if (!pixelValues || pixelValues.length < 3) return null;
-          const r = pixelValues[0], g = pixelValues[1], b = pixelValues[2];
-          if ([r, g, b].every(v => v === 256)) return null;
-          return `rgba(${r}, ${g}, ${b}, ${getCaveMapOpacity()})`;
-        },
-        debugLevel: 0
-      });
-      console.log("Adding GeoTIFF layer to map...");
-      caveMapLayer.addTo(map);
-      if (caveMapLayer._canvas) {
-        caveMapLayer._canvas.style.imageRendering = 'auto'; // or 'smooth'
-        caveMapLayer._canvas.style.transform = 'translateZ(0)'; // Force GPU layer
-      }
-      if (caveMapLayer.bringToFront) {
-        caveMapLayer.bringToFront();
-      }
-
-
-      
-      // Fit bounds with padding
-      const bounds = [
-        [georaster.ymin, georaster.xmin],
-        [georaster.ymax, georaster.xmax]
-      ];
-      
-      console.log("Fitting map to bounds:", bounds);
-      map.fitBounds(bounds, { padding: [20, 20] });
-      
-      console.log("GeoTIFF layer added successfully");
-      
-    } catch (error) {
-      console.error("Detailed GeoTIFF error:", error);
-      throw new Error(`GeoTIFF loading failed: ${error.message}`);
-    }
-  }
-
-  // Load Shapefile
-  async function loadShapefile(selectedMap) {
-    console.log("Checking shapefile library availability...");
-    
-    if (typeof shp === 'undefined') {
-      throw new Error("shp.js library not available. Check if shpjs library loaded correctly.");
-    }
-    
-    try {
-      console.log("Loading shapefile:", selectedMap.name);
-      console.log("Shapefile URL:", selectedMap.url);
-      
-      // First validate the shapefile on the server
-      const baseName = selectedMap.name;
-      const validationResponse = await fetch(`/api/cave-maps/validate/shapefile/${baseName}`);
-      const validation = await validationResponse.json();
-      
-      console.log("Shapefile validation:", validation);
-      
-      if (!validation.isValid) {
-        const missingFiles = Object.entries(validation.files)
-          .filter(([ext, info]) => ext !== 'prj' && !info.exists)
-          .map(([ext]) => ext);
-        
-        throw new Error(`Shapefile incomplete. Missing: ${missingFiles.join(', ')}`);
-      }
-      
-      // For zip files, shpjs expects the direct URL to the zip file
-      // For zip files, shpjs expects the direct URL to the zip file
-      let shapefileUrl;
-
-      if (selectedMap.url.endsWith('.zip')) {
-        // Use the direct zip file URL (selectedMap.url is already correct)
-        shapefileUrl = new URL(selectedMap.url, window.location.origin).href;
-      } else if (selectedMap.url.endsWith('.shp')) {
-        // For individual files, use base path without extension
-        const basePath = selectedMap.url.replace(/\.shp$/, '');
-        shapefileUrl = new URL(basePath, window.location.origin).href;
-      } else {
-        // Default fallback
-        shapefileUrl = new URL(selectedMap.url, window.location.origin).href;
-      }
-
-      console.log("Loading shapefile from base URL:", shapefileUrl);
-
-      // Add cache-busting parameter
-      const urlWithCache = shapefileUrl + '?t=' + Date.now();
-
-      const geojson = await shp(urlWithCache);
-
-      console.log("Shapefile loaded successfully:", geojson);
-      
-      if (!geojson || (!geojson.features && !Array.isArray(geojson))) {
-        throw new Error("Invalid GeoJSON received from shapefile");
-      }
-      
-      const features = geojson.features || geojson;
-      if (!Array.isArray(features) || features.length === 0) {
-        throw new Error("No features found in shapefile");
-      }
-      
-      console.log(`Processing ${features.length} features`);
-
-      if (!map.getPane('caveMapsPane')) {
-        map.createPane('caveMapsPane');
-        map.getPane('caveMapsPane').style.zIndex = 450;
-      }
-      
-      caveMapLayer = L.geoJSON(geojson, {
-        pane: 'caveMapsPane',
-        style: function(feature) {
-          const geometryType = feature.geometry.type;
-          
-          return {
-            color: '#FF6B35',
-            weight: geometryType.includes('Point') ? 1 : 3,
-            opacity: getCaveMapOpacity(),
-            fillColor: '#FF6B35',
-            fillOpacity: getCaveMapOpacity() * 0.4
-          };
-        },
-        pointToLayer: function(feature, latlng) {
-          return L.circleMarker(latlng, {
-            radius: 8,
-            fillColor: '#FF6B35',
-            color: '#000',
-            weight: 2,
-            opacity: getCaveMapOpacity(),
-            fillOpacity: getCaveMapOpacity() * 0.8
-          });
-        },
-        onEachFeature: function(feature, layer) {
-          let popupContent = '<div><h4>Cave Map Feature</h4>';
-          
-          if (feature.properties && Object.keys(feature.properties).length > 0) {
-            Object.entries(feature.properties).forEach(([key, value]) => {
-              if (value !== null && value !== undefined && value !== '') {
-                popupContent += `<p><strong>${key}:</strong> ${value}</p>`;
-              }
-            });
-          } else {
-            popupContent += '<p><em>No properties available</em></p>';
-          }
-          
-          popupContent += '</div>';
-          layer.bindPopup(popupContent);
-        }
-      });
-      
-      console.log("Adding shapefile layer to map...");
-      caveMapLayer.addTo(map);
-      
-      // Ensure layer is visible
-      if (caveMapLayer.bringToFront) {
-        caveMapLayer.bringToFront();
-      }
-      
-      // Fit bounds if possible
-      if (caveMapLayer.getBounds && caveMapLayer.getBounds().isValid()) {
-        console.log("Fitting map to shapefile bounds");
-        map.fitBounds(caveMapLayer.getBounds(), { padding: [20, 20] });
-      }
-      
-      console.log("Shapefile layer added successfully");
-      
-    } catch (error) {
-      console.error("Shapefile loading error:", error);
-      throw new Error(`Shapefile loading failed: ${error.message}`);
-    }
-  }
-
-
   // Add this function to debug cave map issues
   function debugCaveMaps() {
     console.log("=== Cave Maps Debug ===");
@@ -9589,7 +8682,6 @@ function normalizeCoordinates(cave) {
 </script>
 <script>
 // Populate dropdown
-let currentNarrativeCaveId = null;
 let cavesWithNarratives = new Set(); // Store cave IDs that have narratives
 let showOnlyNarrativeCaves = false;
 
@@ -9627,40 +8719,6 @@ async function loadCavesWithNarratives() {
   } catch (error) {
     console.error('Error loading caves with narratives:', error);
   }
-}
-
-// Load from server
-function fetchNarrative(caveId) {
-  fetch(`/get-narrative?id=${encodeURIComponent(caveId)}`)
-    .then(res => {
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      return res.json();
-    })
-    .then(data => {
-      console.log("Received narrative data:", data);
-      if (data.delta && quill) {
-        quill.setContents(data.delta);
-        console.log("Loaded narrative delta content");
-      } else if (data.html && quill) {
-        quill.clipboard.dangerouslyPasteHTML(data.html);
-        console.log("Loaded narrative HTML content");
-      } else {
-        // No saved narrative, start with empty editor
-        if (quill) {
-          quill.setContents([]);
-        }
-        console.log("No narrative found, started with empty editor");
-      }
-    })
-    .catch(err => {
-      console.log("No narrative found for cave:", caveId, err.message);
-      // No saved narrative, start with empty editor
-      if (quill) {
-        quill.setContents([]);
-      }
-    });
 }
 
 async function loadNarrativeEditor() {
@@ -10441,45 +9499,6 @@ async function saveNarrativeToServer() {
   }
 }
 
-// Initialize Quill editor with proper configuration
-function initializeQuillEditor() {
-  // Check if Quill is available
-  if (typeof Quill === 'undefined') {
-    console.error("Quill.js library not loaded");
-    alert("Editor library not loaded. Please refresh the page.");
-    return;
-  }
-
-  // Don't initialize if already initialized
-  if (quill) {
-    console.log("Quill already initialized");
-    return;
-  }
-
-  try {
-    const toolbarOptions = [
-      ['bold', 'italic', 'underline', 'strike'],
-      [{ 'header': [1, 2, 3, false] }],
-      [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-      ['link', 'image'],
-      ['clean']
-    ];
-
-    quill = new Quill('#quill-editor', {
-      modules: {
-        toolbar: toolbarOptions
-      },
-      theme: 'snow',
-      placeholder: 'Enter cave narrative, trip reports, notes, etc...'
-    });
-    
-    console.log("Quill editor initialized successfully");
-  } catch (error) {
-    console.error("Error initializing Quill editor:", error);
-    alert("Failed to initialize text editor. Please refresh the page.");
-  }
-}
-
 // Enhanced DOM ready handler with proper event listeners
 document.addEventListener('DOMContentLoaded', () => {
   console.log("Initializing narrative section...");
@@ -10573,132 +9592,6 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 
 <script>
-
-function insertImageWithControls(url) {
-  const range = quill.getSelection();
-  if (!range) return;
-
-  const id = `img-${Date.now()}`;
-
-  const wrapper = document.createElement('div');
-  wrapper.style.position = 'relative';
-  wrapper.style.display = 'inline-block';
-  wrapper.style.margin = '10px 0';
-
-  const img = document.createElement('img');
-  img.src = url;
-  img.style.maxWidth = '100%';
-  img.style.cursor = 'move';
-  img.draggable = true;
-  img.style.resize = 'both';
-  img.style.overflow = 'auto';
-
-  const downloadBtn = document.createElement('a');
-  downloadBtn.href = url;
-  downloadBtn.download = url.split('/').pop();
-  downloadBtn.textContent = 'Download';
-  downloadBtn.style.display = 'block';
-  downloadBtn.style.marginTop = '5px';
-  downloadBtn.style.textAlign = 'center';
-  downloadBtn.style.color = '#0066cc';
-  downloadBtn.style.fontWeight = 'bold';
-
-  wrapper.appendChild(img);
-  wrapper.appendChild(downloadBtn);
-
-  quill.insertEmbed(range.index, 'image', url);
-  setTimeout(() => {
-    const editor = document.querySelector('#quill-editor .ql-editor');
-    const insertedImg = editor.querySelector(`img[src="${url}"]`);
-    if (insertedImg && insertedImg.parentNode) {
-      insertedImg.parentNode.replaceChild(wrapper, insertedImg);
-    }
-  }, 100);
-}
-
-// Enhanced DOM ready handler with proper event listeners
-document.addEventListener('DOMContentLoaded', () => {
-  console.log("Initializing narrative section...");
-  
-  // Wait for cave data to be available
-  const waitForCaveData = () => {
-    if (typeof caveDataStore !== 'undefined' && caveDataStore.length > 0) {
-      populateNarrativeDropdown();
-
-      // Safely add event listener for dropdown changes
-      const select = document.getElementById('narrative-cave-select');
-      if (select) {
-        // Remove any existing listeners to prevent duplicates
-        select.removeEventListener('change', loadNarrativeEditor);
-        select.addEventListener('change', loadNarrativeEditor);
-        console.log("Narrative dropdown event listener added");
-      } else {
-        console.warn("⚠️ narrative-cave-select not found after populateNarrativeDropdown");
-      }
-
-    } else {
-      // Retry after a short delay if cave data isn't ready yet
-      setTimeout(waitForCaveData, 500);
-    }
-  };
-  
-  waitForCaveData();
-
-  // Add search functionality
-  const searchInput = document.getElementById('narrative-search');
-  if (searchInput) {
-    searchInput.addEventListener('input', function () {
-      const searchTerm = this.value.trim();
-      populateNarrativeDropdown(searchTerm);
-
-      const select = document.getElementById('narrative-cave-select');
-      if (select) {
-        const options = select.querySelectorAll('option[value]:not([value=""])');
-
-        if (options.length === 1) {
-          select.selectedIndex = 0;
-          loadNarrativeEditor();
-        } else if (!searchTerm && currentNarrativeCaveId) {
-          select.value = currentNarrativeCaveId;
-          loadNarrativeEditor();
-        }
-      }
-    });
-    console.log("Narrative search event listener added");
-  }
-
-  // Add Enter key support for search
-  if (searchInput) {
-    searchInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const select = document.getElementById('narrative-cave-select');
-        if (select) {
-          const options = select.querySelectorAll('option[value]:not([value=""])');
-          if (options.length === 1) {
-            select.value = options[0].value;
-            loadNarrativeEditor();
-          }
-        }
-      }
-    });
-  }
-});
-
-// Allow dragging of inserted images
-document.addEventListener('click', () => {
-  const imgs = document.querySelectorAll('#quill-editor img');
-  imgs.forEach(img => {
-    img.draggable = true;
-    img.style.cursor = 'move';
-
-    img.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/plain', '');
-      e.dataTransfer.setDragImage(img, 0, 0);
-      e.dataTransfer.setData('text/html', img.outerHTML);
-    });
-  });
-});
 
 // Load and display recent narrative activity
 async function loadNarrativeLog() {
@@ -11326,18 +10219,6 @@ async function getUserIP() {
     console.warn('Could not get user IP:', error);
     return 'unknown';
   }
-}
-
-// Update logout function to use session tokens
-function handleLogout() {
-  localStorage.removeItem('username');
-  localStorage.removeItem('role');
-  sessionStorage.clear();
-  document.getElementById('login-section').style.display = 'block';
-  document.getElementById('dashboard').style.display = 'none';
-  document.getElementById('username').value = '';
-  document.getElementById('password').value = '';
-  showLogin();
 }
 
 </script>
