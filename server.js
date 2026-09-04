@@ -9,7 +9,11 @@ const rateLimit = require("express-rate-limit");
 const sanitizeHtml = require("sanitize-html");
 const app = express();
 const PORT = process.env.PORT || 3000;
-const submissionsFile = path.join(__dirname, "pending-submissions.json");
+// Overridable so the test suite can point this at a throwaway file instead
+// of the real, tracked pending-submissions.json.
+const submissionsFile = process.env.SUBMISSIONS_FILE
+  ? path.resolve(process.env.SUBMISSIONS_FILE)
+  : path.join(__dirname, "pending-submissions.json");
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -17,11 +21,54 @@ const bcrypt = require("bcryptjs");
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
 // by a browser, logged in or not - only through authenticated API routes below.
-const DATA_DIR = path.join(__dirname, "data");
+// Overridable so the test suite can point it at a throwaway directory instead
+// of ever touching real data.
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
+
+// Timestamped backups of the two data files, taken right before every write.
+// These are the only copies of the cave database and the user list - a bad
+// write, a bug in a future change, or an admin approving the wrong thing
+// currently has no way back. This gives one.
+const BACKUP_DIR = path.join(DATA_DIR, "backups");
+if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+const MAX_BACKUPS_PER_FILE = 30;
+
+function backupDataFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return; // nothing to back up yet
+
+    const ext = path.extname(filePath);
+    const baseName = path.basename(filePath, ext);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = path.join(BACKUP_DIR, `${baseName}.${timestamp}${ext}`);
+    fs.copyFileSync(filePath, backupPath);
+
+    // Rotate: keep only the most recent MAX_BACKUPS_PER_FILE copies of this
+    // particular file. ISO timestamps sort lexicographically in the same
+    // order as chronologically, so a plain string sort is enough.
+    const prefix = `${baseName}.`;
+    const existing = fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith(prefix) && f.endsWith(ext))
+      .sort();
+    const excess = existing.length - MAX_BACKUPS_PER_FILE;
+    if (excess > 0) {
+      existing.slice(0, excess).forEach((f) => {
+        fs.unlinkSync(path.join(BACKUP_DIR, f));
+      });
+    }
+  } catch (err) {
+    // A failed backup should never block the actual save.
+    console.error(`Failed to back up ${filePath}:`, err);
+  }
+}
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -149,6 +196,12 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many attempts. Please try again in a few minutes." },
+  // The test suite makes far more than 10 login/registration calls across
+  // its run, all from the same source as far as this IP-based limiter is
+  // concerned - skip it under NODE_ENV=test so tests exercise the actual
+  // per-account lockout logic in /api/login instead of tripping over this
+  // unrelated global limiter. Never skipped outside of tests.
+  skip: () => process.env.NODE_ENV === "test",
 });
 
 // --- Auth middleware -------------------------------------------------------
@@ -297,6 +350,7 @@ function loadUsers() {
 
 function saveUsers(users) {
   try {
+    backupDataFile(USERS_FILE);
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
   } catch (err) {
     console.error("Error saving users:", err);
@@ -388,6 +442,7 @@ function reloadCaveDatabase() {
 reloadCaveDatabase();
 
 function writeCaveDatabase(caves, res, successPayload) {
+  backupDataFile(CAVE_DB_FILE);
   fs.writeFile(CAVE_DB_FILE, JSON.stringify(caves, null, 2), "utf8", (err) => {
     if (err) {
       console.error("Failed to write cave database:", err);
@@ -946,7 +1001,10 @@ app.delete(
 });
 
 // Cave Maps API Endpoints
-const caveMapsDir = path.join(__dirname, "cave-maps");
+// Overridable so the test suite can point this at a throwaway directory.
+const caveMapsDir = process.env.CAVE_MAPS_DIR
+  ? path.resolve(process.env.CAVE_MAPS_DIR)
+  : path.join(__dirname, "cave-maps");
 
 // Ensure cave-maps overlay directories exist
 const geotiffDir = path.join(caveMapsDir, "geotiff");
@@ -1351,8 +1409,12 @@ app.delete(
 // the legitimate front-end origin.)
 app.use("/cave-maps", authenticateToken, express.static(caveMapsDir));
 
-const NARRATIVE_DIR = path.join(__dirname, "narratives");
-if (!fs.existsSync(NARRATIVE_DIR)) fs.mkdirSync(NARRATIVE_DIR);
+// Overridable so the test suite can point this at a throwaway directory
+// instead of the real narratives/ folder.
+const NARRATIVE_DIR = process.env.NARRATIVE_DIR
+  ? path.resolve(process.env.NARRATIVE_DIR)
+  : path.join(__dirname, "narratives");
+if (!fs.existsSync(NARRATIVE_DIR)) fs.mkdirSync(NARRATIVE_DIR, { recursive: true });
 
 // Save narrative
 // Rich-text editor content allowed when saving a narrative. Deliberately
@@ -1694,7 +1756,7 @@ function cleanupImageUrls(htmlContent) {
 // Get all narratives across all caves for activity log
 app.get("/get-all-narratives-log", authenticateToken, (req, res) => {
   try {
-    const narrativesDir = path.join(__dirname, "narratives");
+    const narrativesDir = NARRATIVE_DIR;
 
     if (!fs.existsSync(narrativesDir)) {
       return res.json([]);
@@ -1787,7 +1849,10 @@ app.get("/get-all-narratives-log", authenticateToken, (req, res) => {
   }
 });
 
-const CAVE_PICTURES_DIR = path.join(__dirname, "httpdocs", "cave-pictures");
+// Overridable so the test suite can point this at a throwaway directory.
+const CAVE_PICTURES_DIR = process.env.CAVE_PICTURES_DIR
+  ? path.resolve(process.env.CAVE_PICTURES_DIR)
+  : path.join(__dirname, "httpdocs", "cave-pictures");
 if (!fs.existsSync(CAVE_PICTURES_DIR)) {
   fs.mkdirSync(CAVE_PICTURES_DIR, { recursive: true });
 }
@@ -1836,7 +1901,7 @@ app.post("/upload-narrative-image", authenticateToken, (req, res) => {
   });
 });
 
-const narrativesDir = path.join(__dirname, "narratives");
+const narrativesDir = NARRATIVE_DIR;
 
 if (!fs.existsSync(narrativesDir)) {
   fs.mkdirSync(narrativesDir);
@@ -1879,7 +1944,7 @@ app.get("/get-narrative", authenticateToken, (req, res) => {
 // Get list of caves that have narratives
 app.get("/get-caves-with-narratives", authenticateToken, (req, res) => {
   try {
-    const narrativesDir = path.join(__dirname, "narratives");
+    const narrativesDir = NARRATIVE_DIR;
 
     if (!fs.existsSync(narrativesDir)) {
       return res.json([]);
@@ -2850,11 +2915,16 @@ function generateNextCaveId(countyCode, existingCaves) {
   return `F${countyCode}${paddedNumber}`;
 }
 
-// Start server
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Webmaster portal running at http://localhost:${PORT}`);
-  console.log("Cave maps directories:");
-  console.log("  - GeoTIFF files: ./cave-maps/geotiff/");
-  console.log("  - Shapefiles: ./cave-maps/shapefiles/");
-  console.log("  - SQLite Hillshades: ./cave-maps/sqlite-hillshades/");
-});
+// Start server. Guarded so the test suite can `require("../server")` to get
+// the Express app (for supertest) without also binding a real port.
+if (require.main === module) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Webmaster portal running at http://localhost:${PORT}`);
+    console.log("Cave maps directories:");
+    console.log("  - GeoTIFF files: ./cave-maps/geotiff/");
+    console.log("  - Shapefiles: ./cave-maps/shapefiles/");
+    console.log("  - SQLite Hillshades: ./cave-maps/sqlite-hillshades/");
+  });
+}
+
+module.exports = app;
