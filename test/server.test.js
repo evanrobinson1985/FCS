@@ -1254,3 +1254,140 @@ describe("narrative content", () => {
     assert.equal(res.status, 400);
   });
 });
+
+// Deliberately last in the file: maintenance mode is a single global
+// toggle (not partitionable the way a dedicated test state/user is for
+// other describe blocks), so a test here that left it "on" would break
+// every other describe block's member/unauthenticated-role assertions.
+// The after() hook unconditionally restores the default (off) config,
+// whatever happened in the tests above it.
+describe("website management: site status, banner, and maintenance mode", () => {
+  after(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ maintenanceMode: false, maintenanceMessage: "", bannerEnabled: false, bannerMessage: "", bannerColor: "yellow" });
+  });
+
+  test("GET /api/site-status is public and defaults to everything off", async () => {
+    const res = await request(app).get("/api/site-status");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.maintenanceMode, false);
+    assert.equal(res.body.bannerEnabled, false);
+  });
+
+  test("POST /api/site-config requires webmaster", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ bannerEnabled: true });
+    assert.equal(res.status, 403);
+  });
+
+  test("banner message: a plain URL becomes a real link, a script tag does not survive", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerColor: "red",
+        bannerMessage: 'Scheduled downtime Friday. Details: https://example.com/notice <script>alert(1)</script>',
+      });
+    assert.equal(res.status, 200);
+    assert.match(res.body.bannerHtml, /<a href="https:\/\/example\.com\/notice" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/notice<\/a>/);
+    assert.ok(!res.body.bannerHtml.includes("<script"), "a typed <script> tag must never survive into bannerHtml");
+    assert.ok(!res.body.bannerHtml.includes("alert(1)"), "script tag contents must not survive either");
+
+    const statusRes = await request(app).get("/api/site-status");
+    assert.equal(statusRes.body.bannerEnabled, true);
+    assert.equal(statusRes.body.bannerColor, "red");
+    assert.equal(statusRes.body.bannerHtml, res.body.bannerHtml);
+  });
+
+  test("rejects an invalid bannerColor", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ bannerColor: "purple" });
+    assert.equal(res.status, 400);
+  });
+
+  describe("maintenance mode enforcement", () => {
+    before(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ maintenanceMode: true, maintenanceMessage: "Back soon." });
+      assert.equal(res.status, 200);
+    });
+
+    after(async () => {
+      // Belt-and-suspenders on top of the outer after() - later tests in
+      // this same describe block need it off again, immediately.
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ maintenanceMode: false });
+    });
+
+    test("blocks a member's API calls with 503 while maintenance mode is on", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 503);
+      assert.equal(res.body.maintenance, true);
+      assert.equal(res.body.error, "Back soon.");
+    });
+
+    test("blocks an unauthenticated API call too", async () => {
+      const res = await request(app).get("/api/cave-database");
+      assert.equal(res.status, 503);
+    });
+
+    test("does NOT block a webmaster's API calls", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("does NOT block an admin's API calls", async () => {
+      await seedUser({ username: "maintenanceadmin", password: "MaintenanceAdminPass123!", role: "admin" });
+      const token = await login("maintenanceadmin", "MaintenanceAdminPass123!");
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("login and site-status stay reachable during maintenance mode", async () => {
+      const loginRes = await request(app).post("/api/login").send({ username: "member1", password: MEMBER_PASSWORD });
+      assert.equal(loginRes.status, 200);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.status, 200);
+      assert.equal(statusRes.body.maintenanceMode, true);
+    });
+
+    test("GET / serves the maintenance page instead of the app", async () => {
+      const res = await request(app).get("/");
+      assert.equal(res.status, 200);
+      assert.match(res.text, /Under Construction/);
+    });
+
+    test("GET /portal always serves the real app, maintenance mode or not", async () => {
+      const res = await request(app).get("/portal");
+      assert.equal(res.status, 200);
+      assert.match(res.text, /Florida Cave Survey/);
+      assert.ok(!/Under Construction/.test(res.text));
+    });
+  });
+
+  test("GET / serves the real app when maintenance mode is off", async () => {
+    const res = await request(app).get("/");
+    assert.equal(res.status, 200);
+    assert.ok(!/Under Construction/.test(res.text));
+  });
+});

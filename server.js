@@ -33,6 +33,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
+const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 
 // State/county reference data (see scripts/generate-states-config.js). This
 // is public geographic reference data, not survey data, so unlike the files
@@ -305,6 +306,154 @@ app.use(
     credentials: true,
   })
 );
+
+// ---- Website management: maintenance mode + site-wide banner --------------
+//
+// Runtime, webmaster-editable settings (Website Management tab). Stored the
+// same way as users.json/cave-database.json - loaded once at boot, written
+// (with a backup first) whenever a webmaster changes something via
+// POST /api/site-config.
+const DEFAULT_SITE_CONFIG = {
+  maintenanceMode: false,
+  maintenanceMessage: "",
+  bannerEnabled: false,
+  bannerMessage: "",
+  bannerColor: "yellow",
+};
+
+function loadSiteConfig() {
+  try {
+    if (fs.existsSync(SITE_CONFIG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SITE_CONFIG_FILE, "utf-8"));
+      return { ...DEFAULT_SITE_CONFIG, ...data };
+    }
+  } catch (err) {
+    console.error("Error loading site config, using defaults:", err);
+  }
+  return { ...DEFAULT_SITE_CONFIG };
+}
+
+function saveSiteConfig(config) {
+  backupDataFile(SITE_CONFIG_FILE);
+  fs.writeFileSync(SITE_CONFIG_FILE, JSON.stringify(config, null, 2));
+}
+
+let siteConfig = loadSiteConfig();
+
+// Turns a webmaster-typed plain-text banner message into safe HTML: any
+// bare http(s) URL becomes a real, clickable link (so the webmaster never
+// has to write HTML themselves), then the whole result is run through
+// sanitize-html with a tight allowlist as the actual enforcement - the
+// linkify step is just convenience, sanitize-html is what guarantees a
+// typed "<script>...", an event-handler attribute, or any other markup
+// never reaches a visitor's browser as anything but escaped, inert text.
+// Same defense-in-depth pattern as NARRATIVE_SANITIZE_OPTIONS below, just
+// with a far smaller allowlist appropriate for a one-line banner.
+const BANNER_SANITIZE_OPTIONS = {
+  allowedTags: ["a"],
+  allowedAttributes: { a: ["href", "target", "rel"] },
+  allowedSchemes: ["http", "https"],
+};
+
+function bannerMessageToHtml(text) {
+  if (!text) return "";
+  const linkified = text.replace(
+    /(https?:\/\/[^\s<>"']+)/g,
+    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
+  );
+  return sanitizeHtml(linkified, BANNER_SANITIZE_OPTIONS);
+}
+
+// Public - the banner and the "are we in maintenance mode" check both need
+// to work for a visitor who isn't logged in yet (or ever will be).
+app.get("/api/site-status", (req, res) => {
+  res.json({
+    maintenanceMode: siteConfig.maintenanceMode,
+    maintenanceMessage: siteConfig.maintenanceMessage,
+    bannerEnabled: siteConfig.bannerEnabled,
+    bannerMessage: siteConfig.bannerMessage,
+    bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage),
+    bannerColor: siteConfig.bannerColor,
+  });
+});
+
+app.post(
+  "/api/site-config",
+  authenticateToken,
+  requireRole("webmaster"),
+  express.json(),
+  (req, res) => {
+    const { maintenanceMode, maintenanceMessage, bannerEnabled, bannerMessage, bannerColor } = req.body;
+
+    if (bannerColor !== undefined && !["red", "yellow"].includes(bannerColor)) {
+      return res.status(400).json({ error: "bannerColor must be 'red' or 'yellow'." });
+    }
+
+    const updated = { ...siteConfig };
+    if (typeof maintenanceMode === "boolean") updated.maintenanceMode = maintenanceMode;
+    if (typeof maintenanceMessage === "string") updated.maintenanceMessage = maintenanceMessage.slice(0, 2000);
+    if (typeof bannerEnabled === "boolean") updated.bannerEnabled = bannerEnabled;
+    if (typeof bannerMessage === "string") updated.bannerMessage = bannerMessage.slice(0, 500);
+    if (typeof bannerColor === "string") updated.bannerColor = bannerColor;
+
+    siteConfig = updated;
+    saveSiteConfig(siteConfig);
+
+    console.log(
+      `Site config updated by ${req.user.username}: maintenanceMode=${siteConfig.maintenanceMode}, bannerEnabled=${siteConfig.bannerEnabled}`
+    );
+    res.json({ ...siteConfig, bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage) });
+  }
+);
+
+// While maintenanceMode is on, every /api/* route 503s for anyone who isn't
+// logged in as admin/webmaster - except the handful of routes needed to
+// actually get a webmaster logged in (or tell a visitor the site's down) in
+// the first place. Non-API requests (the page itself, styles.css, images)
+// are untouched here - see the "/" and "/portal" routes further down for
+// how the page shell is swapped between the real app and the static
+// maintenance page.
+const MAINTENANCE_MODE_ALLOWLIST = new Set([
+  "/api/login",
+  "/api/verify-2fa",
+  "/api/resend-2fa",
+  "/api/forgot-password",
+  "/api/reset-password",
+  "/api/site-status",
+]);
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api/") || !siteConfig.maintenanceMode || MAINTENANCE_MODE_ALLOWLIST.has(req.path)) {
+    return next();
+  }
+
+  const authHeader = req.headers["authorization"];
+  const token =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : typeof req.query.token === "string"
+      ? req.query.token
+      : null;
+
+  let role = null;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (!decoded.pending2FA) role = decoded.role;
+    } catch (e) {
+      // invalid/expired token - treated the same as no token
+    }
+  }
+
+  if (role === "admin" || role === "webmaster") {
+    return next();
+  }
+
+  res.status(503).json({
+    error: siteConfig.maintenanceMessage || "The site is currently down for maintenance. Please check back soon.",
+    maintenance: true,
+  });
+});
 
 // Rate limiting on authentication-adjacent endpoints to blunt brute-force
 // credential guessing and account-enumeration attempts.
@@ -729,8 +878,24 @@ const MIN_PASSWORD_LENGTH = 10;
 // sites that use it) can be removed.
 const DEFAULT_STATE_CODE = "FL";
 
-// Serve the main page
+// Serve the main page - the static "under construction" page while
+// maintenance mode is on, the real app otherwise. This app has no
+// cookie-based session, so the server can't tell a plain "GET /" from the
+// webmaster's own browser apart from anyone else's - see "/portal" below
+// for how a webmaster actually gets back in to turn maintenance mode off.
 app.get("/", (req, res) => {
+  if (siteConfig.maintenanceMode) {
+    return res.sendFile(path.join(__dirname, "httpdocs", "maintenance.html"));
+  }
+  res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
+});
+
+// Always serves the real app, maintenance mode or not - the "staff door"
+// a webmaster (or admin) navigates to directly in order to log in and flip
+// maintenance mode back off while "/" is showing the maintenance page to
+// everyone else. Not secret (login is still fully password/rate-limit
+// protected either way), just not the address regular visitors are given.
+app.get("/portal", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
 });
 

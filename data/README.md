@@ -59,7 +59,8 @@ cp data/users.example.json data/users.json
 | `cave-database.json` | No | The live cave database. |
 | `users.json` | No | The live user/account list. |
 | `pending-submissions.json` | No | Member-submitted proposals awaiting webmaster review. Auto-created as `[]` on first server start - no dummy data needed. |
-| `backups/` | No | Automatic timestamped snapshots taken before every write to the two files above (see `backupDataFile` in `server.js`). |
+| `site-config.json` | No | Website Management tab settings (maintenance mode, notification banner). Auto-created with everything off on first server start. |
+| `backups/` | No | Automatic timestamped snapshots taken before every write to the files above (see `backupDataFile` in `server.js`). |
 | `cave-database.example.json` | **Yes** | Dummy seed data - see above. Every record now carries an explicit `state: "FL"` field (added when multi-state support was introduced - see below), matching what the app itself writes for every new record going forward. |
 | `users.example.json` | **Yes** | Dummy seed data - see above. |
 

@@ -98,6 +98,10 @@
 
 </head>
 <body>
+<!-- Site-wide notice banner (Website Management tab, "Notification Banner").
+     Hidden by default; shown/filled in by loadSiteStatus() on every page
+     load, logged in or not, so a logged-out visitor sees it too. -->
+<div id="site-banner" style="display: none; padding: 8px 16px; text-align: center; font-size: 0.9em;"></div>
 <div class="container">
 <div class="container">
 <div class="header">
@@ -259,7 +263,8 @@
 <div class="tab" data-tab="cave-maps-section">Cave Maps</div>
 <div class="tab" data-tab="narrative-tab">Narrative</div>
 <div class="tab" id="account-management-tab" data-tab="account-management" style="display: none;">Account Management</div>
-</div>    
+<div class="tab" id="website-management-tab" data-tab="website-management" style="display: none;">Website Management</div>
+</div>
 
 <!-- Quill Core CSS -->
 <link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
@@ -332,6 +337,59 @@
       <h4>Security Logs</h4>
       <div id="security-logs" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;">
         <!-- Security logs will be populated here -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Website Management Tab Content -->
+<div class="tab-content" id="website-management">
+  <h3>Website Management</h3>
+  <p>Site-wide controls: take the site down for maintenance, or post a notice banner for everyone to see.</p>
+
+  <div class="account-management-controls">
+    <div class="control-section">
+      <h4>Maintenance Mode</h4>
+      <p style="margin-bottom: 10px;">
+        While maintenance mode is on, visitors see an "under construction" page and every other account is
+        locked out. You (and any admin) can still use the site as usual by going to
+        <strong><span id="portal-url-display">/portal</span></strong> directly instead of the normal site
+        address - bookmark it now, since the normal login form won't be reachable while this is on.
+        <button type="button" class="btn-success" onclick="copyPortalUrl()" style="margin-left: 8px; padding: 2px 8px; font-size: 0.85em;">Copy link</button>
+      </p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="maintenance-mode-toggle" style="width: 18px; height: 18px;">
+        <strong>Site is currently down for maintenance</strong>
+      </label>
+      <label for="maintenance-message-input" style="display: block; margin-bottom: 5px;">Message shown on the maintenance page (optional - a default message is used if left blank):</label>
+      <textarea id="maintenance-message-input" rows="3" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. We're performing scheduled maintenance and expect to be back online by 10 PM EST."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveMaintenanceSettings()">Save Maintenance Settings</button>
+        <span id="maintenance-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Notification Banner</h4>
+      <p style="margin-bottom: 10px;">Shows a thin bar at the very top of every page, for everyone, logged in or not. Any web address you type (starting with http:// or https://) automatically becomes a clickable link - no HTML needed.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="banner-enabled-toggle" style="width: 18px; height: 18px;">
+        <strong>Show notification banner</strong>
+      </label>
+      <label style="display: block; margin-bottom: 5px;">Banner color:</label>
+      <div style="margin-bottom: 10px;">
+        <label style="margin-right: 15px;"><input type="radio" name="banner-color" value="yellow" checked> Yellow (general notice)</label>
+        <label><input type="radio" name="banner-color" value="red"> Red (urgent)</label>
+      </div>
+      <label for="banner-message-input" style="display: block; margin-bottom: 5px;">Banner message:</label>
+      <textarea id="banner-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Scheduled maintenance this Friday 10 PM - 12 AM EST. Details: https://example.com/notice" maxlength="500"></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveBannerSettings()">Save Banner Settings</button>
+        <span id="banner-save-status" style="margin-left: 10px;"></span>
+      </div>
+      <div style="margin-top: 15px;">
+        <strong>Preview:</strong>
+        <div id="banner-preview" style="margin-top: 5px;"></div>
       </div>
     </div>
   </div>
@@ -4435,6 +4493,192 @@ function loadFcsDatabaseTable() {
       section.style.display = (currentRole === 'admin' || currentRole === 'webmaster') ? 'block' : 'none';
     }
 
+    // ---- Website Management: maintenance mode + notification banner ----
+    //
+    // GET /api/site-status is public (no login needed) - it backs both the
+    // top-of-page banner (shown to every visitor, logged in or not) and the
+    // Website Management tab's own display of the current settings.
+
+    const BANNER_COLOR_STYLES = {
+      red: 'background:#f8d7da; color:#721c24; border-bottom:2px solid #f5c6cb;',
+      yellow: 'background:#fff3cd; color:#856404; border-bottom:2px solid #ffeeba;',
+    };
+
+    // Renders the site-wide banner bar at the very top of the page. Uses
+    // bannerHtml, not the raw bannerMessage - that field already comes back
+    // sanitized from the server (see bannerMessageToHtml() in server.js),
+    // with plain URLs turned into real <a> links and everything else
+    // stripped, so it's safe to drop in via innerHTML here.
+    function renderSiteBanner(status) {
+      const bannerEl = document.getElementById('site-banner');
+      if (!bannerEl) return;
+      if (status && status.bannerEnabled && status.bannerHtml) {
+        bannerEl.style.cssText = 'padding: 8px 16px; text-align: center; font-size: 0.9em; display: block; ' +
+          (BANNER_COLOR_STYLES[status.bannerColor] || BANNER_COLOR_STYLES.yellow);
+        bannerEl.innerHTML = status.bannerHtml;
+      } else {
+        bannerEl.style.display = 'none';
+        bannerEl.innerHTML = '';
+      }
+    }
+
+    // Fetches the current site status. Always renders the top banner;
+    // callers that also need maintenance-mode info (completeLogin(),
+    // loadWebsiteManagementSettings()) read the resolved status object.
+    async function loadSiteStatus() {
+      try {
+        const response = await fetch('/api/site-status');
+        const status = await response.json();
+        renderSiteBanner(status);
+        return status;
+      } catch (error) {
+        console.error('Error loading site status:', error);
+        return null;
+      }
+    }
+
+    // Replaces the dashboard's tabs with a plain-text maintenance notice for
+    // a member who reached the app (via /portal) while maintenance mode is
+    // on. Admin/webmaster are never blocked here - the server-side gate in
+    // server.js only ever blocks non-admin/webmaster roles too, this is
+    // just the friendlier client-side equivalent so a blocked member sees
+    // one clear message instead of a dashboard where every tab's data
+    // fails to load with 503s.
+    function showMaintenanceBlockForMember(message) {
+      const tabContainer = document.querySelector('.tab-container');
+      if (tabContainer) tabContainer.style.display = 'none';
+
+      let blockEl = document.getElementById('maintenance-block-message');
+      if (!blockEl) {
+        blockEl = document.createElement('div');
+        blockEl.id = 'maintenance-block-message';
+        blockEl.style.cssText = 'max-width:700px; margin:40px auto; padding:30px; background:#fff3cd; border:1px solid #ffeeba; border-radius:8px; text-align:center;';
+        const dashboard = document.getElementById('dashboard');
+        if (dashboard) dashboard.appendChild(blockEl);
+      }
+      blockEl.innerHTML = '';
+      const h = document.createElement('h3');
+      h.textContent = 'Site Under Maintenance';
+      const p = document.createElement('p');
+      p.textContent = message || 'The site is temporarily unavailable while we perform maintenance. Please check back soon.';
+      blockEl.appendChild(h);
+      blockEl.appendChild(p);
+      blockEl.style.display = 'block';
+    }
+
+    // Show/hide the Website Management tab (webmaster only, same pattern as
+    // Account Management) and fill in the /portal link so a webmaster who
+    // is about to turn maintenance mode on can see exactly where to go
+    // afterward. Called from completeLogin().
+    function toggleWebsiteManagementTabVisibility() {
+      const tab = document.getElementById('website-management-tab');
+      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      if (tab) tab.style.display = (currentRole === 'webmaster') ? 'block' : 'none';
+
+      const portalUrlDisplay = document.getElementById('portal-url-display');
+      if (portalUrlDisplay) portalUrlDisplay.textContent = window.location.origin + '/portal';
+    }
+
+    function copyPortalUrl() {
+      const url = window.location.origin + '/portal';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => alert('Copied: ' + url)).catch(() => alert(url));
+      } else {
+        alert(url);
+      }
+    }
+
+    // Populates the Website Management tab's controls from the current
+    // server-side settings. Called when the tab is opened.
+    async function loadWebsiteManagementSettings() {
+      const status = await loadSiteStatus();
+      if (!status) return;
+
+      const maintenanceToggle = document.getElementById('maintenance-mode-toggle');
+      const maintenanceMessageInput = document.getElementById('maintenance-message-input');
+      if (maintenanceToggle) maintenanceToggle.checked = !!status.maintenanceMode;
+      if (maintenanceMessageInput) maintenanceMessageInput.value = status.maintenanceMessage || '';
+
+      const bannerToggle = document.getElementById('banner-enabled-toggle');
+      const bannerMessageInput = document.getElementById('banner-message-input');
+      if (bannerToggle) bannerToggle.checked = !!status.bannerEnabled;
+      if (bannerMessageInput) bannerMessageInput.value = status.bannerMessage || '';
+      document.querySelectorAll('input[name="banner-color"]').forEach(radio => {
+        radio.checked = (radio.value === (status.bannerColor || 'yellow'));
+      });
+
+      renderBannerPreview(status);
+    }
+
+    function renderBannerPreview(status) {
+      const previewEl = document.getElementById('banner-preview');
+      if (!previewEl) return;
+      if (status && status.bannerEnabled && status.bannerHtml) {
+        previewEl.style.cssText = 'padding: 8px 16px; border-radius: 4px; ' + (BANNER_COLOR_STYLES[status.bannerColor] || BANNER_COLOR_STYLES.yellow);
+        previewEl.innerHTML = status.bannerHtml;
+      } else {
+        previewEl.style.cssText = '';
+        previewEl.textContent = '(banner is currently off)';
+      }
+    }
+
+    async function saveMaintenanceSettings() {
+      const statusEl = document.getElementById('maintenance-save-status');
+      const maintenanceMode = document.getElementById('maintenance-mode-toggle').checked;
+      const maintenanceMessage = document.getElementById('maintenance-message-input').value;
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ maintenanceMode, maintenanceMessage }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+
+        if (statusEl) {
+          statusEl.textContent = maintenanceMode
+            ? 'Saved. The site is now down for maintenance for everyone except admin/webmaster.'
+            : 'Saved. The site is back up for everyone.';
+          statusEl.style.color = 'green';
+        }
+        loadSiteStatus();
+      } catch (error) {
+        console.error('Error saving maintenance settings:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    async function saveBannerSettings() {
+      const statusEl = document.getElementById('banner-save-status');
+      const bannerEnabled = document.getElementById('banner-enabled-toggle').checked;
+      const bannerMessage = document.getElementById('banner-message-input').value;
+      const bannerColorInput = document.querySelector('input[name="banner-color"]:checked');
+      const bannerColor = bannerColorInput ? bannerColorInput.value : 'yellow';
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bannerEnabled, bannerMessage, bannerColor }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+
+        if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'green'; }
+        renderSiteBanner(result);
+        renderBannerPreview(result);
+      } catch (error) {
+        console.error('Error saving banner settings:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    // Shows the notification banner immediately on page load, before
+    // anyone logs in (or for a visitor who never does) - the banner is a
+    // general-audience announcement, not something gated behind login.
+    document.addEventListener('DOMContentLoaded', () => { loadSiteStatus(); });
+
     // Triggers a browser download of the fill-in-the-blanks template for
     // the state selected in #import-state-select. This is a direct
     // navigation (not fetch()), so it needs withAuthToken() to carry the
@@ -6665,6 +6909,20 @@ window.addEventListener('error', function(e) {
     }
 
     toggleCaveImportSectionVisibility();
+    toggleWebsiteManagementTabVisibility();
+
+    // A member who reached the app (via /portal) while maintenance mode is
+    // on can technically log in, but every API call they'd make is 503'd
+    // server-side (see the maintenance-mode gate in server.js) - show them
+    // one clear message instead of a dashboard full of failed requests.
+    // Admin/webmaster are never blocked, matching the server-side gate.
+    if (result.role === 'member') {
+      loadSiteStatus().then(status => {
+        if (status && status.maintenanceMode) {
+          showMaintenanceBlockForMember(status.maintenanceMessage);
+        }
+      });
+    }
 
     updateTwoFactorStatusUI(!!result.twoFactorEnabled);
 
@@ -7078,6 +7336,15 @@ window.addEventListener('error', function(e) {
             return;
           }
           loadAccountManagement();
+        }
+
+        if (tabContentId === 'website-management') {
+          const currentRole = sessionStorage.getItem('role');
+          if (currentRole !== 'webmaster') {
+            alert('Access denied. Only webmasters can access website management.');
+            return;
+          }
+          loadWebsiteManagementSettings();
         }
       });
     });
