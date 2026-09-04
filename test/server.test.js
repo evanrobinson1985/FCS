@@ -203,6 +203,88 @@ describe("password hashing", () => {
   });
 });
 
+describe("password reset", () => {
+  // No SMTP is configured in the test env, so the server logs the reset
+  // link to the console instead of emailing it (see sendPasswordResetEmail
+  // in server.js) - capture that console.log call to get a real, valid
+  // token to drive the rest of the flow with.
+  async function requestResetToken(email) {
+    const originalLog = console.log;
+    let capturedUrl = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      const match = line.match(/\[DEV\] Password reset link for [^:]+: (\S+)/);
+      if (match) capturedUrl = match[1];
+      originalLog(...args);
+    };
+    try {
+      const res = await request(app).post("/api/forgot-password").send({ email });
+      assert.equal(res.status, 200);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(capturedUrl, "expected a [DEV] reset link to be logged");
+    return new URL(capturedUrl).searchParams.get("resetToken");
+  }
+
+  before(async () => {
+    await seedUser({ username: "resetuser", password: "OldPassword123!", role: "member" });
+  });
+
+  test("returns the same generic response whether or not the email exists (no account enumeration)", async () => {
+    const known = await request(app).post("/api/forgot-password").send({ email: "resetuser@example.com" });
+    const unknown = await request(app).post("/api/forgot-password").send({ email: "nobody@example.com" });
+    assert.equal(known.status, 200);
+    assert.equal(unknown.status, 200);
+    assert.deepEqual(known.body, unknown.body);
+  });
+
+  test("resets the password with a valid token, and the new password works on login", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    assert.ok(token);
+
+    const resetRes = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "BrandNewPassword123!" });
+    assert.equal(resetRes.status, 200);
+
+    const newToken = await login("resetuser", "BrandNewPassword123!");
+    assert.ok(newToken);
+
+    // The old password must no longer work.
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "resetuser", password: "OldPassword123!" });
+    assert.equal(oldLoginRes.status, 401);
+  });
+
+  test("rejects a reset token that has already been used once", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    const first = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "FirstUsePass123!" });
+    assert.equal(first.status, 200);
+
+    const second = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "SecondUsePass123!" });
+    assert.equal(second.status, 400);
+  });
+
+  test("rejects a garbage/forged reset token", async () => {
+    const res = await request(app)
+      .post("/api/reset-password")
+      .send({ token: "not-a-real-token", newPassword: "WhateverPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new password shorter than the minimum length", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    const res = await request(app).post("/api/reset-password").send({ token, newPassword: "short1" });
+    assert.equal(res.status, 400);
+  });
+});
+
 describe("cave database storage", () => {
   test("round-trips a cave name containing a double quote safely (regression for the old eval-based storage)", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);

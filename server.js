@@ -3,10 +3,12 @@ require("dotenv").config();
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const sanitizeHtml = require("sanitize-html");
+const nodemailer = require("nodemailer");
 const app = express();
 const PORT = process.env.PORT || 3000;
 // Overridable so the test suite can point this at a throwaway file instead
@@ -83,6 +85,64 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
 }
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// --- Outbound email (password reset) ---------------------------------------
+//
+// Configured entirely through env vars (see .env.example) because real
+// mail delivery needs a real SMTP account - something this environment has
+// no way to provision. Without SMTP_HOST/SMTP_USER/SMTP_PASS set, reset
+// links are logged to the console instead of emailed, so the feature is
+// still usable (by an operator watching the logs) in development.
+let mailTransporter = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  mailTransporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || "587", 10),
+    secure: process.env.SMTP_SECURE === "true",
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+  console.log("✅ SMTP configured - password reset emails will be sent for real");
+} else {
+  console.log(
+    "⚠️ SMTP not configured (set SMTP_HOST/SMTP_USER/SMTP_PASS in .env) - " +
+      "password reset links will be logged to the console instead of emailed."
+  );
+}
+
+async function sendPasswordResetEmail(user, resetUrl) {
+  const subject = "Florida Cave Survey - Password Reset";
+  const text =
+    `Hi ${user.fullName || user.username},\n\n` +
+    "A password reset was requested for your Florida Cave Survey account. " +
+    "If this was you, set a new password here (this link expires in 1 hour):\n\n" +
+    `${resetUrl}\n\n` +
+    "If you didn't request this, you can safely ignore this email - your password will not change.";
+
+  if (!mailTransporter) {
+    console.log(`[DEV] Password reset link for ${user.email}: ${resetUrl}`);
+    return;
+  }
+
+  await mailTransporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: user.email,
+    subject,
+    text,
+  });
+}
+
+// Reset tokens are stored as a SHA-256 hash (not the raw token, same
+// principle as never storing plaintext passwords) so a leaked users.json
+// doesn't hand out working reset links. Unlike passwords these need fast
+// equality lookup rather than slow verification, so bcrypt isn't the right
+// tool here - a random 32-byte token has enough entropy that a fast hash is
+// fine.
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
 
 // Trust the first proxy hop so req.ip / req.secure and the X-Forwarded-* headers
 // used below are accurate when this app runs behind a TLS-terminating reverse
@@ -2863,34 +2923,89 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
 });
 
 // Forgot password endpoint
-app.post("/api/forgot-password", authLimiter, express.json(), (req, res) => {
+app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) => {
+  // Always the same response, whether or not the email exists - this
+  // endpoint must not be usable to enumerate registered accounts.
+  const genericResponse = {
+    success: true,
+    message: "If the email exists, a reset link has been sent",
+  };
+
   try {
-    const { email, ipAddress } = req.body;
-    
+    const { email } = req.body;
+
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
     }
-    
+
     const users = loadUsers();
-    const user = users.find(u => u.email === email);
-    
+    const user = users.find((u) => u.email === email);
+
     if (!user) {
-      // Don't reveal if email exists for security
-      return res.json({ success: true, message: "If the email exists, a reset link has been sent" });
+      return res.json(genericResponse);
     }
-    
-    // In a real implementation, you would:
-    // 1. Generate a reset token
-    // 2. Save it to the user record with expiration
-    // 3. Send an email with the reset link
-    
-    // For now, just log it
-    console.log(`Password reset requested for ${email}`);
-    
-    res.json({ success: true, message: "If the email exists, a reset link has been sent" });
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    user.resetTokenHash = hashResetToken(rawToken);
+    user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+    saveUsers(users);
+
+    const origin = (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
+    const resetUrl = `${origin}/?resetToken=${rawToken}`;
+
+    try {
+      await sendPasswordResetEmail(user, resetUrl);
+    } catch (mailErr) {
+      // Don't let a mail-sending failure change the response (that would
+      // leak account existence) or block the request - the [DEV] console
+      // fallback inside sendPasswordResetEmail already covers the
+      // no-SMTP-configured case; this branch is a real send() failure with
+      // SMTP configured.
+      console.error("Failed to send password reset email:", mailErr);
+    }
+
+    res.json(genericResponse);
   } catch (error) {
-    console.error('Error handling forgot password:', error);
+    console.error("Error handling forgot password:", error);
     res.status(500).json({ error: "Failed to process password reset" });
+  }
+});
+
+// Complete a password reset started via /api/forgot-password.
+app.post("/api/reset-password", authLimiter, express.json(), async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({ error: "Token and new password are required" });
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
+      });
+    }
+
+    const users = loadUsers();
+    const tokenHash = hashResetToken(token);
+    const user = users.find((u) => u.resetTokenHash === tokenHash);
+
+    if (!user || !user.resetTokenExpires || new Date(user.resetTokenExpires) < new Date()) {
+      return res.status(400).json({
+        error: "This reset link is invalid or has expired. Please request a new one.",
+      });
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, 12);
+    delete user.resetTokenHash;
+    delete user.resetTokenExpires;
+    user.loginAttempts = 0;
+    user.lastFailedLogin = null;
+    saveUsers(users);
+
+    res.json({ success: true, message: "Password updated. You can now log in with your new password." });
+  } catch (error) {
+    console.error("Error resetting password:", error);
+    res.status(500).json({ error: "Failed to reset password" });
   }
 });
 

@@ -173,6 +173,24 @@
         <button type="button" onclick="showLogin()">Back to Login</button>
       </div>
     </div>
+
+    <!-- Set New Password Form (shown when a password reset link is opened) -->
+    <div id="set-new-password-form" class="auth-form" style="display: none;">
+      <h2>Set a New Password</h2>
+      <p>Choose a new password for your account.</p>
+      <div class="form-group">
+        <label for="reset-new-password">New Password:</label>
+        <input id="reset-new-password" placeholder="Choose a new password" type="password" required/>
+      </div>
+      <div class="form-group">
+        <label for="reset-confirm-password">Confirm New Password:</label>
+        <input id="reset-confirm-password" placeholder="Confirm your new password" type="password" required/>
+      </div>
+      <div class="form-group">
+        <button onclick="handleResetPassword()">Set New Password</button>
+        <button type="button" onclick="showLogin()">Back to Login</button>
+      </div>
+    </div>
   </div>
 </div>
 <!-- Dashboard -->
@@ -10192,18 +10210,99 @@ function showLogin() {
   document.getElementById('login-form').style.display = 'block';
   document.getElementById('create-account-form').style.display = 'none';
   document.getElementById('forgot-password-form').style.display = 'none';
+  document.getElementById('set-new-password-form').style.display = 'none';
 }
 
 function showCreateAccount() {
   document.getElementById('login-form').style.display = 'none';
   document.getElementById('create-account-form').style.display = 'block';
   document.getElementById('forgot-password-form').style.display = 'none';
+  document.getElementById('set-new-password-form').style.display = 'none';
 }
 
 function showForgotPassword() {
   document.getElementById('login-form').style.display = 'none';
   document.getElementById('create-account-form').style.display = 'none';
   document.getElementById('forgot-password-form').style.display = 'block';
+  document.getElementById('set-new-password-form').style.display = 'none';
+}
+
+function showResetPassword() {
+  document.getElementById('login-form').style.display = 'none';
+  document.getElementById('create-account-form').style.display = 'none';
+  document.getElementById('forgot-password-form').style.display = 'none';
+  document.getElementById('set-new-password-form').style.display = 'block';
+}
+
+// If this page was opened from a password reset email
+// (.../?resetToken=xxx), show the "Set New Password" form instead of the
+// login form, and hold onto the token for handleResetPassword() below.
+// The token is stripped out of the visible URL right away so it doesn't
+// linger in browser history/bookmarks.
+let pendingPasswordResetToken = null;
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('resetToken');
+  if (token) {
+    pendingPasswordResetToken = token;
+    params.delete('resetToken');
+    const cleanUrl = window.location.pathname + (params.toString() ? `?${params.toString()}` : '') + window.location.hash;
+    window.history.replaceState({}, document.title, cleanUrl);
+  }
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (pendingPasswordResetToken) {
+    showResetPassword();
+  }
+});
+
+// Handle setting a new password from a reset link
+async function handleResetPassword() {
+  if (!pendingPasswordResetToken) {
+    alert('This reset link is missing its token. Please use the link from your email again, or request a new one.');
+    showForgotPassword();
+    return;
+  }
+
+  const newPassword = document.getElementById('reset-new-password').value;
+  const confirmPassword = document.getElementById('reset-confirm-password').value;
+
+  if (!newPassword || !confirmPassword) {
+    alert('Please fill in both password fields.');
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    alert('Passwords do not match.');
+    return;
+  }
+  if (newPassword.length < 10) {
+    // Must match MIN_PASSWORD_LENGTH in server.js.
+    alert('Password must be at least 10 characters long.');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: pendingPasswordResetToken, newPassword })
+    });
+    const result = await response.json();
+
+    if (response.ok && result.success) {
+      alert('Password updated. You can now log in with your new password.');
+      pendingPasswordResetToken = null;
+      document.getElementById('reset-new-password').value = '';
+      document.getElementById('reset-confirm-password').value = '';
+      showLogin();
+    } else {
+      throw new Error(result.error || 'Password reset failed');
+    }
+  } catch (error) {
+    console.error('Password reset error:', error);
+    alert('Password reset failed: ' + error.message);
+  }
 }
 
 // Handle account creation
