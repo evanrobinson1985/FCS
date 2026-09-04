@@ -316,9 +316,24 @@ app.use(
 const DEFAULT_SITE_CONFIG = {
   maintenanceMode: false,
   maintenanceMessage: "",
+  // Optional automatic window (ISO datetime strings): maintenance turns
+  // itself on/off at these times without anyone needing to be online to
+  // flip the manual toggle - see isMaintenanceActive() below. Either both
+  // are set or neither is; a lone start or end is ignored.
+  scheduledMaintenanceStart: "",
+  scheduledMaintenanceEnd: "",
   bannerEnabled: false,
   bannerMessage: "",
   bannerColor: "yellow",
+  // Lets content stay browsable while blocking new member-submitted
+  // writes (proposals, narratives) - a lighter option than full
+  // maintenance mode. See requireNotReadOnly() below.
+  readOnlyMode: false,
+  readOnlyMessage: "",
+  // Per-account login lockout policy (see /api/login) - was previously
+  // hardcoded; exposed here so a webmaster can tune it without a deploy.
+  loginLockoutThreshold: 5,
+  loginLockoutMinutes: 15,
 };
 
 function loadSiteConfig() {
@@ -339,6 +354,37 @@ function saveSiteConfig(config) {
 }
 
 let siteConfig = loadSiteConfig();
+
+// The *effective* maintenance state: either the manual toggle is on, or
+// right now falls inside a configured scheduled window. Everything that
+// gates on maintenance mode (the /api/* gate, "/" vs "/portal") checks
+// this, not siteConfig.maintenanceMode directly, so a scheduled window
+// actually takes effect without anyone needing to flip the switch live.
+function isMaintenanceActive() {
+  if (siteConfig.maintenanceMode) return true;
+  if (!siteConfig.scheduledMaintenanceStart || !siteConfig.scheduledMaintenanceEnd) return false;
+  const start = new Date(siteConfig.scheduledMaintenanceStart).getTime();
+  const end = new Date(siteConfig.scheduledMaintenanceEnd).getTime();
+  if (isNaN(start) || isNaN(end)) return false;
+  const now = Date.now();
+  return now >= start && now <= end;
+}
+
+// Blocks a member from creating/editing member-authored content (a new or
+// edited cave proposal, a narrative, a narrative image) while read-only
+// mode is on - content stays fully browsable, just not writable. Must run
+// after authenticateToken. Admin/webmaster are never blocked, matching
+// every other site-wide gate in this file.
+function requireNotReadOnly(req, res, next) {
+  const role = req.user && req.user.role;
+  if (!siteConfig.readOnlyMode || role === "admin" || role === "webmaster") {
+    return next();
+  }
+  res.status(403).json({
+    error: siteConfig.readOnlyMessage || "The site is currently read-only. New submissions and edits are temporarily disabled.",
+    readOnly: true,
+  });
+}
 
 // Turns a webmaster-typed plain-text banner message into safe HTML: any
 // bare http(s) URL becomes a real, clickable link (so the webmaster never
@@ -365,16 +411,29 @@ function bannerMessageToHtml(text) {
 }
 
 // Public - the banner and the "are we in maintenance mode" check both need
-// to work for a visitor who isn't logged in yet (or ever will be).
+// to work for a visitor who isn't logged in yet (or ever will be). Login
+// lockout policy is deliberately NOT included here (see GET /api/site-config
+// below) - no reason to hand an attacker the exact threshold/window.
 app.get("/api/site-status", (req, res) => {
   res.json({
     maintenanceMode: siteConfig.maintenanceMode,
+    maintenanceActive: isMaintenanceActive(),
     maintenanceMessage: siteConfig.maintenanceMessage,
+    scheduledMaintenanceStart: siteConfig.scheduledMaintenanceStart,
+    scheduledMaintenanceEnd: siteConfig.scheduledMaintenanceEnd,
     bannerEnabled: siteConfig.bannerEnabled,
     bannerMessage: siteConfig.bannerMessage,
     bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage),
     bannerColor: siteConfig.bannerColor,
+    readOnlyMode: siteConfig.readOnlyMode,
+    readOnlyMessage: siteConfig.readOnlyMessage,
   });
+});
+
+// Webmaster-only full view of the config, including the login lockout
+// policy - used to populate the Website Management tab itself.
+app.get("/api/site-config", authenticateToken, requireRole("webmaster"), (req, res) => {
+  res.json({ ...siteConfig, maintenanceActive: isMaintenanceActive(), bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage) });
 });
 
 app.post(
@@ -383,28 +442,102 @@ app.post(
   requireRole("webmaster"),
   express.json(),
   (req, res) => {
-    const { maintenanceMode, maintenanceMessage, bannerEnabled, bannerMessage, bannerColor } = req.body;
+    const {
+      maintenanceMode,
+      maintenanceMessage,
+      scheduledMaintenanceStart,
+      scheduledMaintenanceEnd,
+      bannerEnabled,
+      bannerMessage,
+      bannerColor,
+      readOnlyMode,
+      readOnlyMessage,
+      loginLockoutThreshold,
+      loginLockoutMinutes,
+    } = req.body;
 
     if (bannerColor !== undefined && !["red", "yellow"].includes(bannerColor)) {
       return res.status(400).json({ error: "bannerColor must be 'red' or 'yellow'." });
     }
 
+    if (scheduledMaintenanceStart || scheduledMaintenanceEnd) {
+      if (!scheduledMaintenanceStart || !scheduledMaintenanceEnd) {
+        return res.status(400).json({ error: "Set both a scheduled start and end, or clear both." });
+      }
+      const start = new Date(scheduledMaintenanceStart).getTime();
+      const end = new Date(scheduledMaintenanceEnd).getTime();
+      if (isNaN(start) || isNaN(end)) {
+        return res.status(400).json({ error: "Scheduled start/end must be valid dates." });
+      }
+      if (start >= end) {
+        return res.status(400).json({ error: "Scheduled start must be before the scheduled end." });
+      }
+    }
+
+    if (
+      loginLockoutThreshold !== undefined &&
+      (!Number.isInteger(loginLockoutThreshold) || loginLockoutThreshold < 3 || loginLockoutThreshold > 20)
+    ) {
+      return res.status(400).json({ error: "loginLockoutThreshold must be a whole number between 3 and 20." });
+    }
+    if (
+      loginLockoutMinutes !== undefined &&
+      (!Number.isInteger(loginLockoutMinutes) || loginLockoutMinutes < 1 || loginLockoutMinutes > 1440)
+    ) {
+      return res.status(400).json({ error: "loginLockoutMinutes must be a whole number between 1 and 1440." });
+    }
+
     const updated = { ...siteConfig };
     if (typeof maintenanceMode === "boolean") updated.maintenanceMode = maintenanceMode;
     if (typeof maintenanceMessage === "string") updated.maintenanceMessage = maintenanceMessage.slice(0, 2000);
+    if (scheduledMaintenanceStart !== undefined) updated.scheduledMaintenanceStart = scheduledMaintenanceStart || "";
+    if (scheduledMaintenanceEnd !== undefined) updated.scheduledMaintenanceEnd = scheduledMaintenanceEnd || "";
     if (typeof bannerEnabled === "boolean") updated.bannerEnabled = bannerEnabled;
     if (typeof bannerMessage === "string") updated.bannerMessage = bannerMessage.slice(0, 500);
     if (typeof bannerColor === "string") updated.bannerColor = bannerColor;
+    if (typeof readOnlyMode === "boolean") updated.readOnlyMode = readOnlyMode;
+    if (typeof readOnlyMessage === "string") updated.readOnlyMessage = readOnlyMessage.slice(0, 2000);
+    if (loginLockoutThreshold !== undefined) updated.loginLockoutThreshold = loginLockoutThreshold;
+    if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
 
     siteConfig = updated;
     saveSiteConfig(siteConfig);
 
     console.log(
-      `Site config updated by ${req.user.username}: maintenanceMode=${siteConfig.maintenanceMode}, bannerEnabled=${siteConfig.bannerEnabled}`
+      `Site config updated by ${req.user.username}: maintenanceMode=${siteConfig.maintenanceMode}, bannerEnabled=${siteConfig.bannerEnabled}, readOnlyMode=${siteConfig.readOnlyMode}`
     );
-    res.json({ ...siteConfig, bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage) });
+    res.json({ ...siteConfig, maintenanceActive: isMaintenanceActive(), bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage) });
   }
 );
+
+// Bundles the current data files into one downloadable JSON snapshot, and
+// forces an immediate timestamped backup of each on top of the automatic
+// ones taken before every write - useful right before a risky manual
+// change, when "wait for the next write to trigger a backup" isn't good
+// enough. Webmaster only; a direct-download link (see withAuthToken() /
+// the ?token= fallback in authenticateToken), same as the narrative-image
+// and import-template downloads.
+app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), (req, res) => {
+  try {
+    [USERS_FILE, CAVE_DB_FILE, submissionsFile, SITE_CONFIG_FILE].forEach((f) => backupDataFile(f));
+
+    const snapshot = {
+      exportedAt: new Date().toISOString(),
+      users: loadUsers(),
+      caveDatabase: loadCaveDatabaseFromDisk(),
+      pendingSubmissions: fs.existsSync(submissionsFile) ? JSON.parse(fs.readFileSync(submissionsFile, "utf8")) : [],
+      siteConfig,
+    };
+
+    const filename = `fcs-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(JSON.stringify(snapshot, null, 2));
+  } catch (err) {
+    console.error("Error creating on-demand backup:", err);
+    res.status(500).json({ error: "Failed to create backup." });
+  }
+});
 
 // While maintenanceMode is on, every /api/* route 503s for anyone who isn't
 // logged in as admin/webmaster - except the handful of routes needed to
@@ -423,7 +556,7 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
 ]);
 
 app.use((req, res, next) => {
-  if (!req.path.startsWith("/api/") || !siteConfig.maintenanceMode || MAINTENANCE_MODE_ALLOWLIST.has(req.path)) {
+  if (!req.path.startsWith("/api/") || !isMaintenanceActive() || MAINTENANCE_MODE_ALLOWLIST.has(req.path)) {
     return next();
   }
 
@@ -558,16 +691,18 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
 
     // Lock the account out temporarily after repeated failed attempts, on top
     // of the IP-based rate limiter, so a leaked/guessed username alone isn't
-    // enough to brute-force a single account from many IPs.
-    const LOCKOUT_THRESHOLD = 5;
-    const LOCKOUT_MS = 15 * 60 * 1000;
+    // enough to brute-force a single account from many IPs. Threshold/window
+    // are webmaster-tunable (Website Management tab) rather than fixed, with
+    // the same defaults (5 attempts, 15 minutes) as before that existed.
+    const lockoutThreshold = siteConfig.loginLockoutThreshold;
+    const lockoutMs = siteConfig.loginLockoutMinutes * 60 * 1000;
     if (
-      user.loginAttempts >= LOCKOUT_THRESHOLD &&
+      user.loginAttempts >= lockoutThreshold &&
       user.lastFailedLogin &&
-      Date.now() - new Date(user.lastFailedLogin).getTime() < LOCKOUT_MS
+      Date.now() - new Date(user.lastFailedLogin).getTime() < lockoutMs
     ) {
       return res.status(429).json({
-        error: "Too many failed login attempts. Please try again in 15 minutes.",
+        error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
       });
     }
 
@@ -884,7 +1019,7 @@ const DEFAULT_STATE_CODE = "FL";
 // webmaster's own browser apart from anyone else's - see "/portal" below
 // for how a webmaster actually gets back in to turn maintenance mode off.
 app.get("/", (req, res) => {
-  if (siteConfig.maintenanceMode) {
+  if (isMaintenanceActive()) {
     return res.sendFile(path.join(__dirname, "httpdocs", "maintenance.html"));
   }
   res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
@@ -1723,7 +1858,7 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
 // or an edit to an existing one; identity and timestamp are always derived
 // from the authenticated session, never trusted from the request body, so a
 // member can't submit a proposal under someone else's name.
-app.post("/api/pending-submissions", authenticateToken, (req, res) => {
+app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req, res) => {
   const { type, caveId, caveName, state, county, proposedData } = req.body || {};
 
   if (!type || !["new_cave", "edit_cave"].includes(type)) {
@@ -2395,7 +2530,7 @@ function isSafeRecordId(id) {
   return typeof id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(id);
 }
 
-app.post("/save-narrative", authenticateToken, express.json(), (req, res) => {
+app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(), (req, res) => {
   const { id, name, images, isEditing, originalTimestamp } = req.body;
   // The author is always the authenticated user, never a client-supplied
   // value - otherwise anyone could save a narrative "as" another member.
@@ -2473,7 +2608,7 @@ app.post("/save-narrative", authenticateToken, express.json(), (req, res) => {
 });
 
 // Delete a specific narrative
-app.delete("/delete-narrative", authenticateToken, express.json(), (req, res) => {
+app.delete("/delete-narrative", authenticateToken, requireNotReadOnly, express.json(), (req, res) => {
   const { caveId, timestamp, logDeletion } = req.body;
   // Who is allowed to delete is decided from the verified token, never from
   // a client-supplied "user" field - otherwise anyone could delete anyone
@@ -2837,7 +2972,7 @@ const upload = multer({
   },
 });
 
-app.post("/upload-narrative-image", authenticateToken, (req, res) => {
+app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, (req, res) => {
   upload.single("image")(req, res, (err) => {
     if (err) {
       return res.status(400).json({ error: err.message || "Upload failed" });
@@ -2926,7 +3061,7 @@ app.get("/get-caves-with-narratives", authenticateToken, (req, res) => {
 });
 
 // Delete a specific image from a narrative
-app.delete("/delete-narrative-image", authenticateToken, express.json(), (req, res) => {
+app.delete("/delete-narrative-image", authenticateToken, requireNotReadOnly, express.json(), (req, res) => {
   const { caveId, narrativeTimestamp, narrativeUser, imageIndex, imageUrl } =
     req.body;
   // Identity comes from the verified token, not a client-supplied

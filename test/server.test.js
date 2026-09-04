@@ -1390,4 +1390,200 @@ describe("website management: site status, banner, and maintenance mode", () => 
     assert.equal(res.status, 200);
     assert.ok(!/Under Construction/.test(res.text));
   });
+
+  describe("scheduled maintenance window", () => {
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: "", scheduledMaintenanceEnd: "" });
+    });
+
+    test("a window covering right now makes maintenance active automatically, without touching the manual toggle", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const start = new Date(Date.now() - 60_000).toISOString();
+      const end = new Date(Date.now() + 60_000).toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: start, scheduledMaintenanceEnd: end });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.maintenanceMode, false);
+      assert.equal(res.body.maintenanceActive, true);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.body.maintenanceActive, true);
+
+      // and it actually gates API calls, same as the manual toggle
+      const memberToken = await login("member1", MEMBER_PASSWORD);
+      const gatedRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${memberToken}`);
+      assert.equal(gatedRes.status, 503);
+    });
+
+    test("a window entirely in the future does not activate maintenance yet", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const start = new Date(Date.now() + 3600_000).toISOString();
+      const end = new Date(Date.now() + 7200_000).toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: start, scheduledMaintenanceEnd: end });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.maintenanceActive, false);
+    });
+
+    test("rejects a start that is not before the end", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const now = new Date().toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: now, scheduledMaintenanceEnd: now });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects setting only a start without an end", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: new Date().toISOString() });
+      assert.equal(res.status, 400);
+    });
+  });
+
+  describe("read-only mode", () => {
+    before(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ readOnlyMode: true, readOnlyMessage: "No new submissions right now." });
+      assert.equal(res.status, 200);
+    });
+
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ readOnlyMode: false, readOnlyMessage: "" });
+    });
+
+    test("blocks a member from submitting a new cave proposal", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app)
+        .post("/api/pending-submissions")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ type: "new_cave", caveId: "FROTEMP", state: "FL", county: "AL", proposedData: { name: "Read Only Test Cave" } });
+      assert.equal(res.status, 403);
+      assert.equal(res.body.readOnly, true);
+      assert.equal(res.body.error, "No new submissions right now.");
+    });
+
+    test("does not block reading the cave database", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("does not block a webmaster from writing directly to the cave database", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/save-cave-database")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ action: "createNew", cave: { state: "FL", county: "RO", name: "Webmaster Still Writes During Read-Only" } });
+      assert.equal(res.status, 200);
+    });
+  });
+
+  describe("configurable login lockout policy", () => {
+    before(async () => {
+      await seedUser({ username: "lockoutconfigtest", password: "LockoutConfigPass123!", role: "member" });
+    });
+
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 5, loginLockoutMinutes: 15 });
+    });
+
+    test("rejects an out-of-range threshold", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 1 });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects an out-of-range lockout window", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutMinutes: 0 });
+      assert.equal(res.status, 400);
+    });
+
+    test("a lowered threshold takes effect immediately on the next failed login", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const configRes = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 3, loginLockoutMinutes: 15 });
+      assert.equal(configRes.status, 200);
+
+      for (let i = 0; i < 3; i++) {
+        await request(app).post("/api/login").send({ username: "lockoutconfigtest", password: "WrongPassword!" });
+      }
+      const res = await request(app)
+        .post("/api/login")
+        .send({ username: "lockoutconfigtest", password: "LockoutConfigPass123!" });
+      assert.equal(res.status, 429);
+      assert.match(res.body.error, /15 minutes/);
+    });
+  });
+
+  describe("GET /api/site-config (webmaster full view) and /api/backup-now", () => {
+    test("GET /api/site-config requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/site-config").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("GET /api/site-config includes the login lockout policy; GET /api/site-status does not", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const fullRes = await request(app).get("/api/site-config").set("Authorization", `Bearer ${token}`);
+      assert.equal(fullRes.status, 200);
+      assert.equal(typeof fullRes.body.loginLockoutThreshold, "number");
+      assert.equal(typeof fullRes.body.loginLockoutMinutes, "number");
+
+      const publicRes = await request(app).get("/api/site-status");
+      assert.equal(publicRes.body.loginLockoutThreshold, undefined);
+      assert.equal(publicRes.body.loginLockoutMinutes, undefined);
+    });
+
+    test("GET /api/backup-now requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("GET /api/backup-now returns a downloadable JSON snapshot with the expected shape", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers["content-disposition"], /attachment; filename="fcs-backup-\d{4}-\d{2}-\d{2}\.json"/);
+      const body = JSON.parse(res.text);
+      assert.ok(body.exportedAt);
+      assert.ok(Array.isArray(body.users));
+      assert.ok(Array.isArray(body.caveDatabase));
+      assert.ok(Array.isArray(body.pendingSubmissions));
+      assert.ok(body.siteConfig);
+    });
+  });
 });

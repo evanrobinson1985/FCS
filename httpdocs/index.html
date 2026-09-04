@@ -367,6 +367,20 @@
         <button type="button" class="btn-success" onclick="saveMaintenanceSettings()">Save Maintenance Settings</button>
         <span id="maintenance-save-status" style="margin-left: 10px;"></span>
       </div>
+
+      <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+      <h4 style="margin-bottom: 5px;">Schedule a Maintenance Window (optional)</h4>
+      <p style="margin-bottom: 10px;">Set a start and end time and maintenance mode turns itself on and back off automatically - you don't need to be online at either moment. This works independently of the toggle above; leave both blank to cancel a scheduled window.</p>
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px;">
+        <label>Starts: <input type="datetime-local" id="maintenance-schedule-start" style="padding: 6px;"></label>
+        <label>Ends: <input type="datetime-local" id="maintenance-schedule-end" style="padding: 6px;"></label>
+      </div>
+      <div>
+        <button type="button" class="btn-success" onclick="saveScheduledMaintenance()">Save Schedule</button>
+        <button type="button" class="btn-warning" onclick="clearScheduledMaintenance()">Clear Schedule</button>
+        <span id="maintenance-schedule-status" style="margin-left: 10px;"></span>
+      </div>
+      <p id="maintenance-schedule-current" style="margin-top: 8px; font-size: 0.9em; color: #666;"></p>
     </div>
 
     <div class="control-section">
@@ -390,6 +404,52 @@
       <div style="margin-top: 15px;">
         <strong>Preview:</strong>
         <div id="banner-preview" style="margin-top: 5px;"></div>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Read-Only Mode</h4>
+      <p style="margin-bottom: 10px;">A lighter option than full maintenance mode: the site stays fully browsable (map, database, statistics all work normally), but members can't submit new cave proposals or add/edit narratives. Admin and webmaster can still write as usual. Use this during a data migration or other change where you want eyes off writes without taking the whole site down.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="readonly-mode-toggle" style="width: 18px; height: 18px;">
+        <strong>Site is currently read-only</strong>
+      </label>
+      <label for="readonly-message-input" style="display: block; margin-bottom: 5px;">Message shown to a member who tries to submit something (optional):</label>
+      <textarea id="readonly-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. New submissions are paused during a data migration - back soon."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveReadOnlySettings()">Save Read-Only Settings</button>
+        <span id="readonly-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Login Security</h4>
+      <p style="margin-bottom: 10px;">After this many failed attempts in a row, an account is temporarily locked out (in addition to the site's own IP-based rate limiting). Applies immediately to the next login attempt.</p>
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px;">
+        <label>Failed attempts before lockout:<br>
+          <input type="number" id="login-lockout-threshold-input" min="3" max="20" step="1" style="padding: 6px; width: 80px;">
+        </label>
+        <label>Lockout duration (minutes):<br>
+          <input type="number" id="login-lockout-minutes-input" min="1" max="1440" step="1" style="padding: 6px; width: 80px;">
+        </label>
+      </div>
+      <div>
+        <button type="button" class="btn-success" onclick="saveLoginLockoutSettings()">Save Login Security Settings</button>
+        <span id="login-lockout-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Backups</h4>
+      <p style="margin-bottom: 10px;">A backup of every data file is already taken automatically before each write. This downloads one combined snapshot (accounts, cave database, pending submissions, and this tab's own settings) right now, as a single JSON file - useful right before a risky manual change.</p>
+      <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Backup Now</button>
+    </div>
+
+    <div class="control-section">
+      <h4>Usage Snapshot</h4>
+      <p style="margin-bottom: 10px;">A current snapshot of accounts, not a historical trend - this app doesn't keep a login history beyond each account's most recent login.</p>
+      <div id="usage-snapshot-grid" class="stats-grid">
+        <!-- Populated by loadUsageSnapshot() -->
       </div>
     </div>
   </div>
@@ -4590,14 +4650,60 @@ function loadFcsDatabaseTable() {
 
     // Populates the Website Management tab's controls from the current
     // server-side settings. Called when the tab is opened.
+    // Full config, including the login lockout policy - deliberately not
+    // part of the public GET /api/site-status (see server.js), so this tab
+    // uses the webmaster-only GET /api/site-config to populate itself.
+    async function fetchFullSiteConfig() {
+      try {
+        const response = await fetch('/api/site-config');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        console.error('Error loading full site config:', error);
+        return null;
+      }
+    }
+
+    // Converts a server ISO datetime string to the local "YYYY-MM-DDTHH:MM"
+    // format an <input type="datetime-local"> needs. The reverse direction
+    // (saveScheduledMaintenance()) just uses `new Date(inputValue)`, which
+    // JS already interprets as local time, so .toISOString() from there
+    // does the correct local-to-UTC conversion with no extra work.
+    function isoToDatetimeLocal(isoString) {
+      if (!isoString) return '';
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function renderScheduledMaintenanceStatus(status) {
+      const el = document.getElementById('maintenance-schedule-current');
+      if (!el) return;
+      if (status.scheduledMaintenanceStart && status.scheduledMaintenanceEnd) {
+        const start = new Date(status.scheduledMaintenanceStart).toLocaleString();
+        const end = new Date(status.scheduledMaintenanceEnd).toLocaleString();
+        el.textContent = (status.maintenanceActive ? 'Active now - ' : 'Scheduled - ') + `${start} to ${end}`;
+      } else {
+        el.textContent = 'No schedule set.';
+      }
+    }
+
     async function loadWebsiteManagementSettings() {
-      const status = await loadSiteStatus();
+      await loadSiteStatus(); // keeps the top banner itself in sync too
+      const status = await fetchFullSiteConfig();
       if (!status) return;
 
       const maintenanceToggle = document.getElementById('maintenance-mode-toggle');
       const maintenanceMessageInput = document.getElementById('maintenance-message-input');
       if (maintenanceToggle) maintenanceToggle.checked = !!status.maintenanceMode;
       if (maintenanceMessageInput) maintenanceMessageInput.value = status.maintenanceMessage || '';
+
+      const scheduleStartInput = document.getElementById('maintenance-schedule-start');
+      const scheduleEndInput = document.getElementById('maintenance-schedule-end');
+      if (scheduleStartInput) scheduleStartInput.value = isoToDatetimeLocal(status.scheduledMaintenanceStart);
+      if (scheduleEndInput) scheduleEndInput.value = isoToDatetimeLocal(status.scheduledMaintenanceEnd);
+      renderScheduledMaintenanceStatus(status);
 
       const bannerToggle = document.getElementById('banner-enabled-toggle');
       const bannerMessageInput = document.getElementById('banner-message-input');
@@ -4607,7 +4713,152 @@ function loadFcsDatabaseTable() {
         radio.checked = (radio.value === (status.bannerColor || 'yellow'));
       });
 
+      const readOnlyToggle = document.getElementById('readonly-mode-toggle');
+      const readOnlyMessageInput = document.getElementById('readonly-message-input');
+      if (readOnlyToggle) readOnlyToggle.checked = !!status.readOnlyMode;
+      if (readOnlyMessageInput) readOnlyMessageInput.value = status.readOnlyMessage || '';
+
+      const lockoutThresholdInput = document.getElementById('login-lockout-threshold-input');
+      const lockoutMinutesInput = document.getElementById('login-lockout-minutes-input');
+      if (lockoutThresholdInput) lockoutThresholdInput.value = status.loginLockoutThreshold ?? 5;
+      if (lockoutMinutesInput) lockoutMinutesInput.value = status.loginLockoutMinutes ?? 15;
+
       renderBannerPreview(status);
+      loadUsageSnapshot();
+    }
+
+    async function saveScheduledMaintenance() {
+      const statusEl = document.getElementById('maintenance-schedule-status');
+      const startVal = document.getElementById('maintenance-schedule-start').value;
+      const endVal = document.getElementById('maintenance-schedule-end').value;
+
+      if ((startVal && !endVal) || (!startVal && endVal)) {
+        if (statusEl) { statusEl.textContent = 'Set both a start and end, or clear both.'; statusEl.style.color = '#b00'; }
+        return;
+      }
+
+      const scheduledMaintenanceStart = startVal ? new Date(startVal).toISOString() : '';
+      const scheduledMaintenanceEnd = endVal ? new Date(endVal).toISOString() : '';
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scheduledMaintenanceStart, scheduledMaintenanceEnd }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'green'; }
+        renderScheduledMaintenanceStatus(result);
+      } catch (error) {
+        console.error('Error saving scheduled maintenance window:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    function clearScheduledMaintenance() {
+      document.getElementById('maintenance-schedule-start').value = '';
+      document.getElementById('maintenance-schedule-end').value = '';
+      saveScheduledMaintenance();
+    }
+
+    async function saveReadOnlySettings() {
+      const statusEl = document.getElementById('readonly-save-status');
+      const readOnlyMode = document.getElementById('readonly-mode-toggle').checked;
+      const readOnlyMessage = document.getElementById('readonly-message-input').value;
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ readOnlyMode, readOnlyMessage }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) {
+          statusEl.textContent = readOnlyMode
+            ? 'Saved. Members can browse but not submit or edit.'
+            : 'Saved. Members can submit and edit normally again.';
+          statusEl.style.color = 'green';
+        }
+      } catch (error) {
+        console.error('Error saving read-only settings:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    async function saveLoginLockoutSettings() {
+      const statusEl = document.getElementById('login-lockout-save-status');
+      const loginLockoutThreshold = parseInt(document.getElementById('login-lockout-threshold-input').value, 10);
+      const loginLockoutMinutes = parseInt(document.getElementById('login-lockout-minutes-input').value, 10);
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginLockoutThreshold, loginLockoutMinutes }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'green'; }
+      } catch (error) {
+        console.error('Error saving login lockout settings:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    // Direct navigation (not fetch()) so the browser's native download
+    // handling takes over from the Content-Disposition header - same
+    // withAuthToken() pattern as downloadImportTemplate().
+    function downloadBackupNow() {
+      window.location.href = withAuthToken('/api/backup-now');
+    }
+
+    // Pulls from GET /api/users (already webmaster-only) and aggregates
+    // client-side - a current snapshot, not a historical trend, since this
+    // app doesn't keep a login history beyond each account's most recent
+    // login.
+    async function loadUsageSnapshot() {
+      const gridEl = document.getElementById('usage-snapshot-grid');
+      if (!gridEl) return;
+      try {
+        const response = await fetch('/api/users');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const users = await response.json();
+
+        const total = users.length;
+        const active = users.filter(u => u.isActive).length;
+        const byRole = { member: 0, admin: 0, webmaster: 0 };
+        users.forEach(u => { if (byRole[u.role] !== undefined) byRole[u.role]++; });
+        const twoFactorOn = users.filter(u => u.twoFactorEnabled).length;
+
+        const now = Date.now();
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const loggedInLast24h = users.filter(u => u.lastLogin && (now - new Date(u.lastLogin).getTime()) < DAY_MS).length;
+        const loggedInLast7d = users.filter(u => u.lastLogin && (now - new Date(u.lastLogin).getTime()) < 7 * DAY_MS).length;
+        const neverLoggedIn = users.filter(u => !u.lastLogin).length;
+
+        const stat = (label, value) => `
+          <div class="stats-card">
+            <div class="stats-card-body">
+              <div class="stat-item"><span class="stat-label">${label}:</span><span class="stat-value">${value}</span></div>
+            </div>
+          </div>`;
+
+        gridEl.innerHTML = [
+          stat('Total Accounts', total),
+          stat('Active', active),
+          stat('Inactive', total - active),
+          stat('Members / Admins / Webmasters', `${byRole.member} / ${byRole.admin} / ${byRole.webmaster}`),
+          stat('2FA Enabled', twoFactorOn),
+          stat('Logged In (last 24h)', loggedInLast24h),
+          stat('Logged In (last 7 days)', loggedInLast7d),
+          stat('Never Logged In', neverLoggedIn),
+        ].join('');
+      } catch (error) {
+        console.error('Error loading usage snapshot:', error);
+        gridEl.textContent = 'Unable to load usage snapshot.';
+      }
     }
 
     function renderBannerPreview(status) {
