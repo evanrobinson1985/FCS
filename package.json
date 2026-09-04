@@ -27,8 +27,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "patch-package": "^8.0.0",
-    "postinstall-postinstall": "^2.1.0",
     "supertest": "^7.0.0"
   },
   "optionalDependencies": {
