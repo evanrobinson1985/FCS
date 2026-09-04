@@ -218,8 +218,30 @@
 <span id="logged-in-user">Logged in as: </span>
 <span id="twofa-status" style="margin-left: 15px; font-size: 0.9em;"></span>
 <button type="button" id="twofa-toggle-btn" onclick="handleToggleTwoFactor()" style="margin-left: 5px;"></button>
+<button type="button" id="change-password-btn" onclick="toggleChangePasswordForm()" style="margin-left: 5px;">Change Password</button>
 <button class="logout-btn" id="logout-btn">Log Out</button>
 </div>
+</div>
+<!-- Self-service password change, for a first login on temporary/shared
+     credentials or just routine rotation - see POST /api/change-password. -->
+<div id="change-password-form" class="auth-form" style="display: none; margin: 0 0 20px;">
+  <h3>Change Password</h3>
+  <div class="form-group">
+    <label for="change-password-current">Current Password:</label>
+    <input id="change-password-current" type="password" autocomplete="current-password" required/>
+  </div>
+  <div class="form-group">
+    <label for="change-password-new">New Password:</label>
+    <input id="change-password-new" type="password" autocomplete="new-password" required/>
+  </div>
+  <div class="form-group">
+    <label for="change-password-confirm">Confirm New Password:</label>
+    <input id="change-password-confirm" type="password" autocomplete="new-password" required/>
+  </div>
+  <div class="form-group">
+    <button type="button" id="change-password-submit-btn" onclick="handleChangePassword()">Update Password</button>
+    <button type="button" onclick="toggleChangePasswordForm(false)">Cancel</button>
+  </div>
 </div>
 <div class="tab-container">
 <div class="tabs">
@@ -6759,6 +6781,62 @@ window.addEventListener('error', function(e) {
     } catch (error) {
       console.error('Toggle 2FA error:', error);
       alert(error.message);
+    }
+  }
+
+  // Shows/hides the inline "Change Password" panel in the dashboard header -
+  // handy right after a first login on temporary/shared credentials, or for
+  // routine rotation, without having to go through the forgot-password
+  // email flow.
+  function toggleChangePasswordForm(show) {
+    const form = document.getElementById('change-password-form');
+    const nowVisible = show === undefined ? form.style.display === 'none' : show;
+    form.style.display = nowVisible ? 'block' : 'none';
+    document.getElementById('change-password-current').value = '';
+    document.getElementById('change-password-new').value = '';
+    document.getElementById('change-password-confirm').value = '';
+    if (nowVisible) document.getElementById('change-password-current').focus();
+  }
+
+  async function handleChangePassword() {
+    const currentPassword = document.getElementById('change-password-current').value;
+    const newPassword = document.getElementById('change-password-new').value;
+    const confirmPassword = document.getElementById('change-password-confirm').value;
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      alert('Please fill in all three fields.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      alert('New password and confirmation do not match.');
+      return;
+    }
+    if (newPassword.length < 10) {
+      // Must match MIN_PASSWORD_LENGTH in server.js.
+      alert('New password must be at least 10 characters long.');
+      return;
+    }
+
+    const submitBtn = document.getElementById('change-password-submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      const response = await fetch('/api/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Could not change password.');
+      }
+      alert(result.message || 'Password updated.');
+      toggleChangePasswordForm(false);
+    } catch (error) {
+      console.error('Change password error:', error);
+      alert(error.message);
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
   }
 

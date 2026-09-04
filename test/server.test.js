@@ -203,6 +203,59 @@ describe("password hashing", () => {
   });
 });
 
+describe("change password", () => {
+  before(async () => {
+    await seedUser({ username: "changepassuser", password: "OldPassword123!", role: "member" });
+  });
+
+  test("changes the password given the correct current password, and the old password stops working", async () => {
+    const token = await login("changepassuser", "OldPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "OldPassword123!", newPassword: "BrandNewPassword123!" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+
+    const newLogin = await login("changepassuser", "BrandNewPassword123!");
+    assert.ok(newLogin);
+
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "changepassuser", password: "OldPassword123!" });
+    assert.equal(oldLoginRes.status, 401);
+  });
+
+  test("rejects an incorrect current password", async () => {
+    const token = await login("changepassuser", "BrandNewPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "TotallyWrongPassword!", newPassword: "AnotherNewPassword123!" });
+    assert.equal(res.status, 401);
+
+    // The password must not have changed.
+    const stillWorks = await login("changepassuser", "BrandNewPassword123!");
+    assert.ok(stillWorks);
+  });
+
+  test("requires authentication", async () => {
+    const res = await request(app)
+      .post("/api/change-password")
+      .send({ currentPassword: "BrandNewPassword123!", newPassword: "AnotherNewPassword123!" });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects a new password shorter than the minimum length", async () => {
+    const token = await login("changepassuser", "BrandNewPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "BrandNewPassword123!", newPassword: "short1" });
+    assert.equal(res.status, 400);
+  });
+});
+
 describe("password reset", () => {
   // No SMTP is configured in the test env, so the server logs the reset
   // link to the console instead of emailing it (see sendPasswordResetEmail

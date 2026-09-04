@@ -122,9 +122,9 @@ already secure.
   environment.
 - **Login brute-force protection.** Rate limiting on `/api/login`,
   `/register-member`, `/api/create-account`, `/api/forgot-password`,
-  `/api/verify-2fa`, and `/api/resend-2fa` (10 requests / 15 minutes per
-  IP), plus a per-account lockout after 5 failed attempts (passwords and,
-  separately, 2FA codes).
+  `/api/verify-2fa`, `/api/resend-2fa`, and `/api/change-password` (10
+  requests / 15 minutes per IP), plus a per-account lockout after 5 failed
+  attempts (passwords and, separately, 2FA codes).
 - **Optional email-based two-factor authentication.** Any member can turn
   it on for their own account (a button in the dashboard header, or
   `POST /api/toggle-2fa`). Once enabled, a correct password at `/api/login`
@@ -268,7 +268,17 @@ Being upfront about the tradeoffs and what's left:
    were intentionally left out of this pass.
 4. Make sure something in front of Node is terminating real TLS (see
    "Data in transit" above) before this touches the public internet.
-5. Create at least one `webmaster` account directly in `data/users.json`
-   (hash the password with bcrypt first - the `register-member`/
-   `create-account` flows can't grant that role) so you have a way to
-   approve everyone else's pending signups.
+5. Create at least one `webmaster` account so you have a way to approve
+   everyone else's pending signups - the `register-member`/`create-account`
+   flows can't grant that role. Use the bundled script rather than editing
+   `data/users.json` by hand, so the password is bcrypt-hashed correctly:
+   ```
+   node scripts/create-user.js <username> <password> webmaster <email>
+   ```
+   Running it again for the same username updates that account (new
+   password/role/email) instead of creating a duplicate - handy for a
+   password reset from the command line if a webmaster ever gets locked
+   out. Whoever logs in with it can change the password themselves
+   afterward from the dashboard header ("Change Password", backed by
+   `POST /api/change-password` - requires the current password, works for
+   any role, not just webmaster).

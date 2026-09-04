@@ -3358,6 +3358,47 @@ app.post("/api/reset-password", authLimiter, express.json(), async (req, res) =>
   }
 });
 
+// Self-service password change for an already-logged-in user (as opposed to
+// /api/reset-password, which is for someone who's lost access and needs an
+// emailed link). Requires the current password, same as disabling 2FA - a
+// hijacked session token alone isn't enough to take over the account.
+app.post("/api/change-password", authLimiter, authenticateToken, express.json(), async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Current password and new password are required" });
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
+      });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === req.user.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const passwordMatches =
+      !!user.passwordHash && (await bcrypt.compare(currentPassword, user.passwordHash));
+    if (!passwordMatches) {
+      return res.status(401).json({ error: "Incorrect current password." });
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, 12);
+    user.loginAttempts = 0;
+    user.lastFailedLogin = null;
+    saveUsers(users);
+
+    res.json({ success: true, message: "Password updated." });
+  } catch (error) {
+    console.error("Error changing password:", error);
+    res.status(500).json({ error: "Failed to change password" });
+  }
+});
+
 function generateNextCaveId(countyCode, existingCaves) {
   // Filter for caves in the selected county
   const countyCaves = existingCaves.filter((cave) => {
