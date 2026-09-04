@@ -33,6 +33,11 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
 
+// State/county reference data (see scripts/generate-states-config.js). This
+// is public geographic reference data, not survey data, so unlike the files
+// above it lives in config/ and IS tracked in git.
+const STATES_CONFIG_FILE = path.join(__dirname, "config", "states.json");
+
 // Timestamped backups of the two data files, taken right before every write.
 // These are the only copies of the cave database and the user list - a bad
 // write, a bug in a future change, or an admin approving the wrong thing
@@ -740,6 +745,54 @@ function reloadCaveDatabase() {
 }
 
 reloadCaveDatabase();
+
+// State/county reference data - see scripts/generate-states-config.js and
+// STATES_CONFIG_FILE above. Loaded once at startup: this is static
+// geographic reference data checked into git, not something that changes
+// while the server is running, unlike the cave database. Every dropdown,
+// filter, and cave-ID prefix in the app is ultimately driven from this.
+let statesConfig = [];
+
+function loadStatesConfig() {
+  let raw;
+  try {
+    raw = fs.readFileSync(STATES_CONFIG_FILE, "utf8");
+  } catch (err) {
+    console.error(
+      `FATAL: Could not read ${STATES_CONFIG_FILE}. This file is tracked in git and ` +
+        "should always be present - run `node scripts/generate-states-config.js` to " +
+        `(re)generate it. Underlying error: ${err.message}`
+    );
+    process.exit(1);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`FATAL: ${STATES_CONFIG_FILE} is not valid JSON: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!Array.isArray(parsed.states) || parsed.states.length === 0) {
+    console.error(`FATAL: ${STATES_CONFIG_FILE} has no states array.`);
+    process.exit(1);
+  }
+
+  statesConfig = parsed.states;
+  console.log(`✅ Loaded ${statesConfig.length} states from reference config`);
+  return statesConfig;
+}
+
+loadStatesConfig();
+
+// Public reference data (real, published county/state names - no cave data)
+// that every logged-in user needs, including a brand-new member who hasn't
+// been granted any states yet (they need this list to even pick one at
+// signup). authenticateToken only - no role or allowedStates restriction.
+app.get("/api/states", authenticateToken, (req, res) => {
+  res.json(statesConfig);
+});
 
 // Promise-returning version so callers that need to await the write (e.g.
 // the submission-approval route, which writes the cave database and then

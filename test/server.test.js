@@ -370,6 +370,42 @@ describe("cave database storage", () => {
   });
 });
 
+describe("state/county reference config", () => {
+  test("GET /api/states requires authentication", async () => {
+    const res = await request(app).get("/api/states");
+    assert.equal(res.status, 401);
+  });
+
+  test("GET /api/states returns all 50 states with Florida's counties intact", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
+
+    const florida = res.body.find((s) => s.code === "FL");
+    assert.ok(florida, "Florida must be present");
+    assert.equal(florida.caveIdPrefix, "F");
+    assert.equal(florida.counties.length, 67);
+    assert.ok(florida.counties.some((c) => c.code === "AL" && c.name === "Alachua"));
+
+    // Every state has a unique 2-letter county code within itself, and a
+    // non-empty county list - a regenerated config that broke either of
+    // these would silently corrupt cave ID generation.
+    for (const state of res.body) {
+      assert.ok(state.counties.length > 0, `${state.code} has no counties`);
+      const codes = state.counties.map((c) => c.code);
+      assert.equal(new Set(codes).size, codes.length, `${state.code} has duplicate county codes`);
+    }
+  });
+
+  test("a member (not just webmaster) can read the reference data", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
+  });
+});
+
 describe("two-factor authentication", () => {
   // No SMTP is configured in the test env, so the server logs the code to
   // the console instead of emailing it (see sendTwoFactorCode in server.js).
