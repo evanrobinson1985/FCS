@@ -368,6 +368,43 @@ describe("cave database storage", () => {
     const afterCount = fs.readdirSync(backupDir).length;
     assert.ok(afterCount > before, "expected a new backup file after the write");
   });
+
+  test("defaults a new cave to Florida when no state is given (backward compatibility)", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "AL", name: "No State Given Cave" } });
+    assert.equal(res.status, 200);
+    assert.match(res.body.caveId, /^FAL\d{3}$/);
+  });
+
+  test("generates a state-prefixed ID for a non-Florida state, numbered independently of Florida's same county code", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    // Seed a Florida cave in county "AL" first...
+    const flRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "FL", county: "AL", name: "Florida Alachua Cave" } });
+    assert.equal(flRes.status, 200);
+
+    // ...then a Georgia cave that happens to reuse "AL" as its own county
+    // code (Georgia's real code for Allen County) - must not collide with
+    // or continue Florida's numbering for that same county-code string.
+    const gaRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "GA", county: "AL", name: "Georgia Allen Cave" } });
+    assert.equal(gaRes.status, 200);
+    assert.match(gaRes.body.caveId, /^GAAL\d{3}$/);
+    assert.notEqual(gaRes.body.caveId, flRes.body.caveId);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const gaCave = dbRes.body.find((c) => c.id === gaRes.body.caveId);
+    assert.equal(gaCave.state, "GA");
+    assert.equal(gaCave.county, "AL");
+  });
 });
 
 describe("state/county reference config", () => {
@@ -613,6 +650,37 @@ describe("pending submissions", () => {
     const stored = dbRes.body.find((c) => c.id === assignedId);
     assert.ok(stored, "approved new cave should be written into the cave database");
     assert.equal(stored.name, "Approved New Cave");
+  });
+
+  test("approving a new_cave submission for a non-Florida state assigns that state's ID prefix", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "GATEMP",
+        state: "GA",
+        county: "BA",
+        proposedData: { name: "Georgia Bacon County Cave", state: "GA", county: "BA", type: "Land Cave", lat: 31.7, lng: -82.4 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+    assert.equal(submitRes.body.submission.state, "GA");
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+    const assignedId = approveRes.body.submission.assignedCaveId;
+    assert.match(assignedId, /^GABA\d{3}$/);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === assignedId);
+    assert.equal(stored.state, "GA");
+    assert.equal(stored.county, "BA");
   });
 
   test("approving an edit_cave submission merges proposedData into the existing cave", async () => {

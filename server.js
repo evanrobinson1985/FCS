@@ -672,6 +672,14 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
 
 const MIN_PASSWORD_LENGTH = 10;
 
+// Transitional backward-compat default: every cave-creating route requires
+// a `state`, but the client doesn't send one yet (multi-state frontend work
+// lands in a later phase) - defaulting missing state to Florida keeps the
+// existing, single-state UI working unmodified until it does. Once every
+// client always sends `state` explicitly this default (and the two call
+// sites that use it) can be removed.
+const DEFAULT_STATE_CODE = "FL";
+
 // Serve the main page
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
@@ -822,12 +830,13 @@ function writeCaveDatabase(caves, res, successPayload) {
 // validation failure so the route can turn it into the right HTTP response.
 function applyApprovedSubmission(submission, caves) {
   if (submission.type === "new_cave") {
+    const stateCode = submission.state || submission.proposedData?.state || DEFAULT_STATE_CODE;
     const countyCode = submission.county || submission.proposedData?.county;
     if (!countyCode) {
       throw { status: 400, message: "Submission is missing a county code; cannot assign a cave ID." };
     }
-    const uniqueId = generateNextCaveId(countyCode, caves);
-    const newCave = { ...submission.proposedData, id: uniqueId };
+    const uniqueId = generateNextCaveId(stateCode, countyCode, caves);
+    const newCave = { ...submission.proposedData, id: uniqueId, state: stateCode, county: countyCode };
     if (newCave.lat !== undefined) {
       newCave.latitude = newCave.lat;
     } else if (newCave.latitude !== undefined) {
@@ -910,6 +919,7 @@ app.post(
       const caves = loadCaveDatabaseFromDisk();
 
       // Generate a guaranteed unique ID on the server side
+      const stateCode = newCave.state || DEFAULT_STATE_CODE;
       const countyCode = newCave.county || newCave.id?.substring(1, 3);
       if (!countyCode) {
         return res
@@ -917,11 +927,13 @@ app.post(
           .json({ error: "County code is required for new cave." });
       }
 
-      const uniqueId = generateNextCaveId(countyCode, caves);
+      const uniqueId = generateNextCaveId(stateCode, countyCode, caves);
       newCave.id = uniqueId; // Override any client-provided ID
+      newCave.state = stateCode;
+      newCave.county = countyCode;
 
       console.log(
-        `Generated unique cave ID: ${uniqueId} for county ${countyCode}`
+        `Generated unique cave ID: ${uniqueId} for state ${stateCode}, county ${countyCode}`
       );
 
       // Ensure coordinates are normalized for the new cave
@@ -1027,6 +1039,7 @@ app.get("/api/pending-submissions", authenticateToken, (req, res) => {
             console.log(
               `Enhancing submission for cave ${submission.caveId}: ${caveData.name}`
             );
+            const resolved = resolveCaveStateAndCounty(caveData);
 
             // Add missing cave information
             if (!submission.caveName) {
@@ -1038,8 +1051,11 @@ app.get("/api/pending-submissions", authenticateToken, (req, res) => {
             }
 
             if (!submission.county) {
-              submission.county =
-                caveData.county || caveData.id.substring(1, 3);
+              submission.county = resolved.county;
+            }
+
+            if (!submission.state) {
+              submission.state = resolved.state;
             }
 
             // For move submissions, ensure we have original coordinates
@@ -1067,7 +1083,8 @@ app.get("/api/pending-submissions", authenticateToken, (req, res) => {
               submission.currentCaveData = {
                 id: caveData.id,
                 name: caveData.name,
-                county: caveData.county || caveData.id.substring(1, 3),
+                state: resolved.state,
+                county: resolved.county,
                 type: caveData.type,
                 latitude: caveData.latitude || caveData.lat,
                 longitude: caveData.longitude || caveData.lng,
@@ -1156,6 +1173,7 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
             console.log(
               `Enhancing approved submission for cave ${submission.caveId}: ${caveData.name}`
             );
+            const resolved = resolveCaveStateAndCounty(caveData);
 
             // Add missing cave information
             if (!submission.caveName) {
@@ -1167,8 +1185,11 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
             }
 
             if (!submission.county) {
-              submission.county =
-                caveData.county || caveData.id.substring(1, 3);
+              submission.county = resolved.county;
+            }
+
+            if (!submission.state) {
+              submission.state = resolved.state;
             }
 
             // For move submissions, ensure we have original coordinates
@@ -1193,7 +1214,8 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
               submission.currentCaveData = {
                 id: caveData.id,
                 name: caveData.name,
-                county: caveData.county || caveData.id.substring(1, 3),
+                state: resolved.state,
+                county: resolved.county,
                 type: caveData.type,
                 latitude: caveData.latitude || caveData.lat,
                 longitude: caveData.longitude || caveData.lng,
@@ -1250,7 +1272,7 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
 // from the authenticated session, never trusted from the request body, so a
 // member can't submit a proposal under someone else's name.
 app.post("/api/pending-submissions", authenticateToken, (req, res) => {
-  const { type, caveId, caveName, county, proposedData } = req.body || {};
+  const { type, caveId, caveName, state, county, proposedData } = req.body || {};
 
   if (!type || !["new_cave", "edit_cave"].includes(type)) {
     return res
@@ -1274,6 +1296,7 @@ app.post("/api/pending-submissions", authenticateToken, (req, res) => {
     type,
     caveId,
     caveName: caveName || proposedData.name || "",
+    state: state || proposedData.state || "",
     county: county || proposedData.county || "",
     proposedData,
     submittedBy: req.user.username,
@@ -3452,16 +3475,60 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
   }
 });
 
-function generateNextCaveId(countyCode, existingCaves) {
-  // Filter for caves in the selected county
-  const countyCaves = existingCaves.filter((cave) => {
-    return cave.id && cave.id.substring(1, 3) === countyCode;
+// Every real Florida cave ID predating multi-state support looks like this:
+// a single "F", exactly 2 letters (the county code), then digits. Used only
+// as a fallback for records written before the explicit state/county fields
+// existed - never for anything else, so it can't misfire on a new state's
+// (2-letter-prefixed) IDs.
+const LEGACY_FLORIDA_ID = /^F([A-Z]{2})\d+$/;
+
+// The authoritative source of a cave's state/county is now the explicit
+// `state`/`county` fields on the record - this only exists to fill in
+// whichever of those a legacy Florida record is missing, parsed out of its
+// ID. Replaces what used to be 6 separate `cave.id.substring(1, 3)` calls
+// scattered across this file, all of which assumed a fixed 1-character
+// state prefix that no longer holds once other states exist.
+function resolveCaveStateAndCounty(cave) {
+  if (!cave) return { state: null, county: null };
+  let state = cave.state || null;
+  let county = cave.county || null;
+  if ((!state || !county) && cave.id) {
+    const match = cave.id.match(LEGACY_FLORIDA_ID);
+    if (match) {
+      state = state || "FL";
+      county = county || match[1];
+    }
+  }
+  return { state, county };
+}
+
+// Looks up the ID prefix a state generates new cave IDs with (see
+// config/states.json / scripts/generate-states-config.js) - "F" for
+// Florida (preserving its existing, real IDs exactly), each other state's
+// own 2-letter USPS code. Falls back to the state code itself if the state
+// isn't in the config, which should never happen in practice but keeps
+// this total rather than throwing.
+function getCaveIdPrefix(stateCode) {
+  const state = statesConfig.find((s) => s.code === stateCode);
+  return state ? state.caveIdPrefix : stateCode;
+}
+
+function generateNextCaveId(stateCode, countyCode, existingCaves) {
+  const prefix = getCaveIdPrefix(stateCode);
+
+  // Filter for caves in this exact state + county, using the explicit
+  // fields (with the legacy fallback above) rather than re-deriving them
+  // from a fixed-offset substring of the ID, which broke the moment a
+  // state's prefix could be more than one character.
+  const matchingCaves = existingCaves.filter((cave) => {
+    const resolved = resolveCaveStateAndCounty(cave);
+    return resolved.state === stateCode && resolved.county === countyCode;
   });
 
-  // Find the highest cave number for this county
+  // Find the highest cave number for this state+county
   let maxNumber = 0;
-  countyCaves.forEach((cave) => {
-    const caveNumber = parseInt(cave.id.substring(3), 10);
+  matchingCaves.forEach((cave) => {
+    const caveNumber = parseInt(cave.id.slice(prefix.length + countyCode.length), 10);
     if (!isNaN(caveNumber) && caveNumber > maxNumber) {
       maxNumber = caveNumber;
     }
@@ -3470,7 +3537,7 @@ function generateNextCaveId(countyCode, existingCaves) {
   // Return the next sequential number
   const nextNumber = maxNumber + 1;
   const paddedNumber = nextNumber.toString().padStart(3, "0");
-  return `F${countyCode}${paddedNumber}`;
+  return `${prefix}${countyCode}${paddedNumber}`;
 }
 
 // Start server. Guarded so the test suite can `require("../server")` to get
