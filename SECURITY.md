@@ -265,7 +265,13 @@ Being upfront about the tradeoffs and what's left:
 3. Restore your real `data/cave-database.json` (an array of cave objects,
    same shape as before - just JSON now instead of a `.js` file) and
    `data/users.json` into the `data/` directory. Both are gitignored and
-   were intentionally left out of this pass.
+   were intentionally left out of this pass. If you don't have real data
+   yet and just want the site running to try it out, copy the dummy
+   templates instead (`cp data/cave-database.example.json
+   data/cave-database.json`, same for `users.example.json`) - see
+   `data/README.md` for what's in them and the sample login they provide.
+   Swap in your real files whenever you're ready; nothing under `data/`
+   except those two `.example.json` templates is ever committed.
 4. Make sure something in front of Node is terminating real TLS (see
    "Data in transit" above) before this touches the public internet.
 5. Create at least one `webmaster` account so you have a way to approve

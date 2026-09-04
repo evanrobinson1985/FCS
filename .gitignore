@@ -21,8 +21,12 @@ users.json
 dump.sql
 *.geojson
 
-# Private data directory (cave database, user list) - never committed
-data/
+# Private data directory (cave database, user list) - never committed,
+# except the dummy *.example.json templates and their README, which are
+# meant to be copied to the real filenames and then edited/replaced.
+data/*
+!data/*.example.json
+!data/README.md
 
 # Cave Pictures and Maps
 cave-pictures/
