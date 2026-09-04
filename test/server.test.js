@@ -63,7 +63,12 @@ async function login(username, password) {
 
 before(async () => {
   await seedUser({ username: "webmaster1", password: WEBMASTER_PASSWORD, role: "webmaster" });
-  await seedUser({ username: "member1", password: MEMBER_PASSWORD, role: "member" });
+  // Florida access (matching every pre-multi-state test's implicit
+  // assumption that member1 operates in a Florida-only world) plus Georgia
+  // (used by the non-Florida-state submission test below). Tests that
+  // specifically exercise state *restriction* use their own dedicated,
+  // narrowly-scoped user instead - see "allowed states" describe block.
+  await seedUser({ username: "member1", password: MEMBER_PASSWORD, role: "member", allowedStates: ["FL", "GA"] });
 });
 
 after(() => {
@@ -859,6 +864,94 @@ describe("pending submissions", () => {
       .set("Authorization", `Bearer ${webmasterToken}`)
       .send({ status: "approved" });
     assert.equal(secondApprove.status, 409);
+  });
+});
+
+describe("cave-data routes enforce allowedStates", () => {
+  before(async () => {
+    await seedUser({ username: "flonlymember", password: "FlOnlyPass123!", role: "member", allowedStates: ["FL"] });
+
+    // Seed one Florida cave and one Georgia cave so filtering has something
+    // real to prove/disprove.
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { state: "FL", county: "SC", name: "Scoping Test FL Cave" } });
+    await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { state: "GA", county: "SC", name: "Scoping Test GA Cave" } });
+  });
+
+  test("GET /api/cave-database hides other states' caves from a scoped member", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((c) => c.name === "Scoping Test FL Cave"), "should see the Florida cave");
+    assert.ok(!res.body.some((c) => c.name === "Scoping Test GA Cave"), "should NOT see the Georgia cave");
+  });
+
+  test("GET /api/cave-database is unrestricted for webmaster regardless of state", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((c) => c.name === "Scoping Test FL Cave"));
+    assert.ok(res.body.some((c) => c.name === "Scoping Test GA Cave"));
+  });
+
+  test("a scoped member cannot submit a proposal for a state they aren't granted", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "new_cave",
+        caveId: "GATEMP2",
+        state: "GA",
+        county: "SC",
+        proposedData: { name: "Should Be Rejected Cave", state: "GA", county: "SC" },
+      });
+    assert.equal(res.status, 403);
+  });
+
+  test("a scoped member can still submit for a state they are granted", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "new_cave",
+        caveId: "FLTEMP2",
+        state: "FL",
+        county: "SC",
+        proposedData: { name: "Allowed Florida Submission", state: "FL", county: "SC" },
+      });
+    assert.equal(res.status, 200);
+  });
+
+  test("GET /api/pending-submissions hides another state's submissions from a scoped member", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD); // has FL + GA
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "GATEMP3",
+        state: "GA",
+        county: "SC",
+        proposedData: { name: "GA Submission For Visibility Test", state: "GA", county: "SC" },
+      });
+    assert.equal(submitRes.status, 200);
+
+    const flOnlyToken = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${flOnlyToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.some((s) => s.caveId === "GATEMP3"), "FL-only member should not see the GA submission");
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const wmRes = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.ok(wmRes.body.some((s) => s.caveId === "GATEMP3"), "webmaster should see every state's submissions");
   });
 });
 

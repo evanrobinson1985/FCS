@@ -677,9 +677,21 @@ function saveUsers(users) {
 // API endpoint to get current cave database - the whole point of this route
 // is that it is NOT static and DOES require a valid login, unlike the old
 // setup where cave-database.js sat in the public web root and was sent to
-// anyone who requested it, logged in or not.
+// anyone who requested it, logged in or not. Admin/webmaster see every
+// state; a member only sees caves in states they've been granted (see
+// getAllowedStatesForUser) - looked up fresh per request (not cached in the
+// JWT) so a webmaster revoking/granting a state takes effect immediately,
+// not after the member's session happens to expire and they log in again.
 app.get("/api/cave-database", authenticateToken, (req, res) => {
-  res.json(caveDatabase);
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  const allowed = getAllowedStatesForUser(user);
+
+  if (allowed === null) {
+    return res.json(caveDatabase);
+  }
+
+  res.json(caveDatabase.filter((cave) => allowed.includes(resolveCaveStateAndCounty(cave).state)));
 });
 
 const MIN_PASSWORD_LENGTH = 10;
@@ -1150,7 +1162,14 @@ app.get("/api/pending-submissions", authenticateToken, (req, res) => {
       console.log(
         `Enhanced ${enhancedSubmissions.length} submissions with cave data`
       );
-      res.json(enhancedSubmissions);
+
+      const users = loadUsers();
+      const requestingUser = users.find((u) => u.username === req.user.username);
+      const allowed = getAllowedStatesForUser(requestingUser);
+      const visibleSubmissions =
+        allowed === null ? enhancedSubmissions : enhancedSubmissions.filter((s) => allowed.includes(s.state));
+
+      res.json(visibleSubmissions);
     } catch (parseErr) {
       console.error("Corrupt submissions file:", parseErr);
       res.status(500).json({ error: "Submissions file is invalid." });
@@ -1273,7 +1292,14 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
       });
 
       console.log(`Found ${enhancedSubmissions.length} approved submissions`);
-      res.json(enhancedSubmissions);
+
+      const users = loadUsers();
+      const requestingUser = users.find((u) => u.username === req.user.username);
+      const allowed = getAllowedStatesForUser(requestingUser);
+      const visibleSubmissions =
+        allowed === null ? enhancedSubmissions : enhancedSubmissions.filter((s) => allowed.includes(s.state));
+
+      res.json(visibleSubmissions);
     } catch (parseErr) {
       console.error("Corrupt submissions file:", parseErr);
       res.status(500).json({ error: "Submissions file is invalid." });
@@ -1305,12 +1331,23 @@ app.post("/api/pending-submissions", authenticateToken, (req, res) => {
     return res.status(404).json({ error: `Cave with ID ${caveId} not found.` });
   }
 
+  // Same transitional default as cave creation (see DEFAULT_STATE_CODE) -
+  // the client doesn't send `state` yet, so treat its absence as Florida
+  // rather than rejecting every submission until the frontend catches up.
+  const submissionState = state || proposedData.state || DEFAULT_STATE_CODE;
+
+  const submittingUser = loadUsers().find((u) => u.username === req.user.username);
+  const allowedStates = getAllowedStatesForUser(submittingUser);
+  if (allowedStates !== null && !allowedStates.includes(submissionState)) {
+    return res.status(403).json({ error: `You do not have access to submit for ${submissionState}.` });
+  }
+
   const submission = {
     submissionId: crypto.randomUUID(),
     type,
     caveId,
     caveName: caveName || proposedData.name || "",
-    state: state || proposedData.state || "",
+    state: submissionState,
     county: county || proposedData.county || "",
     proposedData,
     submittedBy: req.user.username,
