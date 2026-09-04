@@ -313,47 +313,6 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
 
 const MIN_PASSWORD_LENGTH = 10;
 
-app.post("/register-member", authLimiter, express.json(), async (req, res) => {
-  const { username, email, password } = req.body;
-  if (!username || !email || !password)
-    return res.status(400).json({ error: "Missing fields" });
-
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).json({
-      error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
-    });
-  }
-
-  const users = loadUsers();
-  if (users.find((u) => u.username === username)) {
-    return res.status(400).json({ error: "Username already exists" });
-  }
-  if (users.find((u) => u.email === email)) {
-    return res.status(400).json({ error: "Email already exists" });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 12);
-  users.push({
-    id: `member-${Date.now()}`,
-    username,
-    email,
-    passwordHash,
-    fullName: username,
-    role: "member",
-    // New self-registrations start pending until a webmaster/admin activates
-    // them via the Account Management tab - they cannot log in until then.
-    status: "pending",
-    created: new Date().toISOString(),
-    lastLogin: null,
-    loginAttempts: 0,
-    isEmailVerified: false,
-    loginIPs: [],
-  });
-  saveUsers(users);
-
-  res.json({ success: true, message: "Account created. An administrator must approve it before you can log in." });
-});
-
 // Serve the main page
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
@@ -1394,8 +1353,6 @@ app.use("/cave-maps", authenticateToken, express.static(caveMapsDir));
 
 const NARRATIVE_DIR = path.join(__dirname, "narratives");
 if (!fs.existsSync(NARRATIVE_DIR)) fs.mkdirSync(NARRATIVE_DIR);
-
-app.use(express.json({ limit: "10mb" }));
 
 // Save narrative
 // Rich-text editor content allowed when saving a narrative. Deliberately
@@ -2512,55 +2469,6 @@ app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, (req, res) 
   }
 });
 
-// Add this debug route temporarily
-app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, (req, res) => {
-  const filename = path.basename(req.params.filename);
-  const dbPath = path.join(sqliteHillshadesDir, filename);
-
-  if (!Database || !fs.existsSync(dbPath)) {
-    return res.status(404).json({ error: "Database not found" });
-  }
-
-  try {
-    const db = new Database(dbPath, { readonly: true });
-
-    // Check column names
-    const columns = db.prepare("PRAGMA table_info(tiles)").all();
-
-    // Get a sample tile
-    const sample = db
-      .prepare(
-        "SELECT z, x, y, s, LENGTH(tile_data) as size FROM tiles LIMIT 1"
-      )
-      .get();
-
-    // Get coordinate ranges
-    const ranges = db
-      .prepare(
-        `
-      SELECT 
-        MIN(z) as minZ, MAX(z) as maxZ,
-        MIN(x) as minX, MAX(x) as maxX, 
-        MIN(y) as minY, MAX(y) as maxY,
-        COUNT(*) as total
-      FROM tiles
-    `
-      )
-      .get();
-
-    db.close();
-
-    res.json({
-      filename,
-      columns: columns.map((c) => c.name),
-      sample,
-      ranges,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // TEMPORARY: Debug your specific database
 app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, (req, res) => {
   const filename = path.basename(req.params.filename);
@@ -2830,8 +2738,7 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
 // Create account endpoint
 // This is the public "Create New Account" form on the login page (see
 // handleCreateAccount() in httpdocs/index.html) - it must stay reachable by
-// anyone, so it's rate-limited instead of authenticated, the same as
-// /register-member above.
+// anyone, so it's rate-limited instead of authenticated.
 app.post("/api/create-account", authLimiter, express.json(), async (req, res) => {
   try {
     const { username, email, password } = req.body;
