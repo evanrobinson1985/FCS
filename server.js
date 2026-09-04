@@ -497,6 +497,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       role: user.role,
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
+      allowedStates: getAllowedStatesForUser(user),
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -573,6 +574,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       role: user.role,
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
+      allowedStates: getAllowedStatesForUser(user),
     });
   } catch (error) {
     console.error("2FA verification error:", error);

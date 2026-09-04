@@ -418,76 +418,12 @@
 <div class="map-title">
 <h3>Florida Cave Survey Interactive Map</h3>
 <div class="map-options">
-<!--County Filter -->
+<!-- State + County Filter -->
+<select class="filter-select" id="map-filter-state">
+<option value="all">All States</option>
+</select>
 <select class="filter-select" id="map-filter-county">
 <option value="all">All Counties</option>
-<option value="AL">Alachua</option>
-<option value="BA">Bay</option>
-<option value="BF">Bradford</option>
-<option value="BK">Baker</option>
-<option value="BR">Broward</option>
-<option value="BV">Brevard</option>
-<option value="CA">Calhoun</option>
-<option value="CH">Charlotte</option>
-<option value="CI">Citrus</option>
-<option value="CL">Clay</option>
-<option value="CO">Collier</option>
-<option value="CU">Columbia</option>
-<option value="DA">Dade</option>
-<option value="DE">Desoto</option>
-<option value="DI">Dixie</option>
-<option value="DU">Duval</option>
-<option value="ES">Escambia</option>
-<option value="FL">Flagler</option>
-<option value="FR">Franklin</option>
-<option value="GC">Gilchrist</option>
-<option value="GG">Gadsden</option>
-<option value="GL">Glades</option>
-<option value="GU">Gulf</option>
-<option value="HA">Hamilton</option>
-<option value="HB">Hillsborough</option>
-<option value="HI">Highlands</option>
-<option value="HL">Holmes</option>
-<option value="HN">Hendry</option>
-<option value="HO">Hernando</option>
-<option value="HR">Hardee</option>
-<option value="IR">Indian River</option>
-<option value="JK">Jackson</option>
-<option value="JF">Jefferson</option>
-<option value="LF">Lafayette</option>
-<option value="LB">Liberty</option>
-<option value="LE">Lee</option>
-<option value="LL">Leon</option>
-<option value="LK">Lake</option>
-<option value="LV">Levy</option>
-<option value="MD">Madison</option>
-<option value="MI">Miami-Dade</option>
-<option value="MN">Manatee</option>
-<option value="MO">Monroe</option>
-<option value="MR">Marion</option>
-<option value="MT">Martin</option>
-<option value="NA">Nassau</option>
-<option value="OK">Okaloosa</option>
-<option value="OR">Orange</option>
-<option value="OS">Osceola</option>
-<option value="PA">Pasco</option>
-<option value="PB">Palm Beach</option>
-<option value="PN">Pinellas</option>
-<option value="PO">Polk</option>
-<option value="PU">Putnam</option>
-<option value="SA">Sarasota</option>
-<option value="SF">Suwannee</option>
-<option value="SJ">St. Johns</option>
-<option value="SL">St Lucie</option>
-<option value="SM">Seminole</option>
-<option value="SR">Santa Rosa</option>
-<option value="SU">Sumter</option>
-<option value="TY">Taylor</option>
-<option value="UN">Union</option>
-<option value="VO">Volusia</option>
-<option value="WA">Walton</option>
-<option value="WU">Wakulla</option>
-<option value="WS">Washington</option>
 </select>
 <select class="filter-select" id="map-filter-type">
 <option value="all">All Cave Types</option>
@@ -640,75 +576,11 @@
 <button class="btn-warning" onclick="clearDatabaseSearch()">Clear</button>
 </div>
 <div style="display: flex; gap: 10px;">
+<select id="database-filter-state" onchange="filterDatabase()" style="padding: 8px;">
+<option value="all">All States</option>
+</select>
 <select id="database-filter-county" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All Counties</option>
-<option value="AL">Alachua</option>
-<option value="BA">Bay</option>
-<option value="BF">Bradford</option>
-<option value="BK">Baker</option>
-<option value="BR">Broward</option>
-<option value="BV">Brevard</option>
-<option value="CA">Calhoun</option>
-<option value="CH">Charlotte</option>
-<option value="CI">Citrus</option>
-<option value="CL">Clay</option>
-<option value="CO">Collier</option>
-<option value="CU">Columbia</option>
-<option value="DA">Dade</option>
-<option value="DE">Desoto</option>
-<option value="DI">Dixie</option>
-<option value="DU">Duval</option>
-<option value="ES">Escambia</option>
-<option value="FL">Flagler</option>
-<option value="FR">Franklin</option>
-<option value="GC">Gilchrist</option>
-<option value="GG">Gadsden</option>
-<option value="GL">Glades</option>
-<option value="GU">Gulf</option>
-<option value="HA">Hamilton</option>
-<option value="HB">Hillsborough</option>
-<option value="HI">Highlands</option>
-<option value="HL">Holmes</option>
-<option value="HN">Hendry</option>
-<option value="HO">Hernando</option>
-<option value="HR">Hardee</option>
-<option value="IR">Indian River</option>
-<option value="JK">Jackson</option>
-<option value="JF">Jefferson</option>
-<option value="LF">Lafayette</option>
-<option value="LB">Liberty</option>
-<option value="LE">Lee</option>
-<option value="LL">Leon</option>
-<option value="LK">Lake</option>
-<option value="LV">Levy</option>
-<option value="MD">Madison</option>
-<option value="MI">Miami-Dade</option>
-<option value="MN">Manatee</option>
-<option value="MO">Monroe</option>
-<option value="MR">Marion</option>
-<option value="MT">Martin</option>
-<option value="NA">Nassau</option>
-<option value="OK">Okaloosa</option>
-<option value="OR">Orange</option>
-<option value="OS">Osceola</option>
-<option value="PA">Pasco</option>
-<option value="PB">Palm Beach</option>
-<option value="PN">Pinellas</option>
-<option value="PO">Polk</option>
-<option value="PU">Putnam</option>
-<option value="SA">Sarasota</option>
-<option value="SF">Suwannee</option>
-<option value="SJ">St. Johns</option>
-<option value="SL">St Lucie</option>
-<option value="SM">Seminole</option>
-<option value="SR">Santa Rosa</option>
-<option value="SU">Sumter</option>
-<option value="TY">Taylor</option>
-<option value="UN">Union</option>
-<option value="VO">Volusia</option>
-<option value="WA">Walton</option>
-<option value="WU">Wakulla</option>
-<option value="WS">Washington</option>
 </select>
 <select id="database-filter-type" onchange="filterDatabase()" style="padding: 8px;"></select>
 <option value="all">All Cave Types</option>
@@ -884,77 +756,15 @@
 <input id="edit-cave-name" type="text"/>
 </div>
 <div class="form-group">
+<label for="edit-state">State:</label>
+<select id="edit-state">
+<option value="">Select a state</option>
+</select>
+</div>
+<div class="form-group">
 <label for="edit-county">County:</label>
 <select id="edit-county">
 <option value="">Select a county</option>
-<option value="AL">Alachua</option>
-<option value="BA">Bay</option>
-<option value="BF">Bradford</option>
-<option value="BK">Baker</option>
-<option value="BR">Broward</option>
-<option value="BV">Brevard</option>
-<option value="CA">Calhoun</option>
-<option value="CH">Charlotte</option>
-<option value="CI">Citrus</option>
-<option value="CL">Clay</option>
-<option value="CO">Collier</option>
-<option value="CU">Columbia</option>
-<option value="DA">Dade</option>
-<option value="DE">Desoto</option>
-<option value="DI">Dixie</option>
-<option value="DU">Duval</option>
-<option value="ES">Escambia</option>
-<option value="FL">Flagler</option>
-<option value="FR">Franklin</option>
-<option value="GC">Gilchrist</option>
-<option value="GG">Gadsden</option>
-<option value="GL">Glades</option>
-<option value="GU">Gulf</option>
-<option value="HA">Hamilton</option>
-<option value="HB">Hillsborough</option>
-<option value="HI">Highlands</option>
-<option value="HL">Holmes</option>
-<option value="HN">Hendry</option>
-<option value="HO">Hernando</option>
-<option value="HR">Hardee</option>
-<option value="IR">Indian River</option>
-<option value="JK">Jackson</option>
-<option value="JF">Jefferson</option>
-<option value="LF">Lafayette</option>
-<option value="LB">Liberty</option>
-<option value="LE">Lee</option>
-<option value="LL">Leon</option>
-<option value="LK">Lake</option>
-<option value="LV">Levy</option>
-<option value="MD">Madison</option>
-<option value="MI">Miami-Dade</option>
-<option value="MN">Manatee</option>
-<option value="MO">Monroe</option>
-<option value="MR">Marion</option>
-<option value="MT">Martin</option>
-<option value="NA">Nassau</option>
-<option value="OK">Okaloosa</option>
-<option value="OR">Orange</option>
-<option value="OS">Osceola</option>
-<option value="PA">Pasco</option>
-<option value="PB">Palm Beach</option>
-<option value="PN">Pinellas</option>
-<option value="PO">Polk</option>
-<option value="PU">Putnam</option>
-<option value="SA">Sarasota</option>
-<option value="SF">Suwannee</option>
-<option value="SJ">St. Johns</option>
-<option value="SL">St Lucie</option>
-<option value="SM">Seminole</option>
-<option value="SR">Santa Rosa</option>
-<option value="SU">Sumter</option>
-<option value="TY">Taylor</option>
-<option value="UN">Union</option>
-<option value="VO">Volusia</option>
-<option value="WA">Walton</option>
-<option value="WU">Wakulla</option>
-<option value="WS">Washington</option>
-<!-- Add more counties as needed -->
 </select>
 </div>
 <div class="form-group">
@@ -2464,28 +2274,25 @@
       cavesLayer.clearLayers();
       
       // Get filter values
+      const stateFilter = document.getElementById('map-filter-state')?.value || 'all';
       const countyFilter = document.getElementById('map-filter-county').value;
       const typeFilter = document.getElementById('map-filter-type').value;
       const statusFilter = document.getElementById('map-filter-status').value;
-      
+
       // Filter the cave data
       let filteredCaves = [...caveDataStore]; // Create a copy to avoid modifying the original
-      
+
       if (activeSubmissionId) {
         // Filter by active submission if one is selected
         filteredCaves = filteredCaves.filter(cave => cave.submissionId === activeSubmissionId);
       }
-      
+
+      if (stateFilter !== 'all') {
+        filteredCaves = filteredCaves.filter(cave => resolveCaveStateAndCounty(cave).state === stateFilter);
+      }
+
       if (countyFilter !== 'all') {
-        // Filter by county - check the id's county code (characters 1-3)
-        filteredCaves = filteredCaves.filter(cave => {
-          if (cave.id && cave.id.length >= 3) {
-            return cave.id.substring(1, 3) === countyFilter;
-          } else if (cave.county) {
-            return cave.county === countyFilter;
-          }
-          return false;
-        });
+        filteredCaves = filteredCaves.filter(cave => resolveCaveStateAndCounty(cave).county === countyFilter);
       }
       
       if (typeFilter !== 'all') {
@@ -2589,9 +2396,13 @@
               <!-- Basic Information -->
               <div style="margin-bottom: 10px;">
                 <p><strong>Type:</strong> ${cave.type}</p>
+                <p><strong>State:</strong> ${(() => {
+                  const resolved = resolveCaveStateAndCounty(cave);
+                  return resolved.state ? getStateName(resolved.state) : 'Unknown';
+                })()}</p>
                 <p><strong>County:</strong> ${(() => {
-                  const countyCode = cave.county || cave.id?.substring(1, 3) || '';
-                  return countyCode ? `${countyCode} - ${getCountyName(countyCode)}` : 'Unknown';
+                  const resolved = resolveCaveStateAndCounty(cave);
+                  return resolved.county ? `${resolved.county} - ${getCountyName(resolved.state, resolved.county)}` : 'Unknown';
                 })()}</p>
                 <p><strong>Coordinates:</strong> ${cave.lat.toFixed(6)}, ${cave.lng.toFixed(6)}</p>
                 <p><strong>Location Accuracy:</strong> ${(() => {
@@ -2741,7 +2552,8 @@
       activeSubmissionId = null;
       
       // Reset filters
-      document.getElementById('map-filter-county').value = 'all';
+      document.getElementById('map-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -2766,7 +2578,8 @@
       activeSubmissionId = submissionId;
       
       // Reset other filters
-      document.getElementById('map-filter-county').value = 'all';
+      document.getElementById('map-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -2780,7 +2593,8 @@
       activeSubmissionId = null;
       
       // Reset filters
-      document.getElementById('map-filter-county').value = 'all';
+      document.getElementById('map-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -3541,9 +3355,13 @@ function updateStatistics() {
   document.getElementById('land-caves').textContent = landCaves;
   document.getElementById('underwater-caves').textContent = underwaterCaves;
   
-  // Count unique counties
-  const counties = [...new Set(caveDataStore.map(cave => cave.id.substring(1, 3)))];
-  document.getElementById('counties-count').textContent = counties.length;
+  // Count unique state+county pairs - a bare county code can collide across
+  // states, so pairing it with state avoids undercounting.
+  const counties = new Set(caveDataStore.map(cave => {
+    const resolved = resolveCaveStateAndCounty(cave);
+    return `${resolved.state || ''}|${resolved.county || ''}`;
+  }));
+  document.getElementById('counties-count').textContent = counties.size;
   
   // Count by entry status
   const commercialCaves = caveDataStore.filter(cave => cave.entryStatus === 'C').length;
@@ -3867,96 +3685,31 @@ function createCaveTypesChart(landCaves, underwaterCaves) {
 
 // Create the counties bar chart
 function createCountiesChart(caveData) {
-  // Count caves by county
+  // Count caves by state+county pair - a bare county code can now collide
+  // across states (e.g. two different states both using "AL" for one of
+  // their counties), so the county code alone is no longer a safe key.
   const countyCounts = {};
-  
+
   caveData.forEach(cave => {
-    const county = cave.id.substring(1, 3);
-    if (countyCounts[county]) {
-      countyCounts[county]++;
-    } else {
-      countyCounts[county] = 1;
-    }
+    const resolved = resolveCaveStateAndCounty(cave);
+    if (!resolved.county) return;
+    const key = `${resolved.state || ''}|${resolved.county}`;
+    countyCounts[key] = (countyCounts[key] || 0) + 1;
   });
-  
+
   // Convert to arrays for Chart.js
-  const counties = Object.keys(countyCounts);
-  const counts = Object.values(countyCounts);
-  
-  // County name mapping
-const countyNames = {
-  'AL': 'Alachua',
-  'BA': 'Bay',
-  'BF': 'Bradford',
-  'BK': 'Baker',
-  'BR': 'Broward',
-  'BV': 'Brevard',
-  'CA': 'Calhoun',
-  'CH': 'Charlotte',
-  'CI': 'Citrus',
-  'CL': 'Clay',
-  'CO': 'Collier',
-  'CU': 'Columbia',
-  'DA': 'Dade',
-  'DE': 'Desoto',
-  'DI': 'Dixie',
-  'DU': 'Duval',
-  'ES': 'Escambia',
-  'FL': 'Flagler',
-  'FR': 'Franklin',
-  'GC': 'Gilchrist',
-  'GG': 'Gadsden',
-  'GL': 'Glades',
-  'GU': 'Gulf',
-  'HA': 'Hamilton',
-  'HB': 'Hillsborough',
-  'HI': 'Highlands',
-  'HL': 'Holmes',
-  'HN': 'Hendry',
-  'HO': 'Hernando',
-  'HR': 'Hardee',
-  'IR': 'Indian River',
-  'JK': 'Jackson',
-  'JF': 'Jefferson',
-  'LF': 'Lafayette',
-  'LB': 'Liberty',
-  'LE': 'Lee',
-  'LL': 'Leon',
-  'LK': 'Lake',
-  'LV': 'Levy',
-  'MD': 'Madison',
-  'MI': 'Miami-Dade',
-  'MN': 'Manatee',
-  'MO': 'Monroe',
-  'MR': 'Marion',
-  'MT': 'Martin',
-  'NA': 'Nassau',
-  'OK': 'Okaloosa',
-  'OR': 'Orange',
-  'OS': 'Osceola',
-  'PA': 'Pasco',
-  'PB': 'Palm Beach',
-  'PN': 'Pinellas',
-  'PO': 'Polk',
-  'PU': 'Putnam',
-  'SA': 'Sarasota',
-  'SF': 'Suwannee',
-  'SJ': 'St. Johns',
-  'SL': 'St Lucie',
-  'SM': 'Seminole',
-  'SR': 'Santa Rosa',
-  'SU': 'Sumter',
-  'TY': 'Taylor',
-  'UN': 'Union',
-  'VO': 'Volusia',
-  'WA': 'Walton',
-  'WU': 'Wakulla',
-  'WS': 'Washington'
-};
-  
-  // Map codes to full names
-  const countyLabels = counties.map(code => countyNames[code] || code);
-  
+  const keys = Object.keys(countyCounts);
+  const counts = keys.map(key => countyCounts[key]);
+
+  // Map state+county keys to display labels via the shared reference config
+  // (getCountyName/getStateName - single source of truth, no more locally
+  // hardcoded county lists).
+  const countyLabels = keys.map(key => {
+    const [state, county] = key.split('|');
+    const countyName = getCountyName(state, county);
+    return state ? `${countyName} (${state})` : countyName;
+  });
+
   // Create the chart
   const countiesCtx = document.createElement('canvas');
   countiesCtx.id = 'counties-canvas';
@@ -4146,11 +3899,12 @@ function loadFcsDatabaseTable() {
 
       displayData.forEach(cave => {
         const row = document.createElement("tr");
+        const resolved = resolveCaveStateAndCounty(cave);
 
         // Create a complete data object with all fields, handling undefined values
         const values = {
-          'State': 'F',
-          'County': cave.county || (cave.id?.substring(1, 3) || ''),
+          'State': resolved.state || '',
+          'County': resolved.county || '',
           'Cave ID': cave.id || '',
           'Record Type': cave.recordType || '',
           'Entrance No': cave.entranceNumber || '1',
@@ -4256,10 +4010,11 @@ function loadFcsDatabaseTable() {
       const rows = [
         headers.join(','),
         ...caveDataStore.map(cave => {
+          const resolved = resolveCaveStateAndCounty(cave);
           // Build array of values in the same order as headers
           const values = [
-            'F', // State
-            cave.county || (cave.id?.substring(1, 3) || ''),
+            resolved.state || '',
+            resolved.county || '',
             cave.id || '',
             cave.recordType || '',
             cave.entranceNumber || '1',
@@ -4336,9 +4091,11 @@ function loadFcsDatabaseTable() {
       // First convert our data to a format XLSX can understand, including all fields
       const data = [
         headers,
-        ...caveDataStore.map(cave => [
-          'F', // State
-          cave.county || (cave.id?.substring(1, 3) || ''),
+        ...caveDataStore.map(cave => {
+          const resolved = resolveCaveStateAndCounty(cave);
+          return [
+          resolved.state || '',
+          resolved.county || '',
           cave.id || '',
           cave.recordType || '',
           cave.entranceNumber || '1',
@@ -4380,9 +4137,10 @@ function loadFcsDatabaseTable() {
           ].filter(h => h).join(', ') : '',
           cave.hazards?.notes || '',
           cave.ownerInfo || ''
-        ])
+          ];
+        })
       ];
-      
+
       // Create a worksheet
       const ws = XLSX.utils.aoa_to_sheet(data);
       
@@ -4416,80 +4174,123 @@ function loadFcsDatabaseTable() {
       return string.charAt(0).toUpperCase() + string.slice(1);
     }
 
-    // Get county name from county code
-    function getCountyName(countyCode) {
-      const countyNames = {
-        'AL': 'Alachua',
-      'BA': 'Bay',
-      'BF': 'Bradford',
-      'BK': 'Baker',
-      'BR': 'Broward',
-      'BV': 'Brevard',
-      'CA': 'Calhoun',
-      'CH': 'Charlotte',
-      'CI': 'Citrus',
-      'CL': 'Clay',
-      'CO': 'Collier',
-      'CU': 'Columbia',
-      'DA': 'Dade',
-      'DE': 'Desoto',
-      'DI': 'Dixie',
-      'DU': 'Duval',
-      'ES': 'Escambia',
-      'FL': 'Flagler',
-      'FR': 'Franklin',
-      'GC': 'Gilchrist',
-      'GG': 'Gadsden',
-      'GL': 'Glades',
-      'GU': 'Gulf',
-      'HA': 'Hamilton',
-      'HB': 'Hillsborough',
-      'HI': 'Highlands',
-      'HL': 'Holmes',
-      'HN': 'Hendry',
-      'HO': 'Hernando',
-      'HR': 'Hardee',
-      'IR': 'Indian River',
-      'JK': 'Jackson',
-      'JF': 'Jefferson',
-      'LF': 'Lafayette',
-      'LB': 'Liberty',
-      'LE': 'Lee',
-      'LL': 'Leon',
-      'LK': 'Lake',
-      'LV': 'Levy',
-      'MD': 'Madison',
-      'MI': 'Miami-Dade',
-      'MN': 'Manatee',
-      'MO': 'Monroe',
-      'MR': 'Marion',
-      'MT': 'Martin',
-      'NA': 'Nassau',
-      'OK': 'Okaloosa',
-      'OR': 'Orange',
-      'OS': 'Osceola',
-      'PA': 'Pasco',
-      'PB': 'Palm Beach',
-      'PN': 'Pinellas',
-      'PO': 'Polk',
-      'PU': 'Putnam',
-      'SA': 'Sarasota',
-      'SF': 'Suwannee',
-      'SJ': 'St. Johns',
-      'SL': 'St Lucie',
-      'SM': 'Seminole',
-      'SR': 'Santa Rosa',
-      'SU': 'Sumter',
-      'TY': 'Taylor',
-      'UN': 'Union',
-      'VO': 'Volusia',
-      'WA': 'Walton',
-      'WU': 'Wakulla',
-      'WS': 'Washington'
-        // Add more counties as needed
-      };
-      
-      return countyNames[countyCode] || countyCode;
+    // Client-side mirror of resolveCaveStateAndCounty() in server.js - same
+    // reasoning: the authoritative source of a cave's state/county is now
+    // the explicit fields on the record; this only fills in whichever of
+    // those a legacy Florida record (written before the fields existed) is
+    // missing, parsed out of its ID.
+    const LEGACY_FLORIDA_ID_RE = /^F([A-Z]{2})\d+$/;
+    function resolveCaveStateAndCounty(cave) {
+      if (!cave) return { state: null, county: null };
+      let state = cave.state || null;
+      let county = cave.county || null;
+      if ((!state || !county) && cave.id) {
+        const match = cave.id.match(LEGACY_FLORIDA_ID_RE);
+        if (match) {
+          state = state || 'FL';
+          county = county || match[1];
+        }
+      }
+      return { state, county };
+    }
+
+    // Returns the full name for a state code (e.g. "FL" -> "Florida"), or
+    // the code itself if the reference config hasn't loaded yet.
+    function getStateName(stateCode) {
+      const state = (window.statesConfigCache || []).find(s => s.code === stateCode);
+      return state ? state.name : stateCode;
+    }
+
+    // Returns the county list ([{code, name}, ...]) for a state code, or []
+    // if unknown/not loaded yet.
+    function getCountiesForState(stateCode) {
+      const state = (window.statesConfigCache || []).find(s => s.code === stateCode);
+      return state ? state.counties : [];
+    }
+
+    // Get county name from state + county code. Replaces what used to be 3
+    // separate hardcoded copies of Florida's county list (this function,
+    // createCountiesChart(), and a duplicate of this function) - all three
+    // now come from the same shared state/county reference config.
+    function getCountyName(stateCode, countyCode) {
+      const county = getCountiesForState(stateCode).find(c => c.code === countyCode);
+      return county ? county.name : countyCode;
+    }
+
+    // Populates a <select> with every state from the reference config, and
+    // (if the caller passes it) restricts the options to just the given
+    // list of state codes - used to limit a scoped member's state pickers
+    // to their allowedStates instead of every state in the system.
+    function populateStateSelect(selectEl, { includeAllOption = false, restrictToCodes = null } = {}) {
+      if (!selectEl) return;
+      const states = (window.statesConfigCache || [])
+        .filter(s => !restrictToCodes || restrictToCodes.includes(s.code));
+      const previousValue = selectEl.value;
+      selectEl.innerHTML =
+        (includeAllOption ? '<option value="all">All States</option>' : '<option value="">Select a state</option>') +
+        states.map(s => `<option value="${s.code}">${s.name}</option>`).join('');
+      if ([...selectEl.options].some(o => o.value === previousValue)) {
+        selectEl.value = previousValue;
+      }
+    }
+
+    // Populates a <select> with the counties for one state (or clears it to
+    // just the placeholder if no state is chosen / "all" is selected).
+    function populateCountySelect(selectEl, stateCode, { includeAllOption = false } = {}) {
+      if (!selectEl) return;
+      const placeholder = includeAllOption ? '<option value="all">All Counties</option>' : '<option value="">Select a county</option>';
+      if (!stateCode || stateCode === 'all') {
+        selectEl.innerHTML = placeholder;
+        return;
+      }
+      const counties = getCountiesForState(stateCode).slice().sort((a, b) => a.name.localeCompare(b.name));
+      selectEl.innerHTML = placeholder + counties.map(c => `<option value="${c.code}">${c.name}</option>`).join('');
+    }
+
+    // Sets up every state/county <select> pair on the page after login:
+    // fills each state select from the reference config (restricted to the
+    // logged-in member's allowedStates, unrestricted for admin/webmaster -
+    // see sessionStorage's "allowedStates", set in completeLogin()), wires
+    // each one to cascade into its paired county select, and does an
+    // initial populate. Safe to call more than once.
+    async function initializeStateSelectors() {
+      await loadStatesConfig();
+
+      let restrictToCodes = null;
+      try {
+        const stored = JSON.parse(sessionStorage.getItem('allowedStates') || 'null');
+        if (Array.isArray(stored)) restrictToCodes = stored;
+      } catch (e) {
+        restrictToCodes = null;
+      }
+
+      const pairs = [
+        { stateId: 'map-filter-state', countyId: 'map-filter-county', includeAllOption: true, onChange: () => { if (typeof applyMapFilters === 'function' && map) applyMapFilters(); } },
+        { stateId: 'database-filter-state', countyId: 'database-filter-county', includeAllOption: true, onChange: () => { if (typeof filterDatabase === 'function') filterDatabase(); } },
+        { stateId: 'edit-state', countyId: 'edit-county', includeAllOption: false, onChange: null },
+      ];
+
+      pairs.forEach(({ stateId, countyId, includeAllOption, onChange }) => {
+        const stateSelect = document.getElementById(stateId);
+        const countySelect = document.getElementById(countyId);
+        if (!stateSelect) return;
+
+        const previousValue = stateSelect.value;
+        populateStateSelect(stateSelect, { includeAllOption, restrictToCodes });
+        if ([...stateSelect.options].some(o => o.value === previousValue)) {
+          stateSelect.value = previousValue;
+        }
+
+        if (!stateSelect.dataset.cascadeWired) {
+          stateSelect.addEventListener('change', () => {
+            populateCountySelect(countySelect, stateSelect.value, { includeAllOption });
+            if (onChange) onChange();
+          });
+          stateSelect.dataset.cascadeWired = 'true';
+        }
+
+        populateCountySelect(countySelect, stateSelect.value, { includeAllOption });
+      });
     }
 
     // Get entry status name from code
@@ -4843,9 +4644,14 @@ function loadFcsDatabaseTable() {
       // Basic information
       document.getElementById('edit-cave-id').value = cave.id || '';
       document.getElementById('edit-cave-name').value = cave.name || '';
-      
-      // County - parse from ID if not directly provided
-      document.getElementById('edit-county').value = cave.county || (cave.id && cave.id.length >= 3 ? cave.id.substring(1, 3) : '');
+
+      // State + county - resolveCaveStateAndCounty falls back to parsing
+      // the ID for legacy Florida records missing these fields explicitly.
+      const resolvedStateCounty = resolveCaveStateAndCounty(cave);
+      const editStateSelect = document.getElementById('edit-state');
+      editStateSelect.value = resolvedStateCounty.state || '';
+      populateCountySelect(document.getElementById('edit-county'), resolvedStateCounty.state || '');
+      document.getElementById('edit-county').value = resolvedStateCounty.county || '';
 
       // Cave type
       if (cave.type) {
@@ -5913,7 +5719,8 @@ window.addEventListener('error', function(e) {
       }
       
       // Reset other filters to show all results
-      document.getElementById('map-filter-county').value = 'all';
+      document.getElementById('map-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       activeSubmissionId = null;
@@ -6008,9 +5815,13 @@ window.addEventListener('error', function(e) {
               <!-- Basic Information -->
               <div style="margin-bottom: 10px;">
                 <p><strong>Type:</strong> ${cave.type}</p>
+                <p><strong>State:</strong> ${(() => {
+                  const resolved = resolveCaveStateAndCounty(cave);
+                  return resolved.state ? getStateName(resolved.state) : 'Unknown';
+                })()}</p>
                 <p><strong>County:</strong> ${(() => {
-                  const countyCode = cave.county || cave.id?.substring(1, 3) || '';
-                  return countyCode ? `${countyCode} - ${getCountyName(countyCode)}` : 'Unknown';
+                  const resolved = resolveCaveStateAndCounty(cave);
+                  return resolved.county ? `${resolved.county} - ${getCountyName(resolved.state, resolved.county)}` : 'Unknown';
                 })()}</p>
                 <p><strong>Coordinates:</strong> ${cave.lat.toFixed(6)}, ${cave.lng.toFixed(6)}</p>
                 <p><strong>Location Accuracy:</strong> ${(() => {
@@ -6153,7 +5964,8 @@ window.addEventListener('error', function(e) {
       document.getElementById('cave-search').value = '';
       
       // Reset filters and reload all caves
-      document.getElementById('map-filter-county').value = 'all';
+      document.getElementById('map-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       activeSubmissionId = null;
@@ -6173,9 +5985,10 @@ window.addEventListener('error', function(e) {
 
       caveDataStore.forEach(cave => {
         if ((cave.latitude || cave.lat) && (cave.longitude || cave.lng)) {
+          const resolved = resolveCaveStateAndCounty(cave);
           let description = `
-    State: F
-    County: ${cave.county || (cave.id?.substring(1, 3) || 'N/A')}
+    State: ${resolved.state || 'N/A'}
+    County: ${resolved.county || 'N/A'}
     Cave ID: ${cave.id || 'N/A'}
     Record Type: ${cave.recordType || 'N/A'}
     Entrance No: ${cave.entranceNumber || '1'}
@@ -6247,30 +6060,37 @@ window.addEventListener('error', function(e) {
 
     function clearDatabaseSearch() {
       document.getElementById('database-search').value = '';
-      document.getElementById('database-filter-county').value = 'all';
+      document.getElementById('database-filter-state').value = 'all';
+      populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('database-filter-type').value = 'all';
       document.getElementById('database-filter-status').value = 'all';
       filterDatabase();
     }
 
     function filterDatabase(searchTerm = '') {
+      const state = document.getElementById('database-filter-state')?.value || 'all';
       const county = document.getElementById('database-filter-county').value;
       const type = document.getElementById('database-filter-type').value;
       const status = document.getElementById('database-filter-status').value;
-      
+
       let filteredData = [...caveDataStore];
-      
+
       // Apply search term
       if (searchTerm) {
-        filteredData = filteredData.filter(cave => 
+        filteredData = filteredData.filter(cave =>
           (cave.name && cave.name.toLowerCase().includes(searchTerm)) ||
           (cave.id && cave.id.toLowerCase().includes(searchTerm))
         );
       }
-      
+
+      // Apply state filter
+      if (state !== 'all') {
+        filteredData = filteredData.filter(cave => resolveCaveStateAndCounty(cave).state === state);
+      }
+
       // Apply county filter
       if (county !== 'all') {
-        filteredData = filteredData.filter(cave => cave.county === county);
+        filteredData = filteredData.filter(cave => resolveCaveStateAndCounty(cave).county === county);
       }
       
       // Apply type filter
@@ -6325,11 +6145,12 @@ window.addEventListener('error', function(e) {
       const tbody = document.createElement("tbody");
       filteredData.forEach(cave => {
         const row = document.createElement("tr");
-        
+        const resolved = resolveCaveStateAndCounty(cave);
+
         // Add cells
         const cells = [
-          'F',                              // State
-          cave.county || cave.id.substr(1,2),
+          resolved.state || '',
+          resolved.county || '',
           cave.id,
           cave.recordType || '',
           cave.entranceNumber || '',
@@ -6594,6 +6415,10 @@ window.addEventListener('error', function(e) {
     localStorage.setItem('role', result.role);
     sessionStorage.setItem('role', result.role);
     sessionStorage.setItem('sessionToken', result.token);
+    // null (JSON "null") means unrestricted - admin/webmaster - same
+    // convention the server uses (see getAllowedStatesForUser in server.js).
+    sessionStorage.setItem('allowedStates', JSON.stringify(result.allowedStates ?? null));
+    initializeStateSelectors();
 
     // Hide login, show dashboard
     document.getElementById('login-section').style.display = 'none';
@@ -6987,7 +6812,8 @@ window.addEventListener('error', function(e) {
           
           // Initialize the search/filter state
           document.getElementById('database-search').value = '';
-          document.getElementById('database-filter-county').value = 'all';
+          document.getElementById('database-filter-state').value = 'all';
+          populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
           document.getElementById('database-filter-type').value = 'all';
           document.getElementById('database-filter-status').value = 'all';
           
@@ -7237,15 +7063,19 @@ window.addEventListener('error', function(e) {
       newCaveBtn.addEventListener('click', initNewCaveForm);
     }
     
-    // Add event listener to the county dropdown to generate ID when county is selected
+    // Add event listener to the county dropdown to generate a temp ID when
+    // both state and county are selected (state's own change handler
+    // repopulates the county list - see initializeStateSelectors() - so by
+    // the time the user picks a county, edit-state already has a value).
     const countySelect = document.getElementById('edit-county');
     if (countySelect) {
       countySelect.addEventListener('change', function() {
         // Only generate ID if we're in "new cave" mode
         if (document.getElementById('edit-cave-form').classList.contains('new-cave-mode')) {
+          const stateCode = document.getElementById('edit-state').value;
           const countyCode = this.value;
-          if (countyCode) {
-            const newCaveId = generateNewCaveId(countyCode);
+          if (stateCode && countyCode) {
+            const newCaveId = generateNewCaveId(stateCode, countyCode);
             document.getElementById('edit-cave-id').value = newCaveId;
           }
         }
@@ -7264,7 +7094,8 @@ window.addEventListener('error', function(e) {
     // Clear all field values
     document.getElementById('edit-cave-id').value = '';
     document.getElementById('edit-cave-name').value = '';
-    document.getElementById('edit-county').value = '';
+    document.getElementById('edit-state').value = '';
+    populateCountySelect(document.getElementById('edit-county'), '');
     document.getElementById('edit-type').value = 'land';
     document.getElementById('edit-latitude').value = '';
     document.getElementById('edit-longitude').value = '';
@@ -7285,17 +7116,21 @@ window.addEventListener('error', function(e) {
     document.getElementById('edit-cave-name').focus();
   }
 
-  // Generate a temporary new cave ID (server will provide the final one)
-  function generateNewCaveId(countyCode) {
-    // Just return a temporary placeholder - server will generate the real one
-    return `F${countyCode}TEMP`;
+  // Generate a temporary new cave ID (server will provide the real one,
+  // including the correct per-state prefix - see getCaveIdPrefix in
+  // server.js). This is just a placeholder so the form has something to
+  // display before that happens.
+  function generateNewCaveId(stateCode, countyCode) {
+    const state = (window.statesConfigCache || []).find(s => s.code === stateCode);
+    const prefix = state ? state.caveIdPrefix : (stateCode || 'F');
+    return `${prefix}${countyCode}TEMP`;
   }
 
   // Members' proposed new caves and edits go here instead of straight to the
   // database - a webmaster reviews and applies (or rejects) them from the
   // Pending Submissions tab. See PATCH /api/pending-submissions/:id, which
   // is what actually writes the change into the cave database on approval.
-  function submitCaveProposalForReview(updatedCave, isNewCave, caveId, countyCode) {
+  function submitCaveProposalForReview(updatedCave, isNewCave, caveId, stateCode, countyCode) {
     const saveBtn = document.querySelector('#edit-actions-container button[type="submit"]');
     if (saveBtn) {
       saveBtn.textContent = "Submitting...";
@@ -7304,8 +7139,9 @@ window.addEventListener('error', function(e) {
 
     const payload = {
       type: isNewCave ? 'new_cave' : 'edit_cave',
-      caveId: isNewCave ? generateNewCaveId(countyCode) : caveId,
+      caveId: isNewCave ? generateNewCaveId(stateCode, countyCode) : caveId,
       caveName: updatedCave.name,
+      state: stateCode,
       county: countyCode,
       proposedData: updatedCave,
     };
@@ -7345,27 +7181,34 @@ window.addEventListener('error', function(e) {
     
     const caveId = document.getElementById('edit-cave-id').value;
     const isNewCave = document.getElementById('edit-cave-form').classList.contains('new-cave-mode');
-    
+
     // Validate required fields
     const caveName = document.getElementById('edit-cave-name').value;
+    const stateCode = document.getElementById('edit-state').value;
     const countyCode = document.getElementById('edit-county').value;
     const latitude = document.getElementById('edit-latitude').value;
     const longitude = document.getElementById('edit-longitude').value;
-    
+
     if (!caveName) {
       alert("Please enter a cave name.");
       document.getElementById('edit-cave-name').focus();
       return;
     }
-    
+
+    if (!stateCode) {
+      alert("Please select a state.");
+      document.getElementById('edit-state').focus();
+      return;
+    }
+
     if (!countyCode) {
       alert("Please select a county.");
       document.getElementById('edit-county').focus();
       return;
     }
-    
+
     if (!caveId && isNewCave) {
-      alert("Please select a county to generate a Cave ID.");
+      alert("Please select a state and county to generate a Cave ID.");
       document.getElementById('edit-county').focus();
       return;
     }
@@ -7380,6 +7223,7 @@ window.addEventListener('error', function(e) {
     const updatedCave = {
       id: caveId,
       name: caveName,
+      state: stateCode,
       county: countyCode,
       type: document.getElementById('edit-type').value === 'underwater' ? 'Underwater Cave' : 'Land Cave',
       
@@ -7483,7 +7327,7 @@ window.addEventListener('error', function(e) {
     // and webmasters keep the existing direct-save behavior below.
     const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
     if (currentRole === 'member') {
-      submitCaveProposalForReview(updatedCave, isNewCave, caveId, countyCode);
+      submitCaveProposalForReview(updatedCave, isNewCave, caveId, stateCode, countyCode);
       return;
     }
 
@@ -7599,7 +7443,8 @@ window.addEventListener('error', function(e) {
       // For new caves that failed server save, still add locally but warn user
       if (isNewCave) {
         // Generate a temporary ID for local use
-        const tempId = `F${countyCode}TEMP${Date.now()}`;
+        const tempPrefix = ((window.statesConfigCache || []).find(s => s.code === stateCode) || {}).caveIdPrefix || stateCode || 'F';
+        const tempId = `${tempPrefix}${countyCode}TEMP${Date.now()}`;
         updatedCave.id = tempId;
         document.getElementById('edit-cave-id').value = tempId;
         
