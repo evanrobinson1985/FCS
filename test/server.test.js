@@ -317,6 +317,166 @@ describe("cave database storage", () => {
   });
 });
 
+describe("pending submissions", () => {
+  test("a member's submission records the authenticated username, ignoring a spoofed submittedBy", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F01TEMP",
+        county: "01",
+        submittedBy: "someone-else",
+        proposedData: { name: "Submission Test Cave", county: "01", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.submission.submittedBy, "member1");
+    assert.equal(res.body.submission.status, "pending");
+  });
+
+  test("a member cannot approve or reject a submission", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F01TEMP2",
+        county: "01",
+        proposedData: { name: "Member Cannot Approve Cave", county: "01", type: "Land Cave", lat: 29.2, lng: -82.2 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const patchRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ status: "approved" });
+    assert.equal(patchRes.status, 403);
+  });
+
+  test("approving a new_cave submission assigns a real cave ID and writes it into the cave database", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F03TEMP",
+        county: "03",
+        proposedData: { name: "Approved New Cave", county: "03", type: "Land Cave", lat: 29.3, lng: -82.3 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved", approvedBy: "spoofed-approver" });
+    assert.equal(approveRes.status, 200);
+    assert.equal(approveRes.body.submission.approvedBy, "webmaster1"); // never the spoofed body value
+    const assignedId = approveRes.body.submission.assignedCaveId;
+    assert.ok(assignedId && assignedId.startsWith("F03"), `expected an assigned F03 cave id, got ${assignedId}`);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === assignedId);
+    assert.ok(stored, "approved new cave should be written into the cave database");
+    assert.equal(stored.name, "Approved New Cave");
+  });
+
+  test("approving an edit_cave submission merges proposedData into the existing cave", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { county: "04", name: "Original Name", notes: "original notes" } });
+    const caveId = createRes.body.caveId;
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "edit_cave",
+        caveId,
+        proposedData: { name: "Edited Name", notes: "edited notes" },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === caveId);
+    assert.equal(stored.name, "Edited Name");
+    assert.equal(stored.notes, "edited notes");
+    assert.equal(stored.id, caveId); // id itself is never overwritten by proposedData
+  });
+
+  test("rejecting a submission records the reason and leaves the cave database untouched", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const beforeDb = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const beforeCount = beforeDb.body.length;
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F05TEMP",
+        county: "05",
+        proposedData: { name: "Rejected Cave", county: "05", type: "Land Cave", lat: 29.5, lng: -82.5 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const rejectRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "rejected", rejectionReason: "Needs more detail", rejectedBy: "spoofed-rejector" });
+    assert.equal(rejectRes.status, 200);
+    assert.equal(rejectRes.body.submission.rejectedBy, "webmaster1");
+    assert.equal(rejectRes.body.submission.rejectionReason, "Needs more detail");
+
+    const afterDb = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(afterDb.body.length, beforeCount);
+  });
+
+  test("a submission cannot be approved twice", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F06TEMP",
+        county: "06",
+        proposedData: { name: "Double Approve Cave", county: "06", type: "Land Cave", lat: 29.6, lng: -82.6 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const firstApprove = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(firstApprove.status, 200);
+
+    const secondApprove = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(secondApprove.status, 409);
+  });
+});
+
 describe("path traversal protection", () => {
   test("does not escape the narrative-image directory via a traversal filename", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);

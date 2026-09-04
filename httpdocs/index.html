@@ -2368,76 +2368,9 @@
       }
     }
     
-    // Update the loadCavesToMap function to handle submissions
     function loadCavesToMap() {
       // Clear existing caves layer
       cavesLayer.clearLayers();
-      
-      // Load submissions to get pending caves too
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      
-      // Add submissions's pending caves to the map (for visualization only)
-      submissions.forEach(submission => {
-        if (submission.status === 'pending') {
-          // Add pending caves that aren't already in caveDataStore
-          
-          // Process existing caves
-          submission.existingCaves.forEach(cave => {
-            const parts = cave.formattedString.split('|');
-            const caveId = parts[0] + parts[1] + parts[2];
-            const lat = parseFloat(parts[30]);
-            const lng = parseFloat(parts[31]);
-            
-            // Check if this cave is underwater
-            const isUnderwater = submission.underwaterCaves && 
-                              submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-            
-          // Only add if cave exists in base database AND not already in caveDataStore
-          const existsInBaseDatabase = window.caveDatabase && window.caveDatabase.some(baseCave => baseCave.id === caveId);
-
-          if (!isNaN(lat) && !isNaN(lng) && existsInBaseDatabase && !caveDataStore.some(c => c.id === caveId)) {
-            caveDataStore.push({
-              id: caveId,
-              name: parts[6],
-              type: isUnderwater ? 'Underwater Cave' : 'Land Cave',
-              entryStatus: parts[17],
-              lat: lat,
-              lng: lng,
-              submissionId: submission.submissionId,
-              isPending: true
-            });
-          }
-          });
-          
-          // Process new caves that haven't been approved/rejected yet
-          submission.newCaves.forEach(cave => {
-            if (!cave.approved && !cave.rejected) {
-              const parts = cave.formattedString.split('|');
-              const caveId = parts[0] + parts[1] + parts[2];
-              const lat = parseFloat(parts[30]);
-              const lng = parseFloat(parts[31]);
-              
-              // Check if this cave is underwater
-              const isUnderwater = submission.underwaterCaves && 
-                                submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-              
-              if (!isNaN(lat) && !isNaN(lng) && existsInBaseDatabase && !caveDataStore.some(c => c.id === caveId)) {
-                caveDataStore.push({
-                  id: caveId,
-                  name: parts[6],
-                  type: isUnderwater ? 'Underwater Cave' : 'Land Cave',
-                  entryStatus: parts[17],
-                  lat: lat,
-                  lng: lng,
-                  submissionId: submission.submissionId,
-                  isPending: true,
-                  isNewCave: true
-                });
-              }
-            }
-          });
-        }
-      });
 
       // Update heatmap if it exists
       if (map && heatmapLayer) {
@@ -3327,12 +3260,8 @@ async function updateDocumentationCoverage() {
 }
 
 // ----- Top Contributors -----
-// Leaderboard by narratives written (real server data, /get-all-narratives-log)
-// and submissions made. Submission authorship currently only exists in the
-// localStorage-backed "fcsSubmissions" record the Pending/Approved
-// Submissions tabs and the Recent Activity card on this same page already
-// read from - the New Cave / Edit Cave forms don't post to the server's
-// /api/pending-submissions, so that endpoint has no real activity to count.
+// Leaderboard by narratives written (/get-all-narratives-log) and submissions
+// made (/api/pending-submissions).
 function createTopContributorsCard() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
@@ -3377,12 +3306,13 @@ async function updateTopContributors() {
   }
 
   try {
-    const localSubmissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-    localSubmissions.forEach(sub => {
-      bump(sub.submitter?.name, 'submissions');
-    });
+    const subResponse = await fetch('/api/pending-submissions');
+    if (subResponse.ok) {
+      const submissions = await subResponse.json();
+      submissions.forEach(sub => bump(sub.submittedBy, 'submissions'));
+    }
   } catch (error) {
-    console.error('Failed to read local submissions for contributors:', error);
+    console.error('Failed to load submissions for contributors:', error);
   }
 
   const rows = Object.entries(counts)
@@ -3479,9 +3409,8 @@ function createMapStatusChart() {
 }
 
 // ----- Submission Review Funnel -----
-// Pending/changes-requested/approved/rejected counts and average time to
-// approval, from the same localStorage "fcsSubmissions" record the Recent
-// Activity card and the Pending/Approved Submissions tabs already use.
+// Pending/approved/rejected counts and average time to approval, from the
+// real submission queue (/api/pending-submissions).
 function createSubmissionFunnelCard() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
@@ -3494,10 +3423,6 @@ function createSubmissionFunnelCard() {
       <div class="stat-item">
         <span class="stat-label">Pending Review:</span>
         <span class="stat-value" id="funnel-pending-count">0</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Changes Requested:</span>
-        <span class="stat-value" id="funnel-changes-count">0</span>
       </div>
       <div class="stat-item">
         <span class="stat-label">Approved:</span>
@@ -3516,37 +3441,36 @@ function createSubmissionFunnelCard() {
   statsGrid.appendChild(card);
 }
 
-function updateSubmissionFunnel() {
+async function updateSubmissionFunnel() {
   const pendingEl = document.getElementById('funnel-pending-count');
   if (!pendingEl) return;
 
-  let pending = 0, changesRequested = 0, approved = 0, rejected = 0;
+  let pending = 0, approved = 0, rejected = 0;
   const turnaroundDays = [];
 
   try {
-    const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-    submissions.forEach(sub => {
-      if (sub.status === 'approved') {
-        approved++;
-        const submittedDate = sub.submitter?.date;
-        if (submittedDate && sub.approvedDate) {
-          const days = (new Date(sub.approvedDate) - new Date(submittedDate)) / (1000 * 60 * 60 * 24);
-          if (!isNaN(days) && days >= 0) turnaroundDays.push(days);
+    const response = await fetch('/api/pending-submissions');
+    if (response.ok) {
+      const submissions = await response.json();
+      submissions.forEach(sub => {
+        if (sub.status === 'approved') {
+          approved++;
+          if (sub.submittedAt && sub.approvedDate) {
+            const days = (new Date(sub.approvedDate) - new Date(sub.submittedAt)) / (1000 * 60 * 60 * 24);
+            if (!isNaN(days) && days >= 0) turnaroundDays.push(days);
+          }
+        } else if (sub.status === 'rejected') {
+          rejected++;
+        } else {
+          pending++;
         }
-      } else if (sub.status === 'rejected') {
-        rejected++;
-      } else if (sub.status === 'changes_requested') {
-        changesRequested++;
-      } else {
-        pending++;
-      }
-    });
+      });
+    }
   } catch (error) {
-    console.error('Failed to read local submissions for the review funnel:', error);
+    console.error('Failed to load submissions for the review funnel:', error);
   }
 
   pendingEl.textContent = pending;
-  document.getElementById('funnel-changes-count').textContent = changesRequested;
   document.getElementById('funnel-approved-count').textContent = approved;
   document.getElementById('funnel-rejected-count').textContent = rejected;
 
@@ -3787,87 +3711,69 @@ function createEquipmentChart(caveData) {
 }
 
 // Add recent activity table update function
-function updateRecentActivity() {
+async function updateRecentActivity() {
   const activityTable = document.getElementById('recent-activity-table');
   if (!activityTable) return;
-  
-  // Clear existing rows
-  activityTable.innerHTML = '';
-  
-  // Get submissions for activity
-  const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-  
-  // Create activity entries
+
+  activityTable.innerHTML = '<tr><td colspan="4">Loading...</td></tr>';
+
+  let submissions = [];
+  try {
+    const response = await fetch('/api/pending-submissions');
+    if (response.ok) submissions = await response.json();
+  } catch (error) {
+    console.error('Failed to load submissions for recent activity:', error);
+  }
+
+  // Build activity entries from real submission events
   const activities = [];
-  
-  // Add submission activities
+
   submissions.forEach(sub => {
-    // Add submission activity
+    const caveLabel = sub.caveName || sub.caveId;
+    const actionLabel = sub.type === 'new_cave' ? 'New Cave Proposed' : 'Cave Edit Proposed';
+
     activities.push({
-      date: new Date(sub.submitter.date),
-      action: 'New Submission',
-      user: sub.submitter.name,
-      details: `Submitted ${sub.existingCaves.length} existing caves and ${sub.newCaves.length} new caves`
+      date: new Date(sub.submittedAt),
+      action: actionLabel,
+      user: sub.submittedBy,
+      details: `Proposed "${caveLabel}"`
     });
-    
-    // Add approval/rejection activities
+
     if (sub.status === 'approved' && sub.approvedDate) {
       activities.push({
         date: new Date(sub.approvedDate),
         action: 'Submission Approved',
         user: sub.approvedBy,
-        details: `Approved submission #${sub.submissionId}`
+        details: `Approved "${caveLabel}"${sub.assignedCaveId ? ` (ID ${sub.assignedCaveId})` : ''}`
       });
     } else if (sub.status === 'rejected' && sub.rejectedDate) {
       activities.push({
         date: new Date(sub.rejectedDate),
         action: 'Submission Rejected',
         user: sub.rejectedBy,
-        details: `Rejected submission #${sub.submissionId}`
+        details: `Rejected "${caveLabel}"`
       });
     }
-    
-    // Add new cave approval/rejection activities
-    sub.newCaves.forEach(cave => {
-      const parts = cave.formattedString.split('|');
-      const caveName = parts[6];
-      
-      if (cave.approved && cave.approvedDate) {
-        activities.push({
-          date: new Date(cave.approvedDate),
-          action: 'New Cave Approved',
-          user: cave.approvedBy,
-          details: `Approved new cave "${caveName}" with ID ${cave.approvedId}`
-        });
-      } else if (cave.rejected && cave.rejectedDate) {
-        activities.push({
-          date: new Date(cave.rejectedDate),
-          action: 'New Cave Rejected',
-          user: cave.rejectedBy,
-          details: `Rejected new cave "${caveName}"`
-        });
-      }
-    });
   });
-  
+
   // Sort activities by date (newest first)
   activities.sort((a, b) => b.date - a.date);
-  
+
   // Take the 10 most recent activities
   const recentActivities = activities.slice(0, 10);
-  
-  // Add rows to the table
+
+  activityTable.innerHTML = '';
   recentActivities.forEach(activity => {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${formatDate(activity.date.toISOString())}</td>
-      <td>${activity.action}</td>
-      <td>${activity.user}</td>
-      <td>${activity.details}</td>
+      <td>${escapeStatsHtml(activity.action)}</td>
+      <td>${escapeStatsHtml(activity.user || 'Unknown')}</td>
+      <td>${escapeStatsHtml(activity.details)}</td>
     `;
     activityTable.appendChild(row);
   });
-  
+
   // If no activities, show a message
   if (recentActivities.length === 0) {
     const row = document.createElement('tr');
@@ -4625,993 +4531,213 @@ function loadFcsDatabaseTable() {
       return option ? option.label : code;
     }
 
-    // Load submissions when the webmaster logs in
-    function loadSubmissions() {
-      // In a real implementation, this would fetch from a database
-      // For demo purposes, load from localStorage
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      
-      // Filter for pending submissions
-      const pendingSubmissions = submissions.filter(sub => sub.status === 'pending');
-      
-      // Get the container for pending submissions
+    // Load pending submissions for the webmaster review tabs. Real server
+    // data now (GET /api/pending-submissions), not the old localStorage demo.
+    async function loadSubmissions() {
       const pendingList = document.getElementById('pending-submissions-list');
       if (!pendingList) return;
-      
-      // Clear existing content
-      pendingList.innerHTML = '';
-      
-      // If no pending submissions, show a message
-      if (pendingSubmissions.length === 0) {
-        pendingList.innerHTML = '<p>No pending submissions to review.</p>';
-        return;
+      pendingList.innerHTML = '<p>Loading pending submissions...</p>';
+
+      try {
+        const response = await fetch('/api/pending-submissions');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const submissions = await response.json();
+        const pendingSubmissions = submissions.filter(sub => sub.status === 'pending');
+
+        pendingList.innerHTML = '';
+        if (pendingSubmissions.length === 0) {
+          pendingList.innerHTML = '<p>No pending submissions to review.</p>';
+          return;
+        }
+        pendingSubmissions.forEach(submission => {
+          pendingList.appendChild(createSubmissionCard(submission));
+        });
+      } catch (error) {
+        console.error('Failed to load pending submissions:', error);
+        pendingList.innerHTML = '<p>Could not load pending submissions.</p>';
       }
-      
-      // Add each submission to the list
-      pendingSubmissions.forEach(submission => {
-        const submissionCard = createSubmissionCard(submission);
-        pendingList.appendChild(submissionCard);
-      });
-      
-      // Also update the cave database to include the new caves
-      updateCaveDataStore();
     }
 
     // Load approved submissions when the webmaster logs in
-    function loadApprovedSubmissions() {
-      // In a real implementation, this would fetch from a database
-      // For demo purposes, load from localStorage
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      
-      // Filter for approved submissions
-      const approvedSubmissions = submissions.filter(sub => sub.status === 'approved');
-      
-      // Get the container for approved submissions
+    async function loadApprovedSubmissions() {
       const approvedList = document.getElementById('approved-submissions-list');
       if (!approvedList) return;
-      
-      // Clear existing content
-      approvedList.innerHTML = '';
-      
-      // If no approved submissions, show a message
-      if (approvedSubmissions.length === 0) {
-        approvedList.innerHTML = '<p>No approved submissions yet.</p>';
-        return;
+      approvedList.innerHTML = '<p>Loading approved submissions...</p>';
+
+      try {
+        const response = await fetch('/api/approved-submissions');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const approvedSubmissions = await response.json();
+
+        approvedList.innerHTML = '';
+        if (approvedSubmissions.length === 0) {
+          approvedList.innerHTML = '<p>No approved submissions yet.</p>';
+          return;
+        }
+        approvedSubmissions.forEach(submission => {
+          approvedList.appendChild(createSubmissionCard(submission));
+        });
+      } catch (error) {
+        console.error('Failed to load approved submissions:', error);
+        approvedList.innerHTML = '<p>Could not load approved submissions.</p>';
       }
-      
-      // Add each submission to the list
-      approvedSubmissions.forEach(submission => {
-        const submissionCard = createSubmissionCard(submission);
-        approvedList.appendChild(submissionCard);
-      });
+    }
+
+    // Renders the proposed values for a "new_cave" submission, or a
+    // before/after diff for an "edit_cave" one (currentCaveData is filled in
+    // server-side by GET /api/pending-submissions / /api/approved-submissions).
+    function summarizeProposedSubmissionChanges(submission) {
+      const proposed = submission.proposedData || {};
+
+      if (submission.type === 'new_cave') {
+        const lat = proposed.lat ?? proposed.latitude;
+        const lng = proposed.lng ?? proposed.longitude;
+        return `
+          <ul class="submission-diff">
+            <li><strong>Name:</strong> ${escapeStatsHtml(proposed.name || 'Unnamed cave')}</li>
+            <li><strong>County:</strong> ${escapeStatsHtml(submission.county || proposed.county || 'N/A')}</li>
+            <li><strong>Type:</strong> ${escapeStatsHtml(proposed.type || 'N/A')}</li>
+            <li><strong>Coordinates:</strong> ${lat != null ? lat : 'N/A'}, ${lng != null ? lng : 'N/A'}</li>
+          </ul>
+        `;
+      }
+
+      const current = submission.currentCaveData || {};
+      const fieldsToCompare = [
+        ['name', 'Name'], ['type', 'Type'], ['entryStatus', 'Entry Status'],
+        ['mapType', 'Map Type'], ['mapStatus', 'Map Status'], ['geology', 'Geologic Formation'],
+        ['length', 'Cave Length'], ['vertical', 'Vertical Extent'], ['notes', 'Notes']
+      ];
+      const changes = fieldsToCompare
+        .filter(([field]) => JSON.stringify(proposed[field] ?? null) !== JSON.stringify(current[field] ?? null))
+        .map(([field, label]) => `
+          <li>
+            <strong>${escapeStatsHtml(label)}:</strong>
+            ${escapeStatsHtml(String(current[field] ?? '—'))} &rarr; ${escapeStatsHtml(String(proposed[field] ?? '—'))}
+          </li>
+        `);
+
+      return changes.length
+        ? `<ul class="submission-diff">${changes.join('')}</ul>`
+        : '<p>No differences detected in the compared fields.</p>';
     }
 
     // Create a submission card for the webmaster portal
     function createSubmissionCard(submission) {
-      const submissionCard = document.createElement('div');
-      submissionCard.className = 'submission-card';
-      
-      // Combine caves for display
-      const allCaves = [...submission.existingCaves];
-      
-      // For new caves, add a special tag to indicate they're new
-      let newCavesHTML = '';
-      if (submission.newCaves && submission.newCaves.length > 0) {
-        // Create separate section for new caves
-        newCavesHTML = `
-          <h4>New Caves Submitted (Requires Special Review)</h4>
-          <div class="cave-database-scroll-wrapper">
-            <table class="cave-data-table">
-              <thead>
-                <tr>
-                  <th>State</th>
-                  <th>County</th>
-                  <th>Cave ID</th>
-                  <th>Record Type</th>
-                  <th>Entrance No</th>
-                  <th>Line No</th>
-                  <th>Cave Name</th>
-                  <th>Township</th>
-                  <th>Range</th>
-                  <th>Section</th>
-                  <th>Section Part</th>
-                  <th>Sub-Part</th>
-                  <th>Location Accuracy</th>
-                  <th>USGS Quad</th>
-                  <th>Topo Symbol</th>
-                  <th>Elevation</th>
-                  <th>Ownership</th>
-                  <th>Entry Status</th>
-                  <th>Equipment Needed</th>
-                  <th>Entrance Type</th>
-                  <th>Field Indication</th>
-                  <th>Location Info Type</th>
-                  <th>Map Type</th>
-                  <th>Map Status</th>
-                  <th>Geologic Formation</th>
-                  <th>Topographic Province</th>
-                  <th>Cave Length</th>
-                  <th>Vertical Extent</th>
-                  <th>Max Water Depth</th>
-                  <th>Deepest Pitch</th>
-                  <th>Latitude</th>
-                  <th>Longitude</th>
-                  <th>Exploration Possibility</th>
-                  <th>Reporter NSS #</th>
-                  <th>Date YYMM</th>
-                  <th>Cave Type</th>
-                  <th>Hazardous Conditions</th>
-                  <th>Hazard Notes</th>
-                  <th>Owner/Entity Info</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${submission.newCaves.map(cave => {
-                  // Parse the pipe-delimited data
-                  const parts = cave.formattedString.split('|');
-                  const caveId = parts[0] + parts[1] + parts[2]; // State + County + Number
-                  const caveName = parts[6];
-                  const county = getCountyName(parts[1]);
-                  const entryStatus = parts[17];
-                  const isUnderwater = submission.underwaterCaves && 
-                                    submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-                  const caveType = isUnderwater ? "Underwater Cave" : "Land Cave";
-                  
-                  // Get coordinates
-                  const latitude = parts[30];
-                  const longitude = parts[31];
-                  
-                  // Handle hazardous conditions
-                  const hazardConditions = cave.metadata?.hazardConditions || '';
-                  const hazardNotes = cave.metadata?.hazardNotes || '';
-                  const ownerInfo = cave.metadata?.ownerInfo || '';
-                  
-                  return `
-                    <tr>
-                      <td>F</td>
-                      <td>${parts[1]}</td>
-                      <td><span class="new-cave-badge">NEW</span> ${caveId}</td>
-                      <td>${parts[3] || ''}</td>
-                      <td>${parts[4] || '1'}</td>
-                      <td>${parts[5] || ''}</td>
-                      <td>${caveName}</td>
-                      <td>${parts[7] || ''}</td>
-                      <td>${parts[8] || ''}</td>
-                      <td>${parts[9] || ''}</td>
-                      <td>${parts[10] || ''}</td>
-                      <td>${parts[11] || ''}</td>
-                      <td>${parts[12] || ''}</td>
-                      <td>${parts[13] || ''}</td>
-                      <td>${parts[14] || ''}</td>
-                      <td>${parts[15] || ''}</td>
-                      <td>${parts[16] || ''}</td>
-                      <td>${entryStatus} - ${getEntryStatusName(entryStatus)}</td>
-                      <td>${parts[18] || ''}</td>
-                      <td>${parts[19] || ''}</td>
-                      <td>${parts[20] || ''}</td>
-                      <td>${parts[21] || ''}</td>
-                      <td>${parts[22] || ''}</td>
-                      <td>${parts[23] || ''}</td>
-                      <td>${parts[24] || ''}</td>
-                      <td>${parts[25] || ''}</td>
-                      <td>${parts[26] || ''}</td>
-                      <td>${parts[27] || ''}</td>
-                      <td>${parts[28] || ''}</td>
-                      <td>${parts[29] || ''}</td>
-                      <td>${latitude}</td>
-                      <td>${longitude}</td>
-                      <td>${parts[32] || ''}</td>
-                      <td>${parts[33] || ''}</td>
-                      <td>${parts[34] || ''}</td>
-                      <td>${caveType}</td>
-                      <td>${hazardConditions}</td>
-                      <td>${hazardNotes}</td>
-                      <td>${ownerInfo}</td>
-                      <td>
-                        <button class="btn-view-map view-on-map-btn" data-cave-id="${caveId}" 
-                          data-lat="${latitude}" data-lng="${longitude}">View on Map</button>
-                        <button class="btn-review review-new-cave-btn" data-cave-id="${caveId}" 
-                          data-submission-id="${submission.submissionId}">Review</button>
-                      </td>
-                    </tr>
-                  `;
-                }).join('')}
-              </tbody>
-            </table>
-          </div>
-        `;
-        
-        // Also add new caves to the all caves array for the map view
-        submission.newCaves.forEach(cave => allCaves.push(cave));
-      }
-      
-      // Create existing caves table HTML
-      const existingCavesHTML = submission.existingCaves.length > 0 ? `
-        <h4>Updated Cave Data</h4>
-        <div class="cave-database-scroll-wrapper">
-          <table class="cave-data-table">
-            <thead>
-              <tr>
-                <th>State</th>
-                <th>County</th>
-                <th>Cave ID</th>
-                <th>Record Type</th>
-                <th>Entrance No</th>
-                <th>Line No</th>
-                <th>Cave Name</th>
-                <th>Township</th>
-                <th>Range</th>
-                <th>Section</th>
-                <th>Section Part</th>
-                <th>Sub-Part</th>
-                <th>Location Accuracy</th>
-                <th>USGS Quad</th>
-                <th>Topo Symbol</th>
-                <th>Elevation</th>
-                <th>Ownership</th>
-                <th>Entry Status</th>
-                <th>Equipment Needed</th>
-                <th>Entrance Type</th>
-                <th>Field Indication</th>
-                <th>Location Info Type</th>
-                <th>Map Type</th>
-                <th>Map Status</th>
-                <th>Geologic Formation</th>
-                <th>Topographic Province</th>
-                <th>Cave Length</th>
-                <th>Vertical Extent</th>
-                <th>Max Water Depth</th>
-                <th>Deepest Pitch</th>
-                <th>Latitude</th>
-                <th>Longitude</th>
-                <th>Exploration Possibility</th>
-                <th>Reporter NSS #</th>
-                <th>Date YYMM</th>
-                <th>Cave Type</th>
-                <th>Hazardous Conditions</th>
-                <th>Hazard Notes</th>
-                <th>Owner/Entity Info</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${submission.existingCaves.map(cave => {
-                // Parse the pipe-delimited data
-                const parts = cave.formattedString.split('|');
-                const caveId = parts[0] + parts[1] + parts[2]; // State + County + Number
-                const caveName = parts[6];
-                const county = getCountyName(parts[1]);
-                const entryStatus = parts[17];
-                const isUnderwater = submission.underwaterCaves && 
-                                submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-                const caveType = isUnderwater ? "Underwater Cave" : "Land Cave";
-                
-                // Get coordinates
-                const latitude = parts[30];
-                const longitude = parts[31];
-                
-                // Handle hazardous conditions
-                const hazardConditions = cave.metadata?.hazardConditions || '';
-                const hazardNotes = cave.metadata?.hazardNotes || '';
-                const ownerInfo = cave.metadata?.ownerInfo || '';
-                
-                return `
-                  <tr>
-                    <td>F</td>
-                    <td>${parts[1]}</td>
-                    <td>${caveId}</td>
-                    <td>${parts[3] || ''}</td>
-                    <td>${parts[4] || '1'}</td>
-                    <td>${parts[5] || ''}</td>
-                    <td>${caveName}</td>
-                    <td>${parts[7] || ''}</td>
-                    <td>${parts[8] || ''}</td>
-                    <td>${parts[9] || ''}</td>
-                    <td>${parts[10] || ''}</td>
-                    <td>${parts[11] || ''}</td>
-                    <td>${parts[12] || ''}</td>
-                    <td>${parts[13] || ''}</td>
-                    <td>${parts[14] || ''}</td>
-                    <td>${parts[15] || ''}</td>
-                    <td>${parts[16] || ''}</td>
-                    <td>${entryStatus} - ${getEntryStatusName(entryStatus)}</td>
-                    <td>${parts[18] || ''}</td>
-                    <td>${parts[19] || ''}</td>
-                    <td>${parts[20] || ''}</td>
-                    <td>${parts[21] || ''}</td>
-                    <td>${parts[22] || ''}</td>
-                    <td>${parts[23] || ''}</td>
-                    <td>${parts[24] || ''}</td>
-                    <td>${parts[25] || ''}</td>
-                    <td>${parts[26] || ''}</td>
-                    <td>${parts[27] || ''}</td>
-                    <td>${parts[28] || ''}</td>
-                    <td>${parts[29] || ''}</td>
-                    <td>${latitude}</td>
-                    <td>${longitude}</td>
-                    <td>${parts[32] || ''}</td>
-                    <td>${parts[33] || ''}</td>
-                    <td>${parts[34] || ''}</td>
-                    <td>${caveType}</td>
-                    <td>${hazardConditions}</td>
-                    <td>${hazardNotes}</td>
-                    <td>${ownerInfo}</td>
-                    <td>
-                      <button class="btn-view-map view-on-map-btn" data-cave-id="${caveId}" 
-                        data-lat="${latitude}" data-lng="${longitude}">View on Map</button>
-                    </td>
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      ` : '<p>No updates to existing caves in this submission.</p>';
-      
-      // Add CSS for table scrolling
-      const style = `
-        <style>
-          .cave-database-scroll-wrapper {
-            max-height: 500px;
-            overflow: auto;
-            width: 100%;
-            border: 1px solid #ccc;
-            margin-bottom: 20px;
-          }
-          .cave-database-scroll-wrapper table {
-            width: max-content;
-            min-width: 100%;
-          }
-          .cave-database-scroll-wrapper th {
-            position: sticky;
-            top: 0;
-            background: #f1f1f1;
-            z-index: 10;
-          }
-        </style>
-      `;
-      
-      // Build the complete card
-      submissionCard.innerHTML = style + `
+      const card = document.createElement('div');
+      card.className = 'submission-card';
+      card.setAttribute('data-submission-id', submission.submissionId);
+
+      const typeLabel = submission.type === 'new_cave' ? 'New Cave Proposal' : 'Cave Edit Proposal';
+      const caveLabel = submission.caveName || submission.proposedData?.name || submission.caveId;
+
+      // Approve/Reject actually write to the cave database (PATCH
+      // /api/pending-submissions/:id is admin/webmaster-only server-side) -
+      // only show the buttons to roles that can actually use them.
+      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      const canReview = currentRole === 'admin' || currentRole === 'webmaster';
+
+      card.innerHTML = `
         <div class="submission-header">
-          <h3>Submission #${submission.submissionId}</h3>
+          <h3>${escapeStatsHtml(typeLabel)}: ${escapeStatsHtml(caveLabel)}</h3>
           <span class="status-badge status-${submission.status}">${capitalizeFirstLetter(submission.status)}</span>
         </div>
         <div class="submission-meta">
-          <p><strong>Submitted by:</strong> ${submission.submitter.name} ${submission.submitter.nssNumber ? `(NSS #${submission.submitter.nssNumber})` : ''}</p>
-          <p><strong>Date:</strong> ${formatDate(submission.submitter.date)}</p>
-          ${submission.approvedBy ? `<p><strong>Approved by:</strong> ${submission.approvedBy} on ${formatDate(submission.approvedDate)}</p>` : ''}
-          ${submission.rejectedBy ? `<p><strong>Rejected by:</strong> ${submission.rejectedBy} on ${formatDate(submission.rejectedDate)}</p>` : ''}
+          <p><strong>Submitted by:</strong> ${escapeStatsHtml(submission.submittedBy || 'Unknown')}</p>
+          <p><strong>Date:</strong> ${formatDate(submission.submittedAt)}</p>
+          ${submission.type === 'edit_cave' ? `<p><strong>Cave ID:</strong> ${escapeStatsHtml(submission.caveId)}</p>` : ''}
+          ${submission.assignedCaveId ? `<p><strong>Assigned Cave ID:</strong> ${escapeStatsHtml(submission.assignedCaveId)}</p>` : ''}
+          ${submission.approvedBy ? `<p><strong>Approved by:</strong> ${escapeStatsHtml(submission.approvedBy)} on ${formatDate(submission.approvedDate)}</p>` : ''}
+          ${submission.rejectedBy ? `<p><strong>Rejected by:</strong> ${escapeStatsHtml(submission.rejectedBy)} on ${formatDate(submission.rejectedDate)}</p>` : ''}
+          ${submission.rejectionReason ? `<p><strong>Reason:</strong> ${escapeStatsHtml(submission.rejectionReason)}</p>` : ''}
         </div>
         <div class="submission-content">
-          ${newCavesHTML}
-          ${existingCavesHTML}
+          ${summarizeProposedSubmissionChanges(submission)}
         </div>
         <div class="submission-actions">
-          <button class="btn-view-map view-submission-on-map" data-submission-id="${submission.submissionId}">View All on Map</button>
-          ${submission.status === 'pending' ? `
-            <button class="btn-warning request-changes-btn" data-submission-id="${submission.submissionId}">Request Changes</button>
+          ${submission.status === 'pending' && canReview ? `
             <button class="btn-success approve-btn" data-submission-id="${submission.submissionId}">Approve</button>
             <button class="btn-danger reject-btn" data-submission-id="${submission.submissionId}">Reject</button>
           ` : ''}
         </div>
       `;
-      
-      // Add event listeners to the buttons
-      setTimeout(() => {
-        const card = submissionCard; // Use the card element directly
-        
-        // Add event listeners to the action buttons
-        if (submission.status === 'pending') {
-          const approveBtn = card.querySelector('.approve-btn');
-          if (approveBtn) {
-            approveBtn.addEventListener('click', () => {
-              approveSubmission(submission.submissionId);
-            });
-          }
-          
-          const rejectBtn = card.querySelector('.reject-btn');
-          if (rejectBtn) {
-            rejectBtn.addEventListener('click', () => {
-              rejectSubmission(submission.submissionId);
-            });
-          }
-          
-          const requestChangesBtn = card.querySelector('.request-changes-btn');
-          if (requestChangesBtn) {
-            requestChangesBtn.addEventListener('click', () => {
-              requestChanges(submission.submissionId);
-            });
-          }
-        }
-        
-        // Add event listeners to the "view on map" buttons
-        const viewMapBtns = card.querySelectorAll('.view-on-map-btn');
-        viewMapBtns.forEach(btn => {
-          btn.addEventListener('click', () => {
-            const caveId = btn.getAttribute('data-cave-id');
-            const lat = parseFloat(btn.getAttribute('data-lat'));
-            const lng = parseFloat(btn.getAttribute('data-lng'));
-            
-            // Switch to the map tab
-            document.querySelector('[data-tab="map-tab"]').click();
-            
-            // Focus on this specific cave
-            focusOnCave(caveId, lat, lng);
-          });
+
+      if (submission.status === 'pending' && canReview) {
+        card.querySelector('.approve-btn').addEventListener('click', () => {
+          approveSubmission(submission.submissionId);
         });
-        
-        // Add event listener to the "view all on map" button
-        const viewAllBtn = card.querySelector('.view-submission-on-map');
-        if (viewAllBtn) {
-          viewAllBtn.addEventListener('click', () => {
-            // Switch to the map tab
-            document.querySelector('[data-tab="map-tab"]').click();
-            
-            // Show all caves from this submission
-            showSubmissionOnMap(submission.submissionId);
-          });
-        }
-        
-        // Add event listeners to the "review new cave" buttons
-        const reviewNewCaveBtns = card.querySelectorAll('.review-new-cave-btn');
-        reviewNewCaveBtns.forEach(btn => {
-          btn.addEventListener('click', () => {
-            const caveId = btn.getAttribute('data-cave-id');
-            const submissionId = btn.getAttribute('data-submission-id');
-            
-            // Open the review new cave modal
-            openNewCaveReviewModal(caveId, submissionId);
-          });
+        card.querySelector('.reject-btn').addEventListener('click', () => {
+          rejectSubmission(submission.submissionId);
         });
-      }, 0);
-      
-      return submissionCard;
+      }
+
+      return card;
     }
 
-    // Open the modal to review a new cave
-    function openNewCaveReviewModal(caveId, submissionId) {
-      // Get the submission data
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      const submission = submissions.find(sub => sub.submissionId === submissionId);
-      
-      if (!submission) return;
-      
-      // Find the cave data
-      const cave = submission.newCaves.find(c => {
-        const parts = c.formattedString.split('|');
-        const id = parts[0] + parts[1] + parts[2];
-        return id === caveId;
-      });
-      
-      if (!cave) return;
-      
-      // Parse the cave data
-      const parts = cave.formattedString.split('|');
-      
-      // Determine cave type
-      const isUnderwater = submission.underwaterCaves && 
-                  submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-      const caveType = isUnderwater ? "Underwater Cave" : "Land Cave";
-      
-      // Create a modal dialog to review the new cave
-      const modal = document.createElement('div');
-      modal.className = 'modal';
-      modal.id = 'new-cave-review-modal';
-      modal.style.position = 'fixed';
-      modal.style.top = '0';
-      modal.style.left = '0';
-      modal.style.width = '100%';
-      modal.style.height = '100%';
-      modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-      modal.style.display = 'flex';
-      modal.style.justifyContent = 'center';
-      modal.style.alignItems = 'center';
-      modal.style.zIndex = '1000';
-      
-      // Create the modal content with full field set
-      modal.innerHTML = `
-        <div class="modal-content" style="background-color: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 1200px; max-height: 90vh; overflow-y: auto;">
-          <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h2>Review New Cave: ${parts[6]}</h2>
-            <span class="close-modal" style="cursor: pointer; font-size: 24px;">&times;</span>
-          </div>
-          
-          <div class="modal-body">
-            <div class="new-cave-info" style="margin-bottom: 20px;">
-              <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                <div style="flex: 1; min-width: 300px;">
-                  <h3>Basic Information</h3>
-                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5; width: 200px;">State:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">F</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">County:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[1]} - ${getCountyName(parts[1])}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Temp Cave ID:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${caveId}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Cave Name:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[6]}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Record Type:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[3] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Entrance No:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[4] || '1'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Line No:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[5] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Cave Type:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${caveType}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Coordinates:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">Lat: ${parts[30]}, Lng: ${parts[31]}</td>
-                    </tr>
-                  </table>
-                </div>
-                
-                <div style="flex: 1; min-width: 300px;">
-                  <h3>Location Details</h3>
-                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5; width: 200px;">Township:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[7] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Range:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[8] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Section:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[9] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Section Part:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[10] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Sub-Part:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[11] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Location Accuracy:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[12] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">USGS Quad:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[13] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Topo Symbol:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[14] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Elevation:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[15] || 'N/A'}</td>
-                    </tr>
-                  </table>
-                </div>
-              </div>
-              
-              <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                <div style="flex: 1; min-width: 300px;">
-                  <h3>Cave Details</h3>
-                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5; width: 200px;">Ownership:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[16] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Entry Status:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[17]} - ${getEntryStatusName(parts[17])}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Equipment Needed:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${formatEquipmentCodes(parts[18])}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Entrance Type:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[19]} - ${getEntranceTypeName(parts[19])}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Field Indication:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[20]} - ${getFieldIndicationName(parts[20])}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Location Info Type:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[21] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Map Type:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[22] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Map Status:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[23] || 'N/A'}</td>
-                    </tr>
-                  </table>
-                </div>
-                
-                <div style="flex: 1; min-width: 300px;">
-                  <h3>Geology & Dimensions</h3>
-                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5; width: 200px;">Geologic Formation:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[24] || 'N/A'} ${parts[24] ? '- ' + getGeologyName(parts[24]) : ''}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Topographic Province:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[25] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Cave Length (ft):</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[26] || 'Unknown'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Vertical Extent (ft):</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[27] || 'Unknown'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Max Water Depth (ft):</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[28] || 'Unknown'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Deepest Pitch (ft):</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[29] || 'Unknown'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Exploration Possibility:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[32] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Reporter NSS #:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[33] || 'N/A'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Date YYMM:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${parts[34] || 'N/A'}</td>
-                    </tr>
-                  </table>
-                </div>
-              </div>
-              
-              <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                <div style="flex: 1; min-width: 300px;">
-                  <h3>Hazards & Additional Information</h3>
-                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5; width: 200px;">Hazardous Conditions:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${cave.metadata?.hazardConditions || 'None reported'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Hazard Notes:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${cave.metadata?.hazardNotes || 'None'}</td>
-                    </tr>
-                    <tr>
-                      <th style="text-align: left; padding: 8px; background: #f5f5f5;">Owner/Entity Info:</th>
-                      <td style="padding: 8px; border-bottom: 1px solid #eee;">${cave.metadata?.ownerInfo || 'None provided'}</td>
-                    </tr>
-                  </table>
-                </div>
-              </div>
-                
-              <div class="new-cave-decision" style="border-top: 1px solid #ddd; padding-top: 20px;">
-                <h3>Review Decision</h3>
-                <div style="margin-bottom: 15px;">
-                  <label for="new-cave-id">Assign Official Cave ID:</label>
-                  <input type="text" id="new-cave-id" value="${generateOfficialCaveId(parts[1])}" style="width: 100%; padding: 8px; margin-top: 5px;">
-                  <small>The system has generated a suggested ID. You can modify it if needed.</small>
-                </div>
-                
-                <div style="margin-bottom: 15px;">
-                  <label for="new-cave-notes">Notes:</label>
-                  <textarea id="new-cave-notes" rows="3" style="width: 100%; padding: 8px; margin-top: 5px;"></textarea>
-                </div>
-                
-                <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                  <button id="reject-new-cave" class="btn-danger">Reject New Cave</button>
-                  <button id="approve-new-cave" class="btn-success">Approve New Cave</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-      
-      // Add the modal to the page
-      document.body.appendChild(modal);
-      
-      // Add event listeners to the modal buttons
-      const closeBtn = modal.querySelector('.close-modal');
-      closeBtn.addEventListener('click', () => {
-        document.body.removeChild(modal);
-      });
-      
-      const approveBtn = modal.querySelector('#approve-new-cave');
-      approveBtn.addEventListener('click', () => {
-        const newId = document.getElementById('new-cave-id').value;
-        const notes = document.getElementById('new-cave-notes').value;
-        
-        approveNewCave(caveId, submissionId, newId, notes);
-        document.body.removeChild(modal);
-      });
-      
-      const rejectBtn = modal.querySelector('#reject-new-cave');
-      rejectBtn.addEventListener('click', () => {
-        const notes = document.getElementById('new-cave-notes').value;
-        
-        rejectNewCave(caveId, submissionId, notes);
-        document.body.removeChild(modal);
-      });
-    }
+    // Approve a submission - the server applies proposedData to the live
+    // cave database (PATCH /api/pending-submissions/:id), so this just
+    // triggers that, then refreshes everything that reads cave data.
+    async function approveSubmission(submissionId) {
+      if (!confirm('Approve this submission? This will update the live cave database.')) return;
 
-    // Generate an official cave ID
-    function generateOfficialCaveId(countyCode) {
-      // Get existing caves to find the next available number
-      const allCaves = caveDataStore || [];
-      
-      // Filter for caves in this county
-      const countyCaves = allCaves.filter(cave => {
-        return cave.id.substring(1, 3) === countyCode;
-      });
-      
-      // Find the highest number and increment
-      let maxNumber = 0;
-      countyCaves.forEach(cave => {
-        const caveNumber = parseInt(cave.id.substring(3), 10);
-        if (!isNaN(caveNumber) && caveNumber > maxNumber) {
-          maxNumber = caveNumber;
+      try {
+        const response = await fetch(`/api/pending-submissions/${encodeURIComponent(submissionId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'approved' })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Approval failed');
+
+        alert(`Submission approved.${data.submission?.assignedCaveId ? ` Assigned Cave ID: ${data.submission.assignedCaveId}` : ''}`);
+
+        await loadSubmissions();
+        await loadApprovedSubmissions();
+
+        if (typeof window.loadCaveDatabaseFromServer === 'function') {
+          await window.loadCaveDatabaseFromServer();
         }
-      });
-      
-      // Generate the new ID
-      const nextNumber = maxNumber + 1;
-      return `F${countyCode}${nextNumber.toString().padStart(3, '0')}`;
+        updateCaveDataStore();
+        if (document.getElementById('statistics')?.classList.contains('active')) {
+          updateStatistics();
+        }
+      } catch (error) {
+        console.error('Failed to approve submission:', error);
+        alert(`⚠️ Could not approve submission: ${error.message}`);
+      }
     }
-
-    // Approve a submission
-    function approveSubmission(submissionId) {
-    // Get the submission data
-    const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-    const submissionIndex = submissions.findIndex(sub => sub.submissionId === submissionId);
-    
-    if (submissionIndex === -1) return;
-    
-    // Check if there are any new caves that haven't been reviewed
-    const submission = submissions[submissionIndex];
-    const pendingNewCaves = submission.newCaves.filter(cave => !cave.approved && !cave.rejected);
-    
-    if (pendingNewCaves.length > 0) {
-      alert('Please review all new caves before approving the submission.');
-      return;
-    }
-    
-    // Update the submission status
-    submission.status = 'approved';
-    submission.approvedBy = document.getElementById('logged-in-user').textContent.replace('Logged in as: ', '');
-    submission.approvedDate = new Date().toISOString();
-    
-    // Update the submission in the array
-    submissions[submissionIndex] = submission;
-    
-    // Save back to localStorage
-    localStorage.setItem('fcsSubmissions', JSON.stringify(submissions));
-    
-    // Update the UI
-    loadSubmissions();
-    loadApprovedSubmissions();
-    updateCaveDataStore();
-    
-    // Remove from pending list visually as well
-    const submissionCard = document.querySelector(`.submission-card[data-submission-id="${submissionId}"]`);
-    if (submissionCard) {
-      submissionCard.remove();
-    }
-    
-    // Show a success message
-    alert(`Submission #${submissionId} has been approved.`);
-  }
 
     // Reject a submission
-    function rejectSubmission(submissionId) {
-      // Get the submission data
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      const submissionIndex = submissions.findIndex(sub => sub.submissionId === submissionId);
-      
-      if (submissionIndex === -1) return;
-      
-      // Ask for rejection reason
+    async function rejectSubmission(submissionId) {
       const reason = prompt('Please provide a reason for rejection:');
       if (reason === null) return; // User canceled
-      
-      // Update the submission status
-      submissions[submissionIndex].status = 'rejected';
-      submissions[submissionIndex].rejectedBy = document.getElementById('logged-in-user').textContent.replace('Logged in as: ', '');
-      submissions[submissionIndex].rejectedDate = new Date().toISOString();
-      submissions[submissionIndex].rejectionReason = reason;
-      
-      // Save back to localStorage
-      localStorage.setItem('fcsSubmissions', JSON.stringify(submissions));
-      
-      // Update the UI
-      loadSubmissions();
-      
-      // Show a success message
-      alert(`Submission #${submissionId} has been rejected.`);
+
+      try {
+        const response = await fetch(`/api/pending-submissions/${encodeURIComponent(submissionId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'rejected', rejectionReason: reason })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Rejection failed');
+
+        alert(`Submission has been rejected.`);
+        await loadSubmissions();
+      } catch (error) {
+        console.error('Failed to reject submission:', error);
+        alert(`⚠️ Could not reject submission: ${error.message}`);
+      }
     }
 
-    // Request changes to a submission
-    function requestChanges(submissionId) {
-      // Get the submission data
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      const submissionIndex = submissions.findIndex(sub => sub.submissionId === submissionId);
-      
-      if (submissionIndex === -1) return;
-      
-      // Ask for requested changes
-      const changes = prompt('Please specify the changes needed:');
-      if (changes === null) return; // User canceled
-      
-      // Update the submission status
-      submissions[submissionIndex].status = 'changes_requested';
-      submissions[submissionIndex].changesRequestedBy = document.getElementById('logged-in-user').textContent.replace('Logged in as: ', '');
-      submissions[submissionIndex].changesRequestedDate = new Date().toISOString();
-      submissions[submissionIndex].requestedChanges = changes;
-      
-      // Save back to localStorage
-      localStorage.setItem('fcsSubmissions', JSON.stringify(submissions));
-      
-      // Update the UI
-      loadSubmissions();
-      
-      // Show a success message
-      alert(`Changes requested for submission #${submissionId}.`);
-    }
-
-    // Update the cave data store with all approved cave data
+    // Approved submissions are applied to the cave database on the server
+    // (see PATCH /api/pending-submissions/:id), so caveDataStore - already
+    // populated from /api/cave-database - already reflects them. This just
+    // keeps the "Edit Cave" dropdown in sync with whatever's currently loaded.
     function updateCaveDataStore() {
-      // If we already have processed data from the database, use that
       if (window.caveDataStore && window.caveDataStore.length > 0) {
         caveDataStore = window.caveDataStore;
-        console.log("Using processed cave data store with " + caveDataStore.length + " records");
-        
-        // Add this line to populate the dropdown after loading the data
-        populateEditCaveDropdown();
-        return;
       }
-      
-      // Get all submissions
-      const submissions = JSON.parse(localStorage.getItem('fcsSubmissions') || '[]');
-      
-      // Process approved submissions
-      submissions.forEach(submission => {
-        if (submission.status === 'approved') {
-          // Process existing caves (updates)
-          submission.existingCaves.forEach(cave => {
-            const parts = cave.formattedString.split('|');
-            const caveId = parts[0] + parts[1] + parts[2];
-            
-            // Check if this cave is already in the data store
-            const existingIndex = caveDataStore.findIndex(c => c.id === caveId);
-            
-            // Check if this cave is underwater
-            const isUnderwater = submission.underwaterCaves && 
-                                submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-            
-            // Parse data from the formatted string
-            const caveData = {
-              id: caveId,
-              name: parts[6],
-              type: isUnderwater ? 'Underwater Cave' : 'Land Cave',
-              entryStatus: parts[17],
-              lat: parseFloat(parts[30]) || 0,
-              lng: parseFloat(parts[31]) || 0,
-              submissionId: submission.submissionId,
-              
-              // Add additional details for statistics
-              entranceType: parts[19],
-              fieldIndication: parts[20],
-              equipment: parts[18].split(''),
-              mapType: parts[22],
-              mapStatus: parts[23],
-              geology: parts[24],
-              province: parts[25],
-              length: parts[26],
-              depth: parts[27],
-              waterDepth: parts[28],
-              pitch: parts[29],
-              exploration: parts[32].split(''),
-              lastUpdated: new Date().toISOString()
-            };
-            
-            if (existingIndex >= 0) {
-              // Update existing cave
-              caveDataStore[existingIndex] = caveData;
-            } else {
-              // Add new cave
-              caveDataStore.push(caveData);
-            }
-          });
-          
-          // Process approved new caves
-          submission.newCaves.forEach(cave => {
-            if (cave.approved) {
-              const parts = cave.formattedString.split('|');
-              const caveId = parts[0] + parts[1] + parts[2];
-              
-              // Check if this cave is already in the data store
-              const existingIndex = caveDataStore.findIndex(c => c.id === caveId);
-              
-              // Check if this cave is underwater
-              const isUnderwater = submission.underwaterCaves && 
-                                  submission.underwaterCaves.some(id => id.endsWith(parts[2]));
-              
-              // Parse data from the formatted string
-              const caveData = {
-                id: caveId,
-                name: parts[6],
-                type: isUnderwater ? 'Underwater Cave' : 'Land Cave',
-                entryStatus: parts[17],
-                lat: parseFloat(parts[30]) || 0,
-                lng: parseFloat(parts[31]) || 0,
-                submissionId: submission.submissionId,
-                
-                // Add additional details for statistics
-                entranceType: parts[19],
-                fieldIndication: parts[20],
-                equipment: parts[18].split(''),
-                mapType: parts[22],
-                mapStatus: parts[23],
-                geology: parts[24],
-                province: parts[25],
-                length: parts[26],
-                depth: parts[27],
-                waterDepth: parts[28],
-                pitch: parts[29],
-                exploration: parts[32].split(''),
-                createdDate: new Date().toISOString(),
-                approvedDate: cave.approvedDate,
-                approvedBy: cave.approvedBy
-              };
-              
-              if (existingIndex >= 0) {
-                // Update existing cave (should not happen for new caves, but just in case)
-                caveDataStore[existingIndex] = caveData;
-              } else {
-                // Add new cave
-                caveDataStore.push(caveData);
-              }
-            }
-          });
-        }
-      });
-      
-      // Update the map with the new data
-      if (typeof loadCavesToMap === 'function' && map) {
-        loadCavesToMap();
-      }
-      
-      // Update statistics if statistics tab is active
-      if (document.getElementById('statistics').classList.contains('active')) {
-        updateStatistics();
-      }
-
-      // Add this at the end of the function too
       populateEditCaveDropdown();
-      
     }
 
     function populateEditCaveDropdown() {
@@ -7922,6 +7048,54 @@ window.addEventListener('error', function(e) {
     return `F${countyCode}TEMP`;
   }
 
+  // Members' proposed new caves and edits go here instead of straight to the
+  // database - a webmaster reviews and applies (or rejects) them from the
+  // Pending Submissions tab. See PATCH /api/pending-submissions/:id, which
+  // is what actually writes the change into the cave database on approval.
+  function submitCaveProposalForReview(updatedCave, isNewCave, caveId, countyCode) {
+    const saveBtn = document.querySelector('#edit-actions-container button[type="submit"]');
+    if (saveBtn) {
+      saveBtn.textContent = "Submitting...";
+      saveBtn.disabled = true;
+    }
+
+    const payload = {
+      type: isNewCave ? 'new_cave' : 'edit_cave',
+      caveId: isNewCave ? generateNewCaveId(countyCode) : caveId,
+      caveName: updatedCave.name,
+      county: countyCode,
+      proposedData: updatedCave,
+    };
+
+    fetch('/api/pending-submissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Submission failed');
+        }
+        return response.json();
+      })
+      .then(() => {
+        alert(isNewCave
+          ? "✅ Your new cave proposal has been submitted for webmaster review."
+          : "✅ Your proposed changes have been submitted for webmaster review.");
+        document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
+      })
+      .catch(error => {
+        console.error("❌ Error submitting proposal:", error);
+        alert("⚠️ Could not submit your proposal. Please try again.");
+      })
+      .finally(() => {
+        if (saveBtn) {
+          saveBtn.textContent = "Save Changes";
+          saveBtn.disabled = false;
+        }
+      });
+  }
+
   // Implementation of saveEditedCave function that should be called by the form submit handler
   function saveEditedCave() {
     console.log('=== SINGLE COMBINED FUNCTION CALLED ===');
@@ -8059,6 +7233,17 @@ window.addEventListener('error', function(e) {
       }
     }
     
+    // Members can't write directly to the cave database (POST
+    // /api/save-cave-database is admin/webmaster-only on the server) - their
+    // edits and new-cave proposals go into the review queue instead, for a
+    // webmaster to approve or reject on the Pending Submissions tab. Admins
+    // and webmasters keep the existing direct-save behavior below.
+    const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+    if (currentRole === 'member') {
+      submitCaveProposalForReview(updatedCave, isNewCave, caveId, countyCode);
+      return;
+    }
+
     // Show saving indicator
     const saveBtn = document.querySelector('#edit-actions-container button[type="submit"]');
     if (saveBtn) {
@@ -8066,7 +7251,7 @@ window.addEventListener('error', function(e) {
       saveBtn.textContent = "Saving...";
       saveBtn.disabled = true;
     }
-    
+
     // Handle existing cave updates BEFORE server call
     if (!isNewCave) {
       // Update existing cave

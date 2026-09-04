@@ -133,11 +133,12 @@ already secure.
   `javascript:` URLs, so a malicious narrative can't run script in every
   other member's browser when they view it.
 - **Authorization bypasses via client-supplied identity.** Several routes
-  (`save-narrative`, `delete-narrative`, `delete-narrative-image`) trusted
-  a `user`/`currentUser` field sent in the request body to decide who was
-  allowed to edit or delete what - meaning anyone could impersonate anyone
-  else just by changing that field. These now derive identity from the
-  verified login token instead.
+  (`save-narrative`, `delete-narrative`, `delete-narrative-image`,
+  `POST`/`PATCH /api/pending-submissions`) trusted a `user`/`currentUser`/
+  `submittedBy`/`approvedBy`/`rejectedBy` field sent in the request body to
+  decide who was allowed to edit, delete, submit, or approve what - meaning
+  anyone could impersonate anyone else just by changing that field. These
+  now derive identity from the verified login token instead.
 - **Path traversal.** Every route that takes a filename from the URL or
   request body (cave map downloads, narrative image downloads, SQLite
   hillshade tiles, etc.) now runs it through `path.basename()` (or a strict
@@ -231,10 +232,13 @@ Being upfront about the tradeoffs and what's left:
   one precisely risked silently breaking map layers that couldn't be
   tested in this environment. Worth tightening once you have a full list
   of tile providers you actually use.
-- **No email verification or password-reset flow is implemented** -
-  `isEmailVerified` and `/api/forgot-password` exist as fields/stubs but
-  don't send real email. Not a regression (they didn't work before
-  either), but worth knowing before you tell members "check your email."
+- **Email verification on signup is still a stub** - `isEmailVerified` is
+  set but nothing actually sends or checks a verification email. Password
+  reset, however, is now real: `/api/forgot-password` and
+  `/api/reset-password` issue a single-use, 1-hour, SHA-256-hashed token
+  and email the reset link via SMTP (configure `SMTP_*` in `.env`); without
+  SMTP configured it logs the link to the server console instead, which is
+  fine for local development but not for production.
 - This review covered the application code you provided. It did not
   include a dependency vulnerability scan (`npm audit`) or a penetration
   test - run `npm audit` after `npm install` and periodically thereafter.

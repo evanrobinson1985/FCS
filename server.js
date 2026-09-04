@@ -501,16 +501,73 @@ function reloadCaveDatabase() {
 
 reloadCaveDatabase();
 
-function writeCaveDatabase(caves, res, successPayload) {
+// Promise-returning version so callers that need to await the write (e.g.
+// the submission-approval route, which writes the cave database and then
+// the submissions file) can do so without nesting callbacks.
+function persistCaveDatabase(caves) {
   backupDataFile(CAVE_DB_FILE);
-  fs.writeFile(CAVE_DB_FILE, JSON.stringify(caves, null, 2), "utf8", (err) => {
-    if (err) {
+  return fs.promises
+    .writeFile(CAVE_DB_FILE, JSON.stringify(caves, null, 2), "utf8")
+    .then(() => {
+      reloadCaveDatabase();
+    });
+}
+
+function writeCaveDatabase(caves, res, successPayload) {
+  persistCaveDatabase(caves)
+    .then(() => res.json(successPayload))
+    .catch((err) => {
       console.error("Failed to write cave database:", err);
-      return res.status(500).json({ error: "Failed to save cave database." });
+      res.status(500).json({ error: "Failed to save cave database." });
+    });
+}
+
+// Applies proposedData from an approved submission onto the live cave
+// database, normalizing lat/lng key aliases the way every other write path
+// does. Returns the array of caves (mutated in place for new_cave) so the
+// caller can persist it; throws with a { status, message } shape on
+// validation failure so the route can turn it into the right HTTP response.
+function applyApprovedSubmission(submission, caves) {
+  if (submission.type === "new_cave") {
+    const countyCode = submission.county || submission.proposedData?.county;
+    if (!countyCode) {
+      throw { status: 400, message: "Submission is missing a county code; cannot assign a cave ID." };
     }
-    reloadCaveDatabase();
-    res.json(successPayload);
-  });
+    const uniqueId = generateNextCaveId(countyCode, caves);
+    const newCave = { ...submission.proposedData, id: uniqueId };
+    if (newCave.lat !== undefined) {
+      newCave.latitude = newCave.lat;
+    } else if (newCave.latitude !== undefined) {
+      newCave.lat = newCave.latitude;
+    }
+    if (newCave.lng !== undefined) {
+      newCave.longitude = newCave.lng;
+    } else if (newCave.longitude !== undefined) {
+      newCave.lng = newCave.longitude;
+    }
+    caves.push(newCave);
+    submission.assignedCaveId = uniqueId;
+  } else if (submission.type === "edit_cave") {
+    const caveIndex = caves.findIndex((c) => c.id === submission.caveId);
+    if (caveIndex === -1) {
+      throw { status: 404, message: `Cave with ID ${submission.caveId} no longer exists.` };
+    }
+    const merged = { ...caves[caveIndex], ...submission.proposedData, id: caves[caveIndex].id };
+    if (merged.lat !== undefined) {
+      merged.latitude = merged.lat;
+    } else if (merged.latitude !== undefined) {
+      merged.lat = merged.latitude;
+    }
+    if (merged.lng !== undefined) {
+      merged.longitude = merged.lng;
+    } else if (merged.longitude !== undefined) {
+      merged.lng = merged.longitude;
+    }
+    caves[caveIndex] = merged;
+  } else {
+    throw { status: 400, message: `Unknown submission type: ${submission.type}` };
+  }
+  return caves;
 }
 
 // Save route with enhanced functionality to handle single cave updates and
@@ -895,22 +952,49 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
   });
 });
 
-// Add a new pending submission
+// Add a new pending submission. Any logged-in member can propose a new cave
+// or an edit to an existing one; identity and timestamp are always derived
+// from the authenticated session, never trusted from the request body, so a
+// member can't submit a proposal under someone else's name.
 app.post("/api/pending-submissions", authenticateToken, (req, res) => {
-  const submission = req.body;
+  const { type, caveId, caveName, county, proposedData } = req.body || {};
 
-  // Accept different submission types
-  if (!submission || !submission.type || !submission.caveId) {
+  if (!type || !["new_cave", "edit_cave"].includes(type)) {
     return res
       .status(400)
-      .json({ error: "Missing required fields: type and caveId" });
+      .json({ error: "type must be 'new_cave' or 'edit_cave'." });
   }
+  if (!caveId) {
+    return res.status(400).json({ error: "Missing required field: caveId" });
+  }
+  if (!proposedData || typeof proposedData !== "object") {
+    return res
+      .status(400)
+      .json({ error: "Missing required field: proposedData" });
+  }
+  if (type === "edit_cave" && !caveDatabase.some((cave) => cave.id === caveId)) {
+    return res.status(404).json({ error: `Cave with ID ${caveId} not found.` });
+  }
+
+  const submission = {
+    submissionId: crypto.randomUUID(),
+    type,
+    caveId,
+    caveName: caveName || proposedData.name || "",
+    county: county || proposedData.county || "",
+    proposedData,
+    submittedBy: req.user.username,
+    submittedAt: new Date().toISOString(),
+    status: "pending",
+  };
 
   console.log(
     "Received submission:",
     submission.type,
     "for cave:",
-    submission.caveId
+    submission.caveId,
+    "from",
+    submission.submittedBy
   );
 
   fs.readFile(submissionsFile, "utf8", (err, data) => {
@@ -938,80 +1022,103 @@ app.post("/api/pending-submissions", authenticateToken, (req, res) => {
           return res.status(500).json({ error: "Could not save submission." });
         }
         console.log("Submission saved successfully");
-        res.json({ message: "Submission received." });
+        res.json({ message: "Submission received.", submission });
       }
     );
   });
 });
 
-// Update submission status (approve/reject)
+// Update submission status (approve/reject). Approving a submission is the
+// only place that ever writes a member's proposed change into the real cave
+// database - it applies proposedData here, not at submission time. approvedBy
+// / rejectedBy always come from the authenticated session, never the request
+// body, so a reviewer can't attribute the decision to someone else.
 app.patch(
   "/api/pending-submissions/:id",
   authenticateToken,
   requireRole("admin", "webmaster"),
-  (req, res) => {
-  const submissionId = req.params.id;
-  const { status, approvedBy, rejectedBy, rejectionReason } = req.body;
+  async (req, res) => {
+    const submissionId = req.params.id;
+    const { status, rejectionReason } = req.body;
 
-  if (!status || !["approved", "rejected"].includes(status)) {
-    return res
-      .status(400)
-      .json({ error: "Invalid status. Must be 'approved' or 'rejected'" });
-  }
-
-  fs.readFile(submissionsFile, "utf8", (err, data) => {
-    if (err) {
-      console.error("Failed to read submissions:", err);
-      return res.status(500).json({ error: "Could not load submissions." });
+    if (!status || !["approved", "rejected"].includes(status)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid status. Must be 'approved' or 'rejected'" });
     }
 
     let submissions;
     try {
+      const data = await fs.promises.readFile(submissionsFile, "utf8");
       submissions = JSON.parse(data);
-    } catch {
-      submissions = [];
+    } catch (err) {
+      console.error("Failed to read submissions:", err);
+      return res.status(500).json({ error: "Could not load submissions." });
     }
 
-    // Find the submission to update
     const submissionIndex = submissions.findIndex(
       (sub) => sub.submissionId === submissionId || sub.caveId === submissionId
     );
-
     if (submissionIndex === -1) {
       return res.status(404).json({ error: "Submission not found" });
     }
 
-    // Update the submission
-    submissions[submissionIndex].status = status;
+    const submission = submissions[submissionIndex];
+    if (submission.status !== "pending") {
+      return res
+        .status(409)
+        .json({ error: `Submission has already been ${submission.status}.` });
+    }
+
     if (status === "approved") {
-      submissions[submissionIndex].approvedBy = approvedBy || "admin";
-      submissions[submissionIndex].approvedDate = new Date().toISOString();
-    } else if (status === "rejected") {
-      submissions[submissionIndex].rejectedBy = rejectedBy || "admin";
-      submissions[submissionIndex].rejectedDate = new Date().toISOString();
+      const caves = loadCaveDatabaseFromDisk();
+      try {
+        applyApprovedSubmission(submission, caves);
+      } catch (err) {
+        if (err && err.status) {
+          return res.status(err.status).json({ error: err.message });
+        }
+        console.error("Failed to apply approved submission:", err);
+        return res.status(500).json({ error: "Failed to apply submission to cave database." });
+      }
+
+      try {
+        await persistCaveDatabase(caves);
+      } catch (err) {
+        console.error("Failed to write cave database:", err);
+        return res.status(500).json({ error: "Failed to save cave database." });
+      }
+
+      submission.status = "approved";
+      submission.approvedBy = req.user.username;
+      submission.approvedDate = new Date().toISOString();
+    } else {
+      submission.status = "rejected";
+      submission.rejectedBy = req.user.username;
+      submission.rejectedDate = new Date().toISOString();
       if (rejectionReason) {
-        submissions[submissionIndex].rejectionReason = rejectionReason;
+        submission.rejectionReason = rejectionReason;
       }
     }
 
-    fs.writeFile(
-      submissionsFile,
-      JSON.stringify(submissions, null, 2),
-      "utf8",
-      (err) => {
-        if (err) {
-          console.error("Failed to save submissions:", err);
-          return res.status(500).json({ error: "Could not save submissions." });
-        }
-        console.log(`Updated submission ${submissionId} status to ${status}`);
-        res.json({
-          message: `Submission ${status} successfully`,
-          submission: submissions[submissionIndex],
-        });
-      }
-    );
-  });
-});
+    try {
+      await fs.promises.writeFile(
+        submissionsFile,
+        JSON.stringify(submissions, null, 2),
+        "utf8"
+      );
+    } catch (err) {
+      console.error("Failed to save submissions:", err);
+      return res.status(500).json({ error: "Could not save submissions." });
+    }
+
+    console.log(`Updated submission ${submissionId} status to ${submission.status}`);
+    res.json({
+      message: `Submission ${submission.status} successfully`,
+      submission,
+    });
+  }
+);
 
 // Remove/update pending submissions
 app.delete(
