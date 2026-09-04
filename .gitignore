@@ -32,3 +32,7 @@ data/*
 cave-pictures/
 cave-maps/
 narratives/
+
+# Passenger restart signal file, written by the self-update feature
+# (POST /api/update-now) - see server.js.
+tmp/

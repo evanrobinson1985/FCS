@@ -334,6 +334,11 @@ const DEFAULT_SITE_CONFIG = {
   // hardcoded; exposed here so a webmaster can tune it without a deploy.
   loginLockoutThreshold: 5,
   loginLockoutMinutes: 15,
+  // Automatic daily code update from GitHub - see performSiteUpdate() and
+  // checkScheduledUpdate() below. autoUpdateTime is "HH:MM" in 24-hour
+  // format, in the server's own local time zone.
+  autoUpdateEnabled: false,
+  autoUpdateTime: "03:00",
 };
 
 function loadSiteConfig() {
@@ -454,10 +459,16 @@ app.post(
       readOnlyMessage,
       loginLockoutThreshold,
       loginLockoutMinutes,
+      autoUpdateEnabled,
+      autoUpdateTime,
     } = req.body;
 
     if (bannerColor !== undefined && !["red", "yellow"].includes(bannerColor)) {
       return res.status(400).json({ error: "bannerColor must be 'red' or 'yellow'." });
+    }
+
+    if (autoUpdateTime !== undefined && autoUpdateTime !== "" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(autoUpdateTime)) {
+      return res.status(400).json({ error: "autoUpdateTime must be in 24-hour HH:MM format." });
     }
 
     if (scheduledMaintenanceStart || scheduledMaintenanceEnd) {
@@ -499,6 +510,8 @@ app.post(
     if (typeof readOnlyMessage === "string") updated.readOnlyMessage = readOnlyMessage.slice(0, 2000);
     if (loginLockoutThreshold !== undefined) updated.loginLockoutThreshold = loginLockoutThreshold;
     if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
+    if (typeof autoUpdateEnabled === "boolean") updated.autoUpdateEnabled = autoUpdateEnabled;
+    if (autoUpdateTime !== undefined) updated.autoUpdateTime = autoUpdateTime || DEFAULT_SITE_CONFIG.autoUpdateTime;
 
     siteConfig = updated;
     saveSiteConfig(siteConfig);
@@ -538,6 +551,236 @@ app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), (req, re
     res.status(500).json({ error: "Failed to create backup." });
   }
 });
+
+// ---- Website management: self-update from GitHub --------------------------
+//
+// Pulls the latest commit for this deployment's checked-out branch straight
+// from GitHub and applies it - on demand or on a daily schedule. This can
+// only ever touch tracked application code, never recorded data: every data
+// file this app writes (data/, cave-maps/, narratives/, httpdocs/cave-pictures/)
+// is gitignored, so git itself has no way to see or overwrite it during an
+// update. Two more guards make that concrete rather than just implied: the
+// merge below is always fast-forward-only (never a --hard reset or a
+// checkout that could discard something), and it simply refuses to run - no
+// files touched - the moment the working tree has ANY uncommitted change to
+// a tracked file, exactly like a manual `git pull` would.
+const { execFile } = require("child_process");
+
+// Overridable so the test suite can point this at a throwaway fixture git
+// repo instead of ever running real git commands against this checkout.
+const REPO_ROOT = process.env.UPDATE_REPO_DIR ? path.resolve(process.env.UPDATE_REPO_DIR) : __dirname;
+
+function runGit(args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { cwd: REPO_ROOT, timeout: 60000, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error((stderr || err.message || "git command failed").trim()));
+        } else {
+          resolve(stdout.trim());
+        }
+      }
+    );
+  });
+}
+
+async function getCurrentBranch() {
+  const branch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branch === "HEAD") {
+    throw new Error("This deployment is in a detached-HEAD state (no branch checked out) - can't determine what to update against.");
+  }
+  return branch;
+}
+
+// Read-only: fetches the latest refs from GitHub and reports how far behind
+// (if at all) this checkout is, without changing anything on disk.
+async function getUpdateStatus() {
+  const branch = await getCurrentBranch();
+  await runGit(["fetch", "origin", branch]);
+
+  const currentCommit = await runGit(["rev-parse", "HEAD"]);
+  const remoteCommit = await runGit(["rev-parse", `origin/${branch}`]);
+  const currentSummary = await runGit(["log", "-1", "--format=%h %cI %s"]);
+  const statusOut = await runGit(["status", "--porcelain"]);
+  // tmp/restart.txt is this feature's own bookkeeping file (see the restart
+  // signal below) - ignore it here regardless of whether a given deployment
+  // happens to have tmp/ in its own .gitignore yet, so a prior update never
+  // makes every later check falsely report a dirty tree.
+  const dirtyLines = statusOut
+    .split("\n")
+    .filter((line) => line.trim().length > 0 && !line.slice(3).startsWith("tmp/"));
+
+  let commitsBehind = 0;
+  let pendingCommits = [];
+  if (currentCommit !== remoteCommit) {
+    const countOut = await runGit(["rev-list", "--count", `HEAD..origin/${branch}`]);
+    commitsBehind = parseInt(countOut, 10) || 0;
+    const log = await runGit(["log", "--format=%h|%cI|%s", `HEAD..origin/${branch}`]);
+    pendingCommits = log
+      ? log
+          .split("\n")
+          .slice(0, 20)
+          .map((line) => {
+            const [hash, date, ...rest] = line.split("|");
+            return { hash, date, subject: rest.join("|") };
+          })
+      : [];
+  }
+
+  return {
+    gitAvailable: true,
+    branch,
+    currentCommit,
+    currentCommitShort: currentCommit.slice(0, 7),
+    currentSummary,
+    remoteCommit,
+    upToDate: currentCommit === remoteCommit,
+    commitsBehind,
+    pendingCommits,
+    dirty: dirtyLines.length > 0,
+  };
+}
+
+// Applies the update: fetch, fast-forward-only merge, then (only if needed)
+// reinstall dependencies and signal a restart. Used by both the on-demand
+// route and the scheduled check below, so manual and automatic updates go
+// through exactly the same, exactly-as-tested code path.
+async function performSiteUpdate({ triggeredBy, username }) {
+  const branch = await getCurrentBranch();
+  await runGit(["fetch", "origin", branch]);
+
+  const previousCommit = await runGit(["rev-parse", "HEAD"]);
+  const remoteCommit = await runGit(["rev-parse", `origin/${branch}`]);
+
+  if (previousCommit === remoteCommit) {
+    return { updated: false, message: "Already up to date.", branch, currentCommit: previousCommit };
+  }
+
+  // One more safety net, same as the "Download Backup Now" button - this
+  // update should never touch data at all, but there's no reason not to
+  // have a fresh snapshot on hand right before it runs.
+  [USERS_FILE, CAVE_DB_FILE, submissionsFile, SITE_CONFIG_FILE].forEach((f) => backupDataFile(f));
+
+  // Fast-forward only. If the working tree has any local change to a
+  // tracked file, or history has diverged for any reason, this fails
+  // outright and changes nothing on disk.
+  await runGit(["merge", "--ff-only", `origin/${branch}`]);
+
+  const newCommit = await runGit(["rev-parse", "HEAD"]);
+  const changedFilesOut = await runGit(["diff", "--name-only", previousCommit, newCommit]);
+  const changedFiles = changedFilesOut ? changedFilesOut.split("\n") : [];
+
+  let dependenciesInstalled = false;
+  let dependencyInstallError = null;
+  if (changedFiles.includes("package.json") || changedFiles.includes("package-lock.json")) {
+    try {
+      await new Promise((resolve, reject) => {
+        execFile("npm", ["install"], { cwd: REPO_ROOT, timeout: 5 * 60 * 1000 }, (err, stdout, stderr) => {
+          if (err) reject(new Error((stderr || err.message || "npm install failed").trim()));
+          else resolve();
+        });
+      });
+      dependenciesInstalled = true;
+    } catch (err) {
+      dependencyInstallError = err.message;
+      console.error("Site update: npm install failed after pulling updated dependencies:", err);
+    }
+  }
+
+  // Signals Phusion Passenger (what Plesk's Node.js support runs apps
+  // under) to restart on the next request - the standard convention is
+  // just touching this file. Harmless if this deployment isn't running
+  // under Passenger; it's simply an unused file in that case. Only
+  // server-side code needs this: static httpdocs/ changes are already
+  // live immediately, since express.static reads files fresh on every
+  // request rather than caching them in memory.
+  let restartTriggered = false;
+  try {
+    const tmpDir = path.join(REPO_ROOT, "tmp");
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "restart.txt"), new Date().toISOString());
+    restartTriggered = true;
+  } catch (err) {
+    console.error("Site update: could not signal a restart:", err);
+  }
+
+  console.log(
+    `Site updated ${triggeredBy === "scheduled" ? "automatically (scheduled)" : `by ${username}`}: ` +
+      `${previousCommit.slice(0, 7)} -> ${newCommit.slice(0, 7)} (${changedFiles.length} file(s) changed)`
+  );
+
+  return {
+    updated: true,
+    branch,
+    previousCommit,
+    previousCommitShort: previousCommit.slice(0, 7),
+    newCommit,
+    newCommitShort: newCommit.slice(0, 7),
+    changedFiles,
+    dependenciesInstalled,
+    dependencyInstallError,
+    restartTriggered,
+  };
+}
+
+app.get("/api/update-status", authenticateToken, requireRole("webmaster"), async (req, res) => {
+  try {
+    res.json(await getUpdateStatus());
+  } catch (err) {
+    res.status(500).json({ gitAvailable: false, error: err.message });
+  }
+});
+
+app.post("/api/update-now", authenticateToken, requireRole("webmaster"), async (req, res) => {
+  try {
+    const result = await performSiteUpdate({ triggeredBy: "manual", username: req.user.username });
+    res.json(result);
+  } catch (err) {
+    console.error("Site update failed:", err);
+    res.status(500).json({ updated: false, error: err.message });
+  }
+});
+
+// Once a minute, checks whether it's time for the scheduled daily update
+// (siteConfig.autoUpdateEnabled/autoUpdateTime, set from the Website
+// Management tab) and applies it via the same performSiteUpdate() the
+// on-demand button uses. lastAutoUpdateRunDate guards against firing more
+// than once during the same minute-long window, and more importantly
+// against re-firing again later the same day if the check happens to land
+// on the target minute twice (e.g. after a restart).
+let lastAutoUpdateRunDate = null;
+
+async function checkScheduledUpdate() {
+  if (!siteConfig.autoUpdateEnabled || !siteConfig.autoUpdateTime) return;
+
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  if (hhmm !== siteConfig.autoUpdateTime) return;
+
+  const today = now.toISOString().slice(0, 10);
+  if (lastAutoUpdateRunDate === today) return;
+  lastAutoUpdateRunDate = today;
+
+  try {
+    const result = await performSiteUpdate({ triggeredBy: "scheduled" });
+    if (result.updated) {
+      console.log(`Scheduled site update applied: ${result.previousCommitShort} -> ${result.newCommitShort}`);
+    }
+  } catch (err) {
+    console.error("Scheduled site update failed:", err);
+  }
+}
+
+// Real timer skipped under the test suite - tests call checkScheduledUpdate()
+// directly (exposed below) instead of waiting on the clock, same idea as the
+// authLimiter skip a little further down.
+if (process.env.NODE_ENV !== "test") {
+  setInterval(checkScheduledUpdate, 60 * 1000);
+}
+app.locals.checkScheduledUpdate = checkScheduledUpdate;
 
 // While maintenanceMode is on, every /api/* route 503s for anyone who isn't
 // logged in as admin/webmaster - except the handful of routes needed to

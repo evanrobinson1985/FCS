@@ -440,6 +440,41 @@
     </div>
 
     <div class="control-section">
+      <h4>Software Updates</h4>
+      <p style="margin-bottom: 10px;">
+        Pulls the latest version of this site's code straight from GitHub and applies it here - either right now,
+        or automatically once a day at a time you choose. This only ever touches application code, never any
+        recorded data: the cave database, accounts, submissions, narratives, and every uploaded map/picture live
+        outside of what this pulls in, so nothing here can lose or overwrite them. If anything about the deployment
+        would make an update unsafe (local changes on the server, a broken connection to GitHub), it refuses to
+        change anything rather than risk it, and tells you why.
+      </p>
+      <p id="update-status-line" style="margin-bottom: 10px; font-weight: bold;">Checking for updates...</p>
+      <div id="update-pending-commits" style="margin-bottom: 10px; display: none;">
+        <strong>Changes waiting to be applied:</strong>
+        <ul id="update-pending-commits-list" style="margin: 5px 0 0 20px; font-size: 0.9em; color: #444;"></ul>
+      </div>
+      <div>
+        <button type="button" class="btn-success" onclick="checkForUpdates()">Check for Updates</button>
+        <button type="button" class="btn-warning" id="update-now-btn" onclick="updateNow()">Update Now</button>
+        <span id="update-now-status" style="margin-left: 10px;"></span>
+      </div>
+
+      <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+      <h4 style="margin-bottom: 5px;">Scheduled Daily Update (optional)</h4>
+      <p style="margin-bottom: 10px;">When enabled, the site checks GitHub for a newer version once a day at this time (server's local time) and applies it automatically if one is available - if it's already up to date, nothing happens.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="auto-update-enabled-toggle" style="width: 18px; height: 18px;">
+        <strong>Automatically update daily at:</strong>
+        <input type="time" id="auto-update-time-input" style="padding: 6px;">
+      </label>
+      <div>
+        <button type="button" class="btn-success" onclick="saveAutoUpdateSettings()">Save Schedule</button>
+        <span id="auto-update-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
       <h4>Backups</h4>
       <p style="margin-bottom: 10px;">A backup of every data file is already taken automatically before each write. This downloads one combined snapshot (accounts, cave database, pending submissions, and this tab's own settings) right now, as a single JSON file - useful right before a risky manual change.</p>
       <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Backup Now</button>
@@ -4746,8 +4781,115 @@ function loadFcsDatabaseTable() {
       if (lockoutThresholdInput) lockoutThresholdInput.value = status.loginLockoutThreshold ?? 5;
       if (lockoutMinutesInput) lockoutMinutesInput.value = status.loginLockoutMinutes ?? 15;
 
+      const autoUpdateToggle = document.getElementById('auto-update-enabled-toggle');
+      const autoUpdateTimeInput = document.getElementById('auto-update-time-input');
+      if (autoUpdateToggle) autoUpdateToggle.checked = !!status.autoUpdateEnabled;
+      if (autoUpdateTimeInput) autoUpdateTimeInput.value = status.autoUpdateTime || '03:00';
+
       renderBannerPreview(status);
       loadUsageSnapshot();
+      checkForUpdates();
+    }
+
+    // Populates the "Software Updates" panel from GET /api/update-status.
+    // That route itself does a real `git fetch` against GitHub before
+    // answering, so this always reflects the true current state - not a
+    // guess based on stale local data.
+    async function checkForUpdates() {
+      const statusLine = document.getElementById('update-status-line');
+      const pendingBox = document.getElementById('update-pending-commits');
+      const pendingList = document.getElementById('update-pending-commits-list');
+      const updateBtn = document.getElementById('update-now-btn');
+      if (!statusLine) return;
+
+      statusLine.textContent = 'Checking for updates...';
+      statusLine.style.color = '#666';
+      if (updateBtn) updateBtn.disabled = true;
+
+      try {
+        const response = await fetch('/api/update-status');
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `HTTP ${response.status}`);
+
+        if (status.upToDate) {
+          statusLine.textContent = `Up to date (${status.currentCommitShort} on ${status.branch}).`;
+          statusLine.style.color = 'green';
+          if (pendingBox) pendingBox.style.display = 'none';
+          if (updateBtn) updateBtn.disabled = true;
+        } else {
+          statusLine.textContent =
+            `${status.commitsBehind} update${status.commitsBehind === 1 ? '' : 's'} available on ${status.branch} ` +
+            `(currently on ${status.currentCommitShort}).`;
+          statusLine.style.color = '#b8860b';
+          if (pendingList) {
+            pendingList.innerHTML = status.pendingCommits
+              .map(c => `<li>${escapeStatsHtml(c.hash)} - ${escapeStatsHtml(c.subject)}</li>`)
+              .join('');
+          }
+          if (pendingBox) pendingBox.style.display = 'block';
+          if (updateBtn) updateBtn.disabled = false;
+        }
+
+        if (status.dirty) {
+          statusLine.textContent += ' Warning: this deployment has uncommitted local changes - an update will be refused until that\'s resolved.';
+          statusLine.style.color = '#b00';
+          if (updateBtn) updateBtn.disabled = true;
+        }
+      } catch (error) {
+        console.error('Error checking for updates:', error);
+        statusLine.textContent = 'Unable to check for updates: ' + error.message;
+        statusLine.style.color = '#b00';
+        if (updateBtn) updateBtn.disabled = true;
+      }
+    }
+
+    async function updateNow() {
+      const statusEl = document.getElementById('update-now-status');
+      const updateBtn = document.getElementById('update-now-btn');
+      if (!confirm('Pull and apply the latest version from GitHub now? This does not touch any recorded data.')) return;
+
+      if (updateBtn) updateBtn.disabled = true;
+      if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = '#666'; }
+
+      try {
+        const response = await fetch('/api/update-now', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+        if (statusEl) {
+          statusEl.textContent = result.updated
+            ? `Updated ${result.previousCommitShort} -> ${result.newCommitShort} (${result.changedFiles.length} file(s) changed).` +
+              (result.restartTriggered ? ' Restart requested - changes take effect shortly.' : '') +
+              (result.dependencyInstallError ? ' Warning: dependency install failed - check the server log.' : '')
+            : result.message || 'Already up to date.';
+          statusEl.style.color = result.dependencyInstallError ? '#b00' : 'green';
+        }
+      } catch (error) {
+        console.error('Error updating site:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      } finally {
+        checkForUpdates();
+      }
+    }
+
+    async function saveAutoUpdateSettings() {
+      const statusEl = document.getElementById('auto-update-save-status');
+      const autoUpdateEnabled = document.getElementById('auto-update-enabled-toggle').checked;
+      const autoUpdateTime = document.getElementById('auto-update-time-input').value || '03:00';
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ autoUpdateEnabled, autoUpdateTime }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'green'; }
+      } catch (error) {
+        console.error('Error saving auto-update schedule:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
     }
 
     async function saveScheduledMaintenance() {

@@ -109,3 +109,23 @@ by `GET /api/cave-database/import-template` and
 reported on independently - a bad row doesn't block the rest of the file
 from importing - and IDs are assigned the same way as any other new cave
 (state-prefixed, numbered sequentially per state+county).
+
+## Self-updating from GitHub
+
+The Website Management tab's "Software Updates" panel (`GET /api/update-status`,
+`POST /api/update-now`, both webmaster-only) pulls the latest commit for
+this deployment's checked-out branch straight from GitHub and applies it -
+on demand, or once a day at a scheduled time (`siteConfig.autoUpdateEnabled`/
+`autoUpdateTime`, checked once a minute in `server.js`). This is why this
+directory's contents matter here: everything under it (plus `cave-maps/`,
+`narratives/`, and `httpdocs/cave-pictures/`) is gitignored, so a git-based
+update has no way to even see it, let alone overwrite it - the same
+guarantee this whole file already describes for a fresh checkout applies
+equally to every update after that one. It's also always a fast-forward-only
+merge (`git merge --ff-only`), never a `--hard` reset or a checkout that
+could discard something, and it refuses to change anything at all - no
+files touched - the moment the deployment's working tree has any
+uncommitted change to a tracked file. This only works when the live
+deployment is an actual `git clone` of this repository with `origin`
+pointed at GitHub (not a zip/FTP upload); if it isn't, the panel just
+reports that updates aren't available instead of failing at anything.

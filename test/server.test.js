@@ -11,6 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
 
@@ -24,6 +25,11 @@ process.env.CAVE_MAPS_DIR = path.join(TEST_ROOT, "cave-maps");
 process.env.CAVE_PICTURES_DIR = path.join(TEST_ROOT, "cave-pictures");
 process.env.NODE_ENV = "test";
 process.env.ALLOWED_ORIGINS = "http://localhost:3000";
+// Points the self-update feature (see "self-update from GitHub" below) at a
+// throwaway fixture git repo, set up once real git commands are needed -
+// never at the real project checkout, exactly like every data path above.
+const UPDATE_REPO_DIR = path.join(TEST_ROOT, "update-repo");
+process.env.UPDATE_REPO_DIR = UPDATE_REPO_DIR;
 
 const request = require("supertest");
 const app = require("../server");
@@ -1708,6 +1714,229 @@ describe("website management: site status, banner, and maintenance mode", () => 
       assert.ok(Array.isArray(body.caveDatabase));
       assert.ok(Array.isArray(body.pendingSubmissions));
       assert.ok(body.siteConfig);
+    });
+  });
+});
+
+describe("website management: self-update from GitHub", () => {
+  // "origin" (a bare repo standing in for GitHub) and the "production"
+  // checkout server.js runs real git commands against (UPDATE_REPO_DIR, set
+  // at the top of this file before server.js was required). A third clone
+  // ("pusher") stands in for someone pushing a new commit to GitHub, so
+  // UPDATE_REPO_DIR itself stays clean until a test explicitly pulls it in.
+  const originDir = path.join(TEST_ROOT, "update-origin.git");
+  const pusherDir = path.join(TEST_ROOT, "update-pusher");
+  let initialCommitHash;
+  let secondCommitHash;
+
+  function git(cwd, args) {
+    return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  }
+
+  before(() => {
+    fs.mkdirSync(originDir, { recursive: true });
+    git(originDir, ["init", "--bare", "-b", "main"]);
+
+    fs.mkdirSync(UPDATE_REPO_DIR, { recursive: true });
+    git(UPDATE_REPO_DIR, ["clone", originDir, "."]);
+    git(UPDATE_REPO_DIR, ["config", "user.email", "test@example.com"]);
+    git(UPDATE_REPO_DIR, ["config", "user.name", "Test"]);
+
+    // A gitignored "data" file sitting right alongside the tracked code,
+    // the same way data/, cave-maps/, and narratives/ sit alongside
+    // server.js in the real project - this proves an update can't see or
+    // touch it, since git itself is never told it exists.
+    fs.writeFileSync(path.join(UPDATE_REPO_DIR, ".gitignore"), "app-data.json\n");
+    fs.writeFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "console.log('v1');\n");
+    fs.writeFileSync(path.join(UPDATE_REPO_DIR, "app-data.json"), JSON.stringify({ marker: "untouched" }));
+    git(UPDATE_REPO_DIR, ["add", "app.js", ".gitignore"]);
+    git(UPDATE_REPO_DIR, ["commit", "-m", "initial commit"]);
+    initialCommitHash = git(UPDATE_REPO_DIR, ["rev-parse", "HEAD"]);
+    git(UPDATE_REPO_DIR, ["push", "origin", "main"]);
+
+    fs.mkdirSync(pusherDir, { recursive: true });
+    git(pusherDir, ["clone", originDir, "."]);
+    git(pusherDir, ["config", "user.email", "test@example.com"]);
+    git(pusherDir, ["config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(pusherDir, "app.js"), "console.log('v2');\n");
+    git(pusherDir, ["add", "app.js"]);
+    git(pusherDir, ["commit", "-m", "bump to v2"]);
+    secondCommitHash = git(pusherDir, ["rev-parse", "HEAD"]);
+    git(pusherDir, ["push", "origin", "main"]);
+  });
+
+  after(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ autoUpdateEnabled: false, autoUpdateTime: "03:00" });
+  });
+
+  test("GET /api/update-status requires webmaster", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/update-status").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("POST /api/update-now requires webmaster", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).post("/api/update-now").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("GET /api/update-status reports the pending upstream commit without changing anything", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/update-status").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.gitAvailable, true);
+    assert.equal(res.body.branch, "main");
+    assert.equal(res.body.upToDate, false);
+    assert.equal(res.body.commitsBehind, 1);
+    assert.equal(res.body.pendingCommits.length, 1);
+    assert.equal(res.body.pendingCommits[0].subject, "bump to v2");
+    assert.equal(res.body.dirty, false);
+    assert.equal(git(UPDATE_REPO_DIR, ["rev-parse", "HEAD"]), initialCommitHash);
+  });
+
+  test("POST /api/update-now refuses to run against a dirty tracked file, and touches nothing", async () => {
+    // Locally modify the exact file the pending upstream commit changes,
+    // without committing - a fast-forward-only merge must refuse this
+    // rather than overwrite it.
+    fs.writeFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "console.log('local edit, not committed');\n");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).post("/api/update-now").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 500);
+    assert.equal(res.body.updated, false);
+    assert.ok(res.body.error, "expected a git error message explaining the refusal");
+
+    // Nothing was touched: the local edit is exactly as left, HEAD hasn't
+    // moved, and the gitignored data file is untouched.
+    assert.equal(
+      fs.readFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "utf8"),
+      "console.log('local edit, not committed');\n"
+    );
+    assert.equal(git(UPDATE_REPO_DIR, ["rev-parse", "HEAD"]), initialCommitHash);
+    assert.equal(
+      fs.readFileSync(path.join(UPDATE_REPO_DIR, "app-data.json"), "utf8"),
+      JSON.stringify({ marker: "untouched" })
+    );
+
+    git(UPDATE_REPO_DIR, ["checkout", "--", "app.js"]); // clean up for the next test
+  });
+
+  test("POST /api/update-now fast-forwards to the latest commit, reports changed files, and never touches gitignored data", async () => {
+    const dataBefore = fs.readFileSync(path.join(UPDATE_REPO_DIR, "app-data.json"), "utf8");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).post("/api/update-now").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.updated, true);
+    assert.equal(res.body.previousCommit, initialCommitHash);
+    assert.equal(res.body.newCommit, secondCommitHash);
+    assert.deepEqual(res.body.changedFiles, ["app.js"]);
+    assert.equal(res.body.restartTriggered, true);
+
+    assert.equal(fs.readFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "utf8"), "console.log('v2');\n");
+    assert.equal(git(UPDATE_REPO_DIR, ["rev-parse", "HEAD"]), secondCommitHash);
+    assert.equal(fs.readFileSync(path.join(UPDATE_REPO_DIR, "app-data.json"), "utf8"), dataBefore);
+    assert.ok(fs.existsSync(path.join(UPDATE_REPO_DIR, "tmp", "restart.txt")));
+  });
+
+  test("GET /api/update-status reports up to date after the update", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/update-status").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.upToDate, true);
+    assert.equal(res.body.commitsBehind, 0);
+  });
+
+  test("the previous update's own tmp/restart.txt does not make the tree look dirty", async () => {
+    // The update just applied wrote tmp/restart.txt as its restart signal.
+    // That file is untracked (this fixture repo's own .gitignore, unlike
+    // the real project's, never mentions tmp/), so this proves the dirty
+    // check specifically excludes the feature's own bookkeeping file rather
+    // than just happening to pass because it's ignored.
+    assert.ok(fs.existsSync(path.join(UPDATE_REPO_DIR, "tmp", "restart.txt")));
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/update-status").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.dirty, false);
+  });
+
+  test("POST /api/update-now is a no-op when already up to date", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).post("/api/update-now").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.updated, false);
+    assert.equal(res.body.message, "Already up to date.");
+  });
+
+  describe("scheduled auto-update", () => {
+    test("POST /api/site-config rejects a malformed autoUpdateTime", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ autoUpdateTime: "3am" });
+      assert.equal(res.status, 400);
+    });
+
+    test("POST /api/site-config accepts and persists autoUpdateEnabled/autoUpdateTime", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ autoUpdateEnabled: true, autoUpdateTime: "04:30" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.autoUpdateEnabled, true);
+      assert.equal(res.body.autoUpdateTime, "04:30");
+    });
+
+    test("checkScheduledUpdate() applies the update once enabled and the clock matches", async () => {
+      fs.writeFileSync(path.join(pusherDir, "app.js"), "console.log('v3 - scheduled');\n");
+      git(pusherDir, ["add", "app.js"]);
+      git(pusherDir, ["commit", "-m", "bump to v3"]);
+      git(pusherDir, ["push", "origin", "main"]);
+
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ autoUpdateEnabled: true, autoUpdateTime: hhmm });
+
+      await app.locals.checkScheduledUpdate();
+
+      assert.equal(fs.readFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "utf8"), "console.log('v3 - scheduled');\n");
+    });
+
+    test("checkScheduledUpdate() does not re-apply again the same day even if called again", async () => {
+      fs.writeFileSync(path.join(pusherDir, "app.js"), "console.log('v4 - should not apply yet');\n");
+      git(pusherDir, ["add", "app.js"]);
+      git(pusherDir, ["commit", "-m", "bump to v4"]);
+      git(pusherDir, ["push", "origin", "main"]);
+
+      await app.locals.checkScheduledUpdate();
+
+      assert.equal(fs.readFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "utf8"), "console.log('v3 - scheduled');\n");
+    });
+
+    test("checkScheduledUpdate() does nothing while autoUpdateEnabled is false", async () => {
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ autoUpdateEnabled: false, autoUpdateTime: hhmm });
+
+      await app.locals.checkScheduledUpdate();
+
+      // Still at v3 - v4 (pushed in the previous test) never got pulled in.
+      assert.equal(fs.readFileSync(path.join(UPDATE_REPO_DIR, "app.js"), "utf8"), "console.log('v3 - scheduled');\n");
     });
   });
 });
