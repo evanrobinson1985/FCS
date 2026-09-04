@@ -191,6 +191,23 @@
         <button type="button" onclick="showLogin()">Back to Login</button>
       </div>
     </div>
+
+    <!-- Two-Factor Verification Form (shown after a correct password on a 2FA-enabled account) -->
+    <div id="two-factor-form" class="auth-form" style="display: none;">
+      <h2>Enter Verification Code</h2>
+      <p>We emailed a 6-digit code to your account's email address. It expires in 10 minutes.</p>
+      <div class="form-group">
+        <label for="two-factor-code">Verification Code:</label>
+        <input id="two-factor-code" placeholder="123456" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required/>
+      </div>
+      <div class="form-group">
+        <button id="verify-2fa-btn" onclick="handleVerifyTwoFactor()">Verify</button>
+        <button type="button" onclick="showLogin()">Back to Login</button>
+      </div>
+      <div class="auth-links">
+        <a href="#" onclick="handleResendTwoFactorCode(); return false;">Resend code</a>
+      </div>
+    </div>
   </div>
 </div>
 <!-- Dashboard -->
@@ -199,6 +216,8 @@
 <h2>Webmaster Dashboard</h2>
 <div>
 <span id="logged-in-user">Logged in as: </span>
+<span id="twofa-status" style="margin-left: 15px; font-size: 0.9em;"></span>
+<button type="button" id="twofa-toggle-btn" onclick="handleToggleTwoFactor()" style="margin-left: 5px;"></button>
 <button class="logout-btn" id="logout-btn">Log Out</button>
 </div>
 </div>
@@ -268,6 +287,7 @@
               <th>Email</th>
               <th>Role</th>
               <th>Status</th>
+              <th>2FA</th>
               <th>Last Login</th>
               <th>Login IPs</th>
               <th>Actions</th>
@@ -6528,6 +6548,220 @@ window.addEventListener('error', function(e) {
       // Your initialization code here
     });
 
+  // Pending token for a login that's waiting on a 2FA code (see
+  // handleVerifyTwoFactor()/handleResendTwoFactorCode() below). Only good
+  // for /api/verify-2fa and /api/resend-2fa - the server rejects it on
+  // every other route.
+  window.pendingTwoFactorToken = null;
+
+  // Finishes a successful login (called directly for accounts without 2FA,
+  // and from handleVerifyTwoFactor() once a 2FA code is confirmed) - stores
+  // the session, shows the dashboard, and kicks off the initial data loads.
+  function completeLogin(result) {
+    console.log("Login successful for role:", result.role);
+    window.pendingTwoFactorToken = null;
+
+    // Store user information
+    localStorage.setItem('username', result.username);
+    localStorage.setItem('role', result.role);
+    sessionStorage.setItem('role', result.role);
+    sessionStorage.setItem('sessionToken', result.token);
+
+    // Hide login, show dashboard
+    document.getElementById('login-section').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('logged-in-user').textContent =
+      `Logged in as: ${result.username} (${result.role})`;
+
+    // Show/hide account management tab based on role
+    const accountTab = document.getElementById('account-management-tab');
+    if (accountTab) {
+      if (result.role === 'webmaster') {
+        accountTab.style.display = 'block';
+      } else {
+        accountTab.style.display = 'none';
+      }
+    }
+
+    updateTwoFactorStatusUI(!!result.twoFactorEnabled);
+
+    // Load submissions and database
+    loadSubmissions();
+    loadApprovedSubmissions();
+
+    // The cave database is only fetchable now that we're authenticated
+    // (the earlier page-load attempt in the DOMContentLoaded handler
+    // would have gotten a 401). Load it now, then refresh the views
+    // that depend on it.
+    window.loadCaveDatabaseFromServer().then(function() {
+      updateCaveDataStore();
+    });
+
+    // Add enter key support for database search
+    const databaseSearch = document.getElementById('database-search');
+    if (databaseSearch) {
+      databaseSearch.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          searchDatabase();
+        }
+      });
+    }
+
+    // Add enter key support for edit cave search
+    const editCaveSearch = document.getElementById('edit-cave-search');
+    if (editCaveSearch) {
+      editCaveSearch.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          searchEditCave();
+        }
+      });
+    }
+
+    // Cave maps dropdown change handler
+    const caveMapsDropdown = document.getElementById('cave-maps-dropdown');
+    if (caveMapsDropdown) {
+      caveMapsDropdown.addEventListener('change', function() {
+        showCaveMapPreview(this.value);
+      });
+    }
+
+    // Download button handler
+    const downloadBtn = document.getElementById('download-cave-map');
+    if (downloadBtn) {
+      downloadBtn.addEventListener('click', downloadCaveMap);
+    }
+
+    // Search enter key support
+    const caveMapsSearch = document.getElementById('cave-maps-search');
+    if (caveMapsSearch) {
+      caveMapsSearch.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          searchCaveMaps();
+        }
+      });
+    }
+
+    // Initialize map if map tab is already active
+    if (document.querySelector('[data-tab="map-tab"]').classList.contains('active')) {
+      console.log("Map tab is already active, initializing map");
+      setTimeout(function () {
+        initializeMap();
+        setTimeout(enhanceMapForDebugging, 500);
+      }, 100);
+    }
+  }
+
+  // Verifies the code from the 2FA email and, on success, finishes the login.
+  async function handleVerifyTwoFactor() {
+    const code = document.getElementById('two-factor-code').value.trim();
+    if (!window.pendingTwoFactorToken) {
+      alert('Your login session expired. Please log in again.');
+      showLogin();
+      return;
+    }
+    if (!code) {
+      alert('Please enter the 6-digit code from your email.');
+      return;
+    }
+
+    const verifyBtn = document.getElementById('verify-2fa-btn');
+    if (verifyBtn) verifyBtn.disabled = true;
+
+    try {
+      const response = await fetch('/api/verify-2fa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ twoFactorToken: window.pendingTwoFactorToken, code })
+      });
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        completeLogin(result);
+      } else {
+        throw new Error(result.error || 'Verification failed');
+      }
+    } catch (error) {
+      console.error('2FA verification error:', error);
+      alert(error.message);
+    } finally {
+      if (verifyBtn) verifyBtn.disabled = false;
+    }
+  }
+
+  // Requests a fresh code for the login currently waiting on one.
+  async function handleResendTwoFactorCode() {
+    if (!window.pendingTwoFactorToken) {
+      alert('Your login session expired. Please log in again.');
+      showLogin();
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/resend-2fa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ twoFactorToken: window.pendingTwoFactorToken })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Could not resend the code');
+      }
+      alert(result.message || 'A new code has been sent.');
+    } catch (error) {
+      console.error('Resend 2FA error:', error);
+      alert(error.message);
+    }
+  }
+
+  // Reflects the logged-in user's 2FA status in the dashboard header and
+  // keeps a copy in sessionStorage so handleToggleTwoFactor() below knows
+  // which direction to toggle without an extra round trip.
+  function updateTwoFactorStatusUI(enabled) {
+    sessionStorage.setItem('twoFactorEnabled', enabled ? 'true' : 'false');
+    const statusEl = document.getElementById('twofa-status');
+    const toggleBtn = document.getElementById('twofa-toggle-btn');
+    if (statusEl) statusEl.textContent = enabled ? '🔒 2FA: On' : '2FA: Off';
+    if (toggleBtn) toggleBtn.textContent = enabled ? 'Disable 2FA' : 'Enable 2FA';
+  }
+
+  // Lets the logged-in user turn their own 2FA on or off. Disabling it
+  // weakens the account, so the server requires the current password to
+  // confirm that (see /api/toggle-2fa) - prompt() mirrors how this app
+  // already collects short one-off input elsewhere (e.g. rejectSubmission()).
+  async function handleToggleTwoFactor() {
+    const enabling = sessionStorage.getItem('twoFactorEnabled') !== 'true';
+
+    let password = null;
+    if (enabling) {
+      if (!confirm('Enable two-factor authentication? A verification code will be emailed to you each time you log in.')) return;
+    } else {
+      password = prompt('Enter your password to confirm turning off two-factor authentication:');
+      if (password === null) return; // user canceled
+      if (!password) {
+        alert('Password is required to disable two-factor authentication.');
+        return;
+      }
+    }
+
+    try {
+      const response = await fetch('/api/toggle-2fa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabling, password })
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Could not update two-factor authentication.');
+      }
+      updateTwoFactorStatusUI(result.twoFactorEnabled);
+      alert(result.message);
+    } catch (error) {
+      console.error('Toggle 2FA error:', error);
+      alert(error.message);
+    }
+  }
+
   // Fixed login functionality
   document.addEventListener('DOMContentLoaded', function() {
     console.log("Webmaster page loaded - setting up login handler");
@@ -6580,96 +6814,14 @@ window.addEventListener('error', function(e) {
 
         const result = await response.json();
 
-        if (response.ok && result.success) {
-          console.log("Login successful for role:", result.role);
-          
-          // Store user information
-          localStorage.setItem('username', result.username);
-          localStorage.setItem('role', result.role);
-          sessionStorage.setItem('role', result.role);
-          sessionStorage.setItem('sessionToken', result.token);
-          
-          // Hide login, show dashboard
-          document.getElementById('login-section').style.display = 'none';
-          document.getElementById('dashboard').style.display = 'block';
-          document.getElementById('logged-in-user').textContent = 
-            `Logged in as: ${result.username} (${result.role})`;
-
-          // Show/hide account management tab based on role
-          const accountTab = document.getElementById('account-management-tab');
-          if (accountTab) {
-            if (result.role === 'webmaster') {
-              accountTab.style.display = 'block';
-            } else {
-              accountTab.style.display = 'none';
-            }
-          }
-
-          // Load submissions and database
-          loadSubmissions();
-          loadApprovedSubmissions();
-
-          // The cave database is only fetchable now that we're authenticated
-          // (the earlier page-load attempt in the DOMContentLoaded handler
-          // would have gotten a 401). Load it now, then refresh the views
-          // that depend on it.
-          window.loadCaveDatabaseFromServer().then(function() {
-            updateCaveDataStore();
-          });
-
-          // Add enter key support for database search
-          const databaseSearch = document.getElementById('database-search');
-          if (databaseSearch) {
-            databaseSearch.addEventListener('keypress', function(e) {
-              if (e.key === 'Enter') {
-                searchDatabase();
-              }
-            });
-          }
-
-          // Add enter key support for edit cave search
-          const editCaveSearch = document.getElementById('edit-cave-search');
-          if (editCaveSearch) {
-            editCaveSearch.addEventListener('keypress', function(e) {
-              if (e.key === 'Enter') {
-                searchEditCave();
-              }
-            });
-          }
-
-          // Cave maps dropdown change handler
-          const caveMapsDropdown = document.getElementById('cave-maps-dropdown');
-          if (caveMapsDropdown) {
-            caveMapsDropdown.addEventListener('change', function() {
-              showCaveMapPreview(this.value);
-            });
-          }
-
-          // Download button handler
-          const downloadBtn = document.getElementById('download-cave-map');
-          if (downloadBtn) {
-            downloadBtn.addEventListener('click', downloadCaveMap);
-          }
-
-          // Search enter key support
-          const caveMapsSearch = document.getElementById('cave-maps-search');
-          if (caveMapsSearch) {
-            caveMapsSearch.addEventListener('keypress', function(e) {
-              if (e.key === 'Enter') {
-                searchCaveMaps();
-              }
-            });
-          }
-
-          // Initialize map if map tab is already active
-          if (document.querySelector('[data-tab="map-tab"]').classList.contains('active')) {
-            console.log("Map tab is already active, initializing map");
-            setTimeout(function () {
-              initializeMap();
-              setTimeout(enhanceMapForDebugging, 500);
-            }, 100);
-          }
-
+        if (response.ok && result.twoFactorRequired) {
+          // Correct password, but this account has 2FA enabled - a code was
+          // just emailed. Hold the pending token and switch to the code entry
+          // form; completeLogin() only runs once that code is verified.
+          window.pendingTwoFactorToken = result.twoFactorToken;
+          showTwoFactorForm();
+        } else if (response.ok && result.success) {
+          completeLogin(result);
         } else {
           throw new Error(result.error || 'Login failed');
         }
@@ -6692,13 +6844,20 @@ window.addEventListener('error', function(e) {
         localStorage.removeItem('role');
         sessionStorage.removeItem('role');
         sessionStorage.removeItem('sessionToken');
+        sessionStorage.removeItem('twoFactorEnabled');
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;
         document.getElementById('login-section').style.display = 'block';
         document.getElementById('dashboard').style.display = 'none';
-        document.getElementById('export-bar').style.display = 'none';
+        const exportBar = document.getElementById('export-bar');
+        if (exportBar) exportBar.style.display = 'none';
         document.getElementById('username').value = '';
         document.getElementById('password').value = '';
+        // Reset which auth form is shown - without this, logging out while
+        // the "enter verification code" form happened to be the last one
+        // displayed (e.g. from a 2FA login) would leave it showing instead
+        // of the actual login form the next time #login-section appears.
+        showLogin();
       });
     }
 
@@ -9396,6 +9555,9 @@ function showLogin() {
   document.getElementById('create-account-form').style.display = 'none';
   document.getElementById('forgot-password-form').style.display = 'none';
   document.getElementById('set-new-password-form').style.display = 'none';
+  document.getElementById('two-factor-form').style.display = 'none';
+  // Going back to login abandons any login currently waiting on a code.
+  window.pendingTwoFactorToken = null;
 }
 
 function showCreateAccount() {
@@ -9403,6 +9565,7 @@ function showCreateAccount() {
   document.getElementById('create-account-form').style.display = 'block';
   document.getElementById('forgot-password-form').style.display = 'none';
   document.getElementById('set-new-password-form').style.display = 'none';
+  document.getElementById('two-factor-form').style.display = 'none';
 }
 
 function showForgotPassword() {
@@ -9410,6 +9573,7 @@ function showForgotPassword() {
   document.getElementById('create-account-form').style.display = 'none';
   document.getElementById('forgot-password-form').style.display = 'block';
   document.getElementById('set-new-password-form').style.display = 'none';
+  document.getElementById('two-factor-form').style.display = 'none';
 }
 
 function showResetPassword() {
@@ -9417,6 +9581,17 @@ function showResetPassword() {
   document.getElementById('create-account-form').style.display = 'none';
   document.getElementById('forgot-password-form').style.display = 'none';
   document.getElementById('set-new-password-form').style.display = 'block';
+  document.getElementById('two-factor-form').style.display = 'none';
+}
+
+function showTwoFactorForm() {
+  document.getElementById('login-form').style.display = 'none';
+  document.getElementById('create-account-form').style.display = 'none';
+  document.getElementById('forgot-password-form').style.display = 'none';
+  document.getElementById('set-new-password-form').style.display = 'none';
+  document.getElementById('two-factor-form').style.display = 'block';
+  document.getElementById('two-factor-code').value = '';
+  document.getElementById('two-factor-code').focus();
 }
 
 // If this page was opened from a password reset email
@@ -9622,11 +9797,16 @@ function displayUsers(users) {
     const ips = user.loginIPs && user.loginIPs.length > 0 ? 
       user.loginIPs.slice(-3).join(', ') : 'None';
     
+    const twoFactorBadge = user.twoFactorEnabled ?
+      '<span style="color: green;">🔒 On</span>' :
+      '<span style="color: #999;">Off</span>';
+
     row.innerHTML = `
       <td>${user.username}</td>
       <td>${user.email}</td>
       <td><span class="role-badge role-${user.role}">${user.role}</span></td>
       <td>${statusBadge}</td>
+      <td>${twoFactorBadge}</td>
       <td>${lastLogin}</td>
       <td title="${user.loginIPs ? user.loginIPs.join(', ') : 'None'}">${ips}</td>
       <td>

@@ -144,6 +144,58 @@ function hashResetToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+// --- Two-factor authentication (email one-time code) -----------------------
+//
+// Opt-in per account (see POST /api/toggle-2fa). When enabled, a successful
+// password check at /api/login doesn't issue a session token yet - it emails
+// a 6-digit code and returns a short-lived "pending" token instead, which
+// only /api/verify-2fa and /api/resend-2fa will accept (authenticateToken
+// below explicitly rejects it everywhere else, so a leaked pending token
+// can't be used to skip the code step on any real route).
+
+function generateOtpCode() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, "0");
+}
+
+// Same reasoning as hashResetToken above: store a fast hash, not the code
+// itself, so a leaked users.json doesn't hand out a working login code.
+function hashOtp(code) {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
+
+async function sendTwoFactorCode(user, code) {
+  const subject = "Florida Cave Survey - Your Login Verification Code";
+  const text =
+    `Hi ${user.fullName || user.username},\n\n` +
+    `Your verification code is: ${code}\n\n` +
+    "This code expires in 10 minutes. If you didn't just try to log in, you " +
+    "can ignore this email - your account is still protected by your password.";
+
+  if (!mailTransporter) {
+    console.log(`[DEV] Two-factor code for ${user.email}: ${code}`);
+    return;
+  }
+
+  await mailTransporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: user.email,
+    subject,
+    text,
+  });
+}
+
+// Verifies a short-lived pending-2FA token (issued by /api/login) and
+// returns its decoded payload, or null if it's missing, expired, invalid,
+// or isn't actually a pending-2FA token.
+function verifyTwoFactorToken(token) {
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return decoded && decoded.pending2FA ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 // Trust the first proxy hop so req.ip / req.secure and the X-Forwarded-* headers
 // used below are accurate when this app runs behind a TLS-terminating reverse
 // proxy or load balancer (the normal deployment shape for this app).
@@ -293,6 +345,14 @@ function authenticateToken(req, res, next) {
     if (err) {
       return res.status(403).json({ error: "Invalid or expired session. Please log in again." });
     }
+    // A pending-2FA token (issued by /api/login while a code is outstanding)
+    // proves a correct password, not a completed login - it must never be
+    // accepted here, only by /api/verify-2fa and /api/resend-2fa, which
+    // check it explicitly themselves. Without this, a leaked pending token
+    // could reach any authenticateToken-only route and skip the code step.
+    if (decoded.pending2FA) {
+      return res.status(401).json({ error: "Two-factor verification required." });
+    }
     req.user = decoded;
     next();
   });
@@ -368,6 +428,37 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       user.loginIPs.push(clientIP);
     }
 
+    // The password is correct, but if this account has 2FA enabled that's
+    // not enough to log in yet - email a code and hand back a short-lived
+    // pending token instead of a real session token. The real token is only
+    // issued once that code is confirmed at /api/verify-2fa.
+    if (user.twoFactorEnabled) {
+      const code = generateOtpCode();
+      user.twoFactorCodeHash = hashOtp(code);
+      user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      user.twoFactorAttempts = 0;
+      saveUsers(users);
+
+      try {
+        await sendTwoFactorCode(user, code);
+      } catch (mailErr) {
+        console.error("Failed to send two-factor code:", mailErr);
+        return res.status(500).json({ error: "Could not send verification code. Please try again." });
+      }
+
+      const twoFactorToken = jwt.sign(
+        { username: user.username, pending2FA: true },
+        JWT_SECRET,
+        { expiresIn: "10m" }
+      );
+
+      return res.json({
+        twoFactorRequired: true,
+        twoFactorToken,
+        message: "A verification code has been sent to your email.",
+      });
+    }
+
     saveUsers(users);
 
     const token = jwt.sign(
@@ -388,9 +479,158 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       fullName: user.fullName,
       role: user.role,
       nssNumber: user.nssNumber,
+      twoFactorEnabled: !!user.twoFactorEnabled,
     });
   } catch (error) {
     console.error("Login error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Second step of login for accounts with 2FA enabled: exchanges the pending
+// token + emailed code for a real session token.
+app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
+  try {
+    const { twoFactorToken, code } = req.body;
+    if (!twoFactorToken || !code) {
+      return res.status(400).json({ error: "Verification token and code are required" });
+    }
+
+    const decoded = verifyTwoFactorToken(twoFactorToken);
+    if (!decoded) {
+      return res.status(401).json({ error: "Verification session expired. Please log in again." });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === decoded.username);
+    if (!user || !user.twoFactorCodeHash || !user.twoFactorCodeExpires) {
+      return res.status(400).json({ error: "No pending verification for this account. Please log in again." });
+    }
+
+    if (new Date(user.twoFactorCodeExpires) < new Date()) {
+      delete user.twoFactorCodeHash;
+      delete user.twoFactorCodeExpires;
+      delete user.twoFactorAttempts;
+      saveUsers(users);
+      return res.status(401).json({ error: "Verification code expired. Please log in again." });
+    }
+
+    // Mirrors the per-account lockout on /api/login: the IP-based authLimiter
+    // alone isn't enough to stop a 6-digit code from being brute-forced.
+    const MAX_2FA_ATTEMPTS = 5;
+    if ((user.twoFactorAttempts || 0) >= MAX_2FA_ATTEMPTS) {
+      delete user.twoFactorCodeHash;
+      delete user.twoFactorCodeExpires;
+      delete user.twoFactorAttempts;
+      saveUsers(users);
+      return res.status(429).json({ error: "Too many incorrect attempts. Please log in again." });
+    }
+
+    if (hashOtp(String(code)) !== user.twoFactorCodeHash) {
+      user.twoFactorAttempts = (user.twoFactorAttempts || 0) + 1;
+      saveUsers(users);
+      return res.status(401).json({ error: "Incorrect verification code." });
+    }
+
+    delete user.twoFactorCodeHash;
+    delete user.twoFactorCodeExpires;
+    delete user.twoFactorAttempts;
+    saveUsers(users);
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        fullName: user.fullName,
+      },
+      JWT_SECRET,
+      { expiresIn: "8h" }
+    );
+
+    res.json({
+      success: true,
+      token,
+      username: user.username,
+      fullName: user.fullName,
+      role: user.role,
+      nssNumber: user.nssNumber,
+      twoFactorEnabled: !!user.twoFactorEnabled,
+    });
+  } catch (error) {
+    console.error("2FA verification error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Re-sends a fresh code for a login already in progress (the pending token
+// from /api/login identifies which account, same as verify does).
+app.post("/api/resend-2fa", authLimiter, express.json(), async (req, res) => {
+  try {
+    const { twoFactorToken } = req.body;
+    if (!twoFactorToken) {
+      return res.status(400).json({ error: "Verification token is required" });
+    }
+
+    const decoded = verifyTwoFactorToken(twoFactorToken);
+    if (!decoded) {
+      return res.status(401).json({ error: "Verification session expired. Please log in again." });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === decoded.username);
+    if (!user) {
+      return res.status(400).json({ error: "No pending verification for this account." });
+    }
+
+    const code = generateOtpCode();
+    user.twoFactorCodeHash = hashOtp(code);
+    user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    user.twoFactorAttempts = 0;
+    saveUsers(users);
+
+    await sendTwoFactorCode(user, code);
+    res.json({ message: "A new verification code has been sent." });
+  } catch (error) {
+    console.error("Resend 2FA error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Lets a logged-in user turn 2FA on or off for their own account. Turning it
+// off weakens the account, so (unlike turning it on) it requires re-entering
+// the current password - a hijacked session token alone isn't enough.
+app.post("/api/toggle-2fa", authenticateToken, express.json(), async (req, res) => {
+  try {
+    const { enabled, password } = req.body;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be true or false" });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === req.user.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (!enabled) {
+      const passwordMatches =
+        !!password && !!user.passwordHash && (await bcrypt.compare(password, user.passwordHash));
+      if (!passwordMatches) {
+        return res.status(401).json({ error: "Incorrect password." });
+      }
+      user.twoFactorEnabled = false;
+    } else {
+      user.twoFactorEnabled = true;
+    }
+
+    saveUsers(users);
+    res.json({
+      message: `Two-factor authentication ${enabled ? "enabled" : "disabled"}.`,
+      twoFactorEnabled: user.twoFactorEnabled,
+    });
+  } catch (error) {
+    console.error("Toggle 2FA error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -2830,6 +3070,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       lastLogin: user.lastLogin,
       loginAttempts: user.loginAttempts,
       isEmailVerified: user.isEmailVerified,
+      twoFactorEnabled: !!user.twoFactorEnabled,
       loginIPs: user.loginIPs || [],
       isActive: user.status === "active"
     }));
@@ -3013,6 +3254,7 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       lastLogin: null,
       loginAttempts: 0,
       isEmailVerified: false,
+      twoFactorEnabled: false,
       loginIPs: [req.ip],
     };
 

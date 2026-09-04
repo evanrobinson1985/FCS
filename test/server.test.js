@@ -317,6 +317,147 @@ describe("cave database storage", () => {
   });
 });
 
+describe("two-factor authentication", () => {
+  // No SMTP is configured in the test env, so the server logs the code to
+  // the console instead of emailing it (see sendTwoFactorCode in server.js).
+  async function captureDevLog(pattern, action) {
+    const originalLog = console.log;
+    let captured = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      const match = line.match(pattern);
+      if (match) captured = match[1];
+      originalLog(...args);
+    };
+    let result;
+    try {
+      result = await action();
+    } finally {
+      console.log = originalLog;
+    }
+    return { result, captured };
+  }
+
+  const CODE_PATTERN = /\[DEV\] Two-factor code for [^:]+: (\d{6})/;
+
+  async function loginCapturingCode(username, password) {
+    const { result, captured } = await captureDevLog(CODE_PATTERN, () =>
+      request(app).post("/api/login").send({ username, password })
+    );
+    return { res: result, code: captured };
+  }
+
+  before(async () => {
+    await seedUser({ username: "twofauser", password: "TwoFaPass123!", role: "member" });
+    const loginToken = await login("twofauser", "TwoFaPass123!");
+    const enableRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${loginToken}`)
+      .send({ enabled: true });
+    assert.equal(enableRes.status, 200);
+    assert.equal(enableRes.body.twoFactorEnabled, true);
+  });
+
+  test("a login attempt on a 2FA-enabled account returns a pending token instead of a session, and emails a code", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.twoFactorRequired, true);
+    assert.ok(res.body.twoFactorToken);
+    assert.equal(res.body.success, undefined);
+    assert.equal(res.body.token, undefined);
+    assert.ok(code, "expected a [DEV] two-factor code to be logged");
+  });
+
+  test("a pending 2FA token cannot be used as a session token on a normal protected route", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const dbRes = await request(app)
+      .get("/api/cave-database")
+      .set("Authorization", `Bearer ${res.body.twoFactorToken}`);
+    assert.equal(dbRes.status, 401);
+  });
+
+  test("verify-2fa rejects an incorrect code", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code: "000000" });
+    assert.equal(verifyRes.status, 401);
+  });
+
+  test("verify-2fa issues a real, working session token for the correct code", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code });
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.body.success, true);
+    assert.ok(verifyRes.body.token);
+
+    const dbRes = await request(app)
+      .get("/api/cave-database")
+      .set("Authorization", `Bearer ${verifyRes.body.token}`);
+    assert.equal(dbRes.status, 200);
+  });
+
+  test("verify-2fa locks out after too many incorrect attempts", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const pendingToken = res.body.twoFactorToken;
+
+    let lastRes;
+    for (let i = 0; i < 6; i++) {
+      lastRes = await request(app)
+        .post("/api/verify-2fa")
+        .send({ twoFactorToken: pendingToken, code: "111111" });
+    }
+    assert.equal(lastRes.status, 429);
+  });
+
+  test("resend-2fa issues a new code that also works to complete login", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const pendingToken = res.body.twoFactorToken;
+
+    const { result: resendRes, captured: newCode } = await captureDevLog(CODE_PATTERN, () =>
+      request(app).post("/api/resend-2fa").send({ twoFactorToken: pendingToken })
+    );
+    assert.equal(resendRes.status, 200);
+    assert.ok(newCode);
+
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: pendingToken, code: newCode });
+    assert.equal(verifyRes.status, 200);
+  });
+
+  test("disabling 2FA requires the correct current password", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code });
+    const sessionToken = verifyRes.body.token;
+
+    const wrongPasswordRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${sessionToken}`)
+      .send({ enabled: false, password: "WrongPassword123!" });
+    assert.equal(wrongPasswordRes.status, 401);
+
+    const rightPasswordRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${sessionToken}`)
+      .send({ enabled: false, password: "TwoFaPass123!" });
+    assert.equal(rightPasswordRes.status, 200);
+    assert.equal(rightPasswordRes.body.twoFactorEnabled, false);
+
+    // 2FA is off again, so login should succeed directly, no code needed.
+    const directRes = await request(app)
+      .post("/api/login")
+      .send({ username: "twofauser", password: "TwoFaPass123!" });
+    assert.equal(directRes.status, 200);
+    assert.equal(directRes.body.success, true);
+    assert.ok(directRes.body.token);
+  });
+});
+
 describe("pending submissions", () => {
   test("a member's submission records the authenticated username, ignoring a spoofed submittedBy", async () => {
     const memberToken = await login("member1", MEMBER_PASSWORD);

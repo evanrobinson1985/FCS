@@ -121,9 +121,21 @@ already secure.
   now refuses to start without a real `JWT_SECRET` (32+ characters) in the
   environment.
 - **Login brute-force protection.** Rate limiting on `/api/login`,
-  `/register-member`, `/api/create-account`, and `/api/forgot-password`
-  (10 requests / 15 minutes per IP), plus a per-account lockout after 5
-  failed attempts.
+  `/register-member`, `/api/create-account`, `/api/forgot-password`,
+  `/api/verify-2fa`, and `/api/resend-2fa` (10 requests / 15 minutes per
+  IP), plus a per-account lockout after 5 failed attempts (passwords and,
+  separately, 2FA codes).
+- **Optional email-based two-factor authentication.** Any member can turn
+  it on for their own account (a button in the dashboard header, or
+  `POST /api/toggle-2fa`). Once enabled, a correct password at `/api/login`
+  doesn't issue a session token yet - it emails a 6-digit code (logged to
+  the console instead, in dev, the same way password reset links are) and
+  returns a short-lived (10 minute) "pending" token that's only good for
+  `/api/verify-2fa`/`/api/resend-2fa`. `authenticateToken` explicitly
+  rejects that pending token everywhere else, so it can't be used to skip
+  the code step on any real route even if it leaked. Turning 2FA back off
+  requires re-entering the current password, so a hijacked session token
+  alone can't silently disable it.
 - **New self-registered accounts start `pending`**, not active - a
   webmaster has to approve them in Account Management before they can log
   in.
