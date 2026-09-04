@@ -2511,10 +2511,23 @@
         
         // Add popup with cave info
         // Enhanced popup with all available data
-        const entryStatusText = entryStatusOptions.find(option => option.code === cave.entryStatus)?.label || cave.entryStatus;
+        //
+        // Every cave field below ultimately traces back to proposedData on
+        // a member's submission (POST /api/pending-submissions), which is
+        // stored and, once approved, merged into the live cave record with
+        // no field-level restriction on content - so any field, not just
+        // the obviously-freetext ones, could carry an HTML/script payload.
+        // Since this whole block is handed to Leaflet's bindPopup()/
+        // bindTooltip() as a raw HTML string (rendered via innerHTML), every
+        // interpolated value is escaped with escapeStatsHtml() before it
+        // goes in, the same helper already used for user-derived text
+        // elsewhere in this file (e.g. the submission review cards, which
+        // is why THIS view - the one place that was missed - could show a
+        // payload that had already passed review looking harmless there).
+        const entryStatusText = escapeStatsHtml(entryStatusOptions.find(option => option.code === cave.entryStatus)?.label || cave.entryStatus);
 
         // Format equipment codes
-        const equipmentText = cave.equipment && Array.isArray(cave.equipment) && cave.equipment.length > 0 
+        const equipmentText = escapeStatsHtml(cave.equipment && Array.isArray(cave.equipment) && cave.equipment.length > 0
           ? cave.equipment.map(code => {
               const equipmentOptions = {
                 'B': 'Boat/Flotation', 'D': 'Diving Gear', 'H': 'Handline', 'K': 'Kneepads',
@@ -2523,10 +2536,10 @@
               };
               return `${code} - ${equipmentOptions[code] || code}`;
             }).join(', ')
-          : 'None specified';
+          : 'None specified');
 
         // Format exploration possibilities
-        const explorationText = cave.exploration && Array.isArray(cave.exploration) && cave.exploration.length > 0
+        const explorationText = escapeStatsHtml(cave.exploration && Array.isArray(cave.exploration) && cave.exploration.length > 0
           ? cave.exploration.map(code => {
               const explorationOptions = {
                 'B': 'Blind Pit', 'C': 'Climb/Bolt', 'D': 'Possible Dig', 'E': 'Explosive Application',
@@ -2534,7 +2547,7 @@
               };
               return `${code} - ${explorationOptions[code] || code}`;
             }).join(', ')
-          : 'None specified';
+          : 'None specified');
 
         // Format hazards
         let hazardsText = 'None reported';
@@ -2546,15 +2559,25 @@
           hazardsText = hazardsList.length > 0 ? hazardsList.join(', ') : 'None reported';
           if (cave.hazards.notes) hazardsText += ` (${cave.hazards.notes})`;
         }
+        hazardsText = escapeStatsHtml(hazardsText);
+
+        const safeName = escapeStatsHtml(cave.name);
+        const safeType = escapeStatsHtml(cave.type);
+        const safeEntryStatus = escapeStatsHtml(cave.entryStatus);
+        const safeOwnerInfo = escapeStatsHtml(cave.ownerInfo || 'N/A');
+        const safeReporterName = escapeStatsHtml(cave.reporterName || 'Unknown');
+        const safeReporterNSS = escapeStatsHtml(cave.reporterNSS || cave.reporter || 'Unknown');
+        const safeDate = escapeStatsHtml(cave.date || 'Unknown');
+        const safeNotes = cave.notes ? escapeStatsHtml(cave.notes) : '';
 
         marker.bindPopup(`
           <div class="cave-popup">
-            <h3>${cave.id} – ${cave.name}</h3>
-            
+            <h3>${cave.id} – ${safeName}</h3>
+
             <div class="cave-popup-content">
               <!-- Basic Information -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Type:</strong> ${cave.type}</p>
+                <p><strong>Type:</strong> ${safeType}</p>
                 <p><strong>State:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
                   return resolved.state ? getStateName(resolved.state) : 'Unknown';
@@ -2568,7 +2591,7 @@
                   if (!cave.locationAccuracy) return 'Unknown';
                   const accuracyMap = {
                     'D': 'D - 5 feet (lidar)',
-                    'E': 'E - 10 feet', 
+                    'E': 'E - 10 feet',
                     'F': 'F - 20 feet',
                     'G': 'G - 30 feet',
                     'H': 'H - 55 feet',
@@ -2586,8 +2609,8 @@
 
               <!-- Access & Entry -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Entry Status:</strong> ${cave.entryStatus} - ${entryStatusText}</p>
-                <p><strong>Owner/Entity:</strong> ${cave.ownerInfo || 'N/A'}</p>
+                <p><strong>Entry Status:</strong> ${safeEntryStatus} - ${entryStatusText}</p>
+                <p><strong>Owner/Entity:</strong> ${safeOwnerInfo}</p>
               </div>
 
               <!-- Physical Details -->
@@ -2613,7 +2636,7 @@
                   const mapTypeMap = {
                     'K': 'K - Knotted Line and Compass',
                     'M': 'M - Mixed Methods',
-                    'P': 'P - Pace and Compass', 
+                    'P': 'P - Pace and Compass',
                     'S': 'S - Sketch',
                     'T': 'T - Tape, Compass, Inclinometer',
                     'U': 'U - Unmapped'
@@ -2625,7 +2648,7 @@
                   const mapStatusMap = {
                     'I': 'I - Improved Map',
                     'N': 'N - New Map / Survey',
-                    'P': 'P - In Progress', 
+                    'P': 'P - In Progress',
                     'R': 'R - Redraw of Old Map'
                   };
                   return mapStatusMap[cave.mapStatus] || cave.mapStatus;
@@ -2645,13 +2668,13 @@
 
               <!-- Reporter Information -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Reporter:</strong> ${cave.reporterName || 'Unknown'}</p>
-                <p><strong>Reporter NSS #:</strong> ${cave.reporterNSS || cave.reporter || 'Unknown'}</p>
-                <p><strong>Date:</strong> ${cave.date || 'Unknown'}</p>
+                <p><strong>Reporter:</strong> ${safeReporterName}</p>
+                <p><strong>Reporter NSS #:</strong> ${safeReporterNSS}</p>
+                <p><strong>Date:</strong> ${safeDate}</p>
               </div>
 
               <!-- Notes -->
-              ${cave.notes ? `<div style="margin-bottom: 10px;"><p><strong>Notes:</strong> ${cave.notes}</p></div>` : ''}
+              ${safeNotes ? `<div style="margin-bottom: 10px;"><p><strong>Notes:</strong> ${safeNotes}</p></div>` : ''}
             </div>
 
             <div class="popup-actions">
@@ -2664,7 +2687,7 @@
         `);
 
         // Add always-visible tooltip label
-        marker.bindTooltip(`${cave.id} – ${cave.name}`, {
+        marker.bindTooltip(`${cave.id} – ${safeName}`, {
           permanent: true,
           direction: 'right',
           offset: [10, 0],
@@ -6494,10 +6517,23 @@ window.addEventListener('error', function(e) {
         
         // Add popup with cave info
         // Enhanced popup with all available data
-        const entryStatusText = entryStatusOptions.find(option => option.code === cave.entryStatus)?.label || cave.entryStatus;
+        //
+        // Every cave field below ultimately traces back to proposedData on
+        // a member's submission (POST /api/pending-submissions), which is
+        // stored and, once approved, merged into the live cave record with
+        // no field-level restriction on content - so any field, not just
+        // the obviously-freetext ones, could carry an HTML/script payload.
+        // Since this whole block is handed to Leaflet's bindPopup()/
+        // bindTooltip() as a raw HTML string (rendered via innerHTML), every
+        // interpolated value is escaped with escapeStatsHtml() before it
+        // goes in, the same helper already used for user-derived text
+        // elsewhere in this file (e.g. the submission review cards, which
+        // is why THIS view - the one place that was missed - could show a
+        // payload that had already passed review looking harmless there).
+        const entryStatusText = escapeStatsHtml(entryStatusOptions.find(option => option.code === cave.entryStatus)?.label || cave.entryStatus);
 
         // Format equipment codes
-        const equipmentText = cave.equipment && Array.isArray(cave.equipment) && cave.equipment.length > 0 
+        const equipmentText = escapeStatsHtml(cave.equipment && Array.isArray(cave.equipment) && cave.equipment.length > 0
           ? cave.equipment.map(code => {
               const equipmentOptions = {
                 'B': 'Boat/Flotation', 'D': 'Diving Gear', 'H': 'Handline', 'K': 'Kneepads',
@@ -6506,10 +6542,10 @@ window.addEventListener('error', function(e) {
               };
               return `${code} - ${equipmentOptions[code] || code}`;
             }).join(', ')
-          : 'None specified';
+          : 'None specified');
 
         // Format exploration possibilities
-        const explorationText = cave.exploration && Array.isArray(cave.exploration) && cave.exploration.length > 0
+        const explorationText = escapeStatsHtml(cave.exploration && Array.isArray(cave.exploration) && cave.exploration.length > 0
           ? cave.exploration.map(code => {
               const explorationOptions = {
                 'B': 'Blind Pit', 'C': 'Climb/Bolt', 'D': 'Possible Dig', 'E': 'Explosive Application',
@@ -6517,7 +6553,7 @@ window.addEventListener('error', function(e) {
               };
               return `${code} - ${explorationOptions[code] || code}`;
             }).join(', ')
-          : 'None specified';
+          : 'None specified');
 
         // Format hazards
         let hazardsText = 'None reported';
@@ -6529,15 +6565,25 @@ window.addEventListener('error', function(e) {
           hazardsText = hazardsList.length > 0 ? hazardsList.join(', ') : 'None reported';
           if (cave.hazards.notes) hazardsText += ` (${cave.hazards.notes})`;
         }
+        hazardsText = escapeStatsHtml(hazardsText);
+
+        const safeName = escapeStatsHtml(cave.name);
+        const safeType = escapeStatsHtml(cave.type);
+        const safeEntryStatus = escapeStatsHtml(cave.entryStatus);
+        const safeOwnerInfo = escapeStatsHtml(cave.ownerInfo || 'N/A');
+        const safeReporterName = escapeStatsHtml(cave.reporterName || 'Unknown');
+        const safeReporterNSS = escapeStatsHtml(cave.reporterNSS || cave.reporter || 'Unknown');
+        const safeDate = escapeStatsHtml(cave.date || 'Unknown');
+        const safeNotes = cave.notes ? escapeStatsHtml(cave.notes) : '';
 
         marker.bindPopup(`
           <div class="cave-popup">
-            <h3>${cave.id} – ${cave.name}</h3>
-            
+            <h3>${cave.id} – ${safeName}</h3>
+
             <div class="cave-popup-content">
               <!-- Basic Information -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Type:</strong> ${cave.type}</p>
+                <p><strong>Type:</strong> ${safeType}</p>
                 <p><strong>State:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
                   return resolved.state ? getStateName(resolved.state) : 'Unknown';
@@ -6551,7 +6597,7 @@ window.addEventListener('error', function(e) {
                   if (!cave.locationAccuracy) return 'Unknown';
                   const accuracyMap = {
                     'D': 'D - 5 feet (lidar)',
-                    'E': 'E - 10 feet', 
+                    'E': 'E - 10 feet',
                     'F': 'F - 20 feet',
                     'G': 'G - 30 feet',
                     'H': 'H - 55 feet',
@@ -6569,8 +6615,8 @@ window.addEventListener('error', function(e) {
 
               <!-- Access & Entry -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Entry Status:</strong> ${cave.entryStatus} - ${entryStatusText}</p>
-                <p><strong>Owner/Entity:</strong> ${cave.ownerInfo || 'N/A'}</p>
+                <p><strong>Entry Status:</strong> ${safeEntryStatus} - ${entryStatusText}</p>
+                <p><strong>Owner/Entity:</strong> ${safeOwnerInfo}</p>
               </div>
 
               <!-- Physical Details -->
@@ -6596,7 +6642,7 @@ window.addEventListener('error', function(e) {
                   const mapTypeMap = {
                     'K': 'K - Knotted Line and Compass',
                     'M': 'M - Mixed Methods',
-                    'P': 'P - Pace and Compass', 
+                    'P': 'P - Pace and Compass',
                     'S': 'S - Sketch',
                     'T': 'T - Tape, Compass, Inclinometer',
                     'U': 'U - Unmapped'
@@ -6608,7 +6654,7 @@ window.addEventListener('error', function(e) {
                   const mapStatusMap = {
                     'I': 'I - Improved Map',
                     'N': 'N - New Map / Survey',
-                    'P': 'P - In Progress', 
+                    'P': 'P - In Progress',
                     'R': 'R - Redraw of Old Map'
                   };
                   return mapStatusMap[cave.mapStatus] || cave.mapStatus;
@@ -6628,13 +6674,13 @@ window.addEventListener('error', function(e) {
 
               <!-- Reporter Information -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Reporter:</strong> ${cave.reporterName || 'Unknown'}</p>
-                <p><strong>Reporter NSS #:</strong> ${cave.reporterNSS || cave.reporter || 'Unknown'}</p>
-                <p><strong>Date:</strong> ${cave.date || 'Unknown'}</p>
+                <p><strong>Reporter:</strong> ${safeReporterName}</p>
+                <p><strong>Reporter NSS #:</strong> ${safeReporterNSS}</p>
+                <p><strong>Date:</strong> ${safeDate}</p>
               </div>
 
               <!-- Notes -->
-              ${cave.notes ? `<div style="margin-bottom: 10px;"><p><strong>Notes:</strong> ${cave.notes}</p></div>` : ''}
+              ${safeNotes ? `<div style="margin-bottom: 10px;"><p><strong>Notes:</strong> ${safeNotes}</p></div>` : ''}
             </div>
 
             <div class="popup-actions">
@@ -6647,7 +6693,7 @@ window.addEventListener('error', function(e) {
         `);
 
         // Add always-visible tooltip label
-        marker.bindTooltip(`${cave.id} – ${cave.name}`, {
+        marker.bindTooltip(`${cave.id} – ${safeName}`, {
           permanent: true,
           direction: 'right',
           offset: [10, 0],
@@ -10522,15 +10568,34 @@ function displayUsers(users, allStates) {
     // in server.js) - they're always unrestricted, so there's nothing to
     // edit for them. Members get a multi-select the webmaster can use to
     // grant/revoke states on the spot.
+    //
+    // username/email come straight from POST /api/create-account, which is
+    // unauthenticated and doesn't restrict their charset - so both must be
+    // escaped everywhere they're interpolated here, exactly like any other
+    // untrusted field elsewhere in this file (escapeStatsHtml()). The
+    // onclick handlers below need one extra step beyond that: they embed
+    // the username inside an inline-JS *string literal* (single-quoted),
+    // not just HTML text/attribute content, so a bare escapeStatsHtml()
+    // call (which never touches `'`) wouldn't stop a username containing a
+    // quote from breaking out of that string and injecting script. Wrapping
+    // in JSON.stringify() first produces a correctly quoted-and-escaped JS
+    // string literal (using `"`), and escapeStatsHtml() on top of that
+    // makes the whole thing safe as HTML attribute content - the browser's
+    // own HTML-entity decoding of that attribute before handing it to the
+    // JS parser is what makes this compose correctly.
+    const safeUsername = escapeStatsHtml(user.username);
+    const safeEmail = escapeStatsHtml(user.email);
+    const jsUsername = escapeStatsHtml(JSON.stringify(user.username));
+
     const statesCell = user.allowedStates === null
       ? '<em>All states</em>'
-      : `<select multiple size="4" style="min-width: 130px;" onchange="changeUserStates('${user.username}', this)">
+      : `<select multiple size="4" style="min-width: 130px;" onchange="changeUserStates(${jsUsername}, this)">
           ${allStates.map(s => `<option value="${s.code}" ${user.allowedStates.includes(s.code) ? 'selected' : ''}>${s.name}</option>`).join('')}
         </select>`;
 
     row.innerHTML = `
-      <td>${user.username}</td>
-      <td>${user.email}</td>
+      <td>${safeUsername}</td>
+      <td>${safeEmail}</td>
       <td><span class="role-badge role-${user.role}">${user.role}</span></td>
       <td>${statusBadge}</td>
       <td>${statesCell}</td>
@@ -10539,16 +10604,16 @@ function displayUsers(users, allStates) {
       <td title="${user.loginIPs ? user.loginIPs.join(', ') : 'None'}">${ips}</td>
       <td>
         ${user.role === 'webmaster' ? '<em>Protected - no actions available</em>' : `
-        <select onchange="changeUserRole('${user.username}', this.value)">
+        <select onchange="changeUserRole(${jsUsername}, this.value)">
           <option value="member" ${user.role === 'member' ? 'selected' : ''}>Member</option>
           <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
           <option value="webmaster" ${user.role === 'webmaster' ? 'selected' : ''}>Webmaster</option>
         </select>
-        <button onclick="toggleUserStatus('${user.username}', ${user.isActive})"
+        <button onclick="toggleUserStatus(${jsUsername}, ${user.isActive})"
                 class="btn-${user.isActive ? 'warning' : 'success'}" style="margin-left: 5px;">
           ${user.isActive ? 'Disable' : 'Enable'}
         </button>
-        <button onclick="deleteUser('${user.username}')" class="btn-danger" style="margin-left: 5px;">Delete</button>
+        <button onclick="deleteUser(${jsUsername})" class="btn-danger" style="margin-left: 5px;">Delete</button>
         `}
       </td>
     `;
@@ -10708,11 +10773,19 @@ async function loadSecurityLogs() {
     let html = '';
     logs.slice(0, 50).forEach(log => { // Show last 50 logs
       const date = new Date(log.timestamp).toLocaleString();
+      // action/details are server-generated fixed strings, but username and
+      // ipAddress trace back to user-supplied account fields (see
+      // GET /api/security-logs in server.js) - escape everything here for
+      // the same reason displayUsers() does above.
+      const safeAction = escapeStatsHtml(log.action);
+      const safeLogUsername = escapeStatsHtml(log.username || 'Unknown');
+      const safeIpAddress = escapeStatsHtml(log.ipAddress);
+      const safeDetails = escapeStatsHtml(log.details);
       html += `
         <div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid #4b86b4; background: #f9f9f9;">
-          <strong>${log.action}</strong> - ${log.username || 'Unknown'} 
-          <br><small>IP: ${log.ipAddress} | ${date}</small>
-          ${log.details ? `<br><small>${log.details}</small>` : ''}
+          <strong>${safeAction}</strong> - ${safeLogUsername}
+          <br><small>IP: ${safeIpAddress} | ${date}</small>
+          ${log.details ? `<br><small>${safeDetails}</small>` : ''}
         </div>
       `;
     });

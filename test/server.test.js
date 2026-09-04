@@ -264,6 +264,34 @@ describe("password hashing", () => {
     assert.equal(res.status, 400);
   });
 
+  // Regression test for a stored-XSS chain: this route is unauthenticated,
+  // and username/email are later rendered in the webmaster's Account
+  // Management table - a username containing HTML/script syntax must never
+  // be accepted in the first place (defense-in-depth alongside escaping it
+  // on render).
+  test("rejects a username containing HTML/script syntax", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: '<img src=x onerror=alert(1)>',
+      email: "xssattempt@example.com",
+      password: "SomeStrongPass123!",
+      states: ["FL"],
+    });
+    assert.equal(res.status, 400);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    assert.ok(!users.some((u) => u.email === "xssattempt@example.com"), "no account should have been created");
+  });
+
+  test("rejects an email address containing HTML/script syntax", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "emailxssattempt",
+      email: '"><script>alert(1)</script>@example.com',
+      password: "SomeStrongPass123!",
+      states: ["FL"],
+    });
+    assert.equal(res.status, 400);
+  });
+
   test("stores the selected states as allowedStates on the new account", async () => {
     const res = await request(app).post("/api/create-account").send({
       username: "twostateuser",
@@ -1112,6 +1140,8 @@ describe("pending submissions", () => {
 });
 
 describe("cave-data routes enforce allowedStates", () => {
+  let gaCaveId;
+
   before(async () => {
     await seedUser({ username: "flonlymember", password: "FlOnlyPass123!", role: "member", allowedStates: ["FL"] });
 
@@ -1122,10 +1152,11 @@ describe("cave-data routes enforce allowedStates", () => {
       .post("/api/save-cave-database")
       .set("Authorization", `Bearer ${webmasterToken}`)
       .send({ action: "createNew", cave: { state: "FL", county: "SC", name: "Scoping Test FL Cave" } });
-    await request(app)
+    const gaRes = await request(app)
       .post("/api/save-cave-database")
       .set("Authorization", `Bearer ${webmasterToken}`)
       .send({ action: "createNew", cave: { state: "GA", county: "SC", name: "Scoping Test GA Cave" } });
+    gaCaveId = gaRes.body.caveId;
   });
 
   test("GET /api/cave-database hides other states' caves from a scoped member", async () => {
@@ -1197,6 +1228,52 @@ describe("cave-data routes enforce allowedStates", () => {
     const wmRes = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${webmasterToken}`);
     assert.ok(wmRes.body.some((s) => s.caveId === "GATEMP3"), "webmaster should see every state's submissions");
   });
+
+  // Regression test for an IDOR: an edit_cave submission's authorization
+  // used to trust the client-supplied `state` field rather than the target
+  // cave's real, resolved state - so a member could edit (and read back,
+  // via the pending-submissions "enhance with current cave data" step) a
+  // cave in a state they were never granted, just by lying about the state
+  // in the request body.
+  test("a scoped member cannot submit an edit_cave proposal for another state's real cave by lying about the state", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "edit_cave",
+        caveId: gaCaveId, // a real Georgia cave - flonlymember is FL-only
+        state: "FL", // the lie: claiming FL so the allowedStates check passes
+        county: "SC",
+        proposedData: { name: "Should Be Rejected Edit" },
+      });
+    assert.equal(res.status, 403, "must be rejected based on the cave's REAL state (GA), not the claimed one (FL)");
+  });
+
+  test("edit_cave submission state is resolved from the real cave, ignoring a mismatched client-supplied state", async () => {
+    // member1 has both FL and GA (see the top-level seedUser call) - submits
+    // an edit for the real Georgia cave while claiming state: "FL" in the
+    // body. This must still succeed (member1 IS allowed GA), and the stored
+    // submission must record the cave's real state, not the claimed one.
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "edit_cave",
+        caveId: gaCaveId,
+        state: "FL", // mismatched on purpose - must be ignored in favor of the cave's real state
+        county: "SC",
+        proposedData: { name: "Legitimate GA Edit" },
+      });
+    assert.equal(res.status, 200);
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const listRes = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = listRes.body.find((s) => s.caveId === gaCaveId && s.caveName === "Legitimate GA Edit");
+    assert.ok(stored, "submission should exist");
+    assert.equal(stored.state, "GA", "stored state must be the cave's real state, not the client-supplied FL");
+  });
 });
 
 describe("path traversal protection", () => {
@@ -1252,6 +1329,53 @@ describe("narrative content", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ id: "../../etc/evil", name: "x", html: "<p>hi</p>", images: [] });
     assert.equal(res.status, 400);
+  });
+});
+
+// Regression tests for a file-upload vulnerability: the route used to trust
+// the client-supplied Content-Type of the uploaded part and the extension
+// of the client-supplied filename, so a script-capable file (e.g. an SVG
+// document containing an inline <script>) could be uploaded as a fake
+// "image/png" and stored/served with its real, executable .svg extension.
+// The fix sniffs the actual file bytes and derives the stored extension
+// from that, never from anything the client claims.
+describe("narrative image upload validates real file content", () => {
+  test("rejects an SVG (script-capable) file even when declared as image/png", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const svgBuffer = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", svgBuffer, { filename: "poison.svg", contentType: "image/png" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects plain text declared as an image", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", Buffer.from("just some text, not an image"), {
+        filename: "notreally.jpg",
+        contentType: "image/jpeg",
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("accepts a real PNG and stores it with a .png extension regardless of the claimed filename", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    // Minimal valid 1x1 PNG (magic bytes + IHDR/IDAT/IEND chunks).
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const pngBuffer = Buffer.from(pngBase64, "base64");
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      // Deliberately mismatched extension/claimed type - the response must
+      // still reflect the DETECTED type (.png), not this claim.
+      .attach("image", pngBuffer, { filename: "whatever.svg", contentType: "image/svg+xml" });
+    assert.equal(res.status, 200);
+    assert.match(res.body.imageUrl, /^\/cave-pictures\/\d+-\d+\.png$/);
   });
 });
 

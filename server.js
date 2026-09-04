@@ -1874,14 +1874,28 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req
       .status(400)
       .json({ error: "Missing required field: proposedData" });
   }
-  if (type === "edit_cave" && !caveDatabase.some((cave) => cave.id === caveId)) {
-    return res.status(404).json({ error: `Cave with ID ${caveId} not found.` });
+  let targetCave = null;
+  if (type === "edit_cave") {
+    targetCave = caveDatabase.find((cave) => cave.id === caveId);
+    if (!targetCave) {
+      return res.status(404).json({ error: `Cave with ID ${caveId} not found.` });
+    }
   }
 
-  // Same transitional default as cave creation (see DEFAULT_STATE_CODE) -
-  // the client doesn't send `state` yet, so treat its absence as Florida
-  // rather than rejecting every submission until the frontend catches up.
-  const submissionState = state || proposedData.state || DEFAULT_STATE_CODE;
+  // For an edit, the authoritative state is the cave's REAL state, resolved
+  // server-side - never the client-supplied `state`/`proposedData.state`.
+  // Trusting the client value here would let a member submit (and, via the
+  // "enhance with current cave data" step in GET /api/pending-submissions,
+  // see the full existing record for) an edit to a cave in a state they
+  // were never granted, simply by declaring a different state in the
+  // request body. `new_cave` has no existing record to resolve a state
+  // from, so the client-supplied value is legitimately used there, with
+  // the same transitional Florida default as cave creation (see
+  // DEFAULT_STATE_CODE) for clients that don't send one yet.
+  const submissionState =
+    type === "edit_cave"
+      ? resolveCaveStateAndCounty(targetCave).state || DEFAULT_STATE_CODE
+      : state || proposedData.state || DEFAULT_STATE_CODE;
 
   const submittingUser = loadUsers().find((u) => u.username === req.user.username);
   const allowedStates = getAllowedStatesForUser(submittingUser);
@@ -2938,38 +2952,50 @@ if (!fs.existsSync(CAVE_PICTURES_DIR)) {
   fs.mkdirSync(CAVE_PICTURES_DIR, { recursive: true });
 }
 
-const ALLOWED_IMAGE_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-]);
+// Sniffs the actual file type from its magic bytes rather than trusting the
+// client-supplied Content-Type (multer's `file.mimetype`, which is just
+// whatever the uploader's request declared). Without this, a file
+// containing an SVG document - which can carry an inline <script> the
+// browser will execute if the file is ever opened directly - could be
+// uploaded with a spoofed "image/png" Content-Type and stored/served as a
+// real image. Returns the detected format's extension/mimetype, or null if
+// the bytes don't match any of the four formats this route accepts.
+function detectImageType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47 &&
+    buffer[4] === 0x0d && buffer[5] === 0x0a && buffer[6] === 0x1a && buffer[7] === 0x0a
+  ) {
+    return { ext: "png", mimetype: "image/png" };
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { ext: "jpg", mimetype: "image/jpeg" };
+  }
+  if (
+    buffer.length >= 6 &&
+    buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38 &&
+    (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61
+  ) {
+    return { ext: "gif", mimetype: "image/gif" };
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return { ext: "webp", mimetype: "image/webp" };
+  }
+  return null;
+}
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    // This must match the directory actually served at /cave-pictures below,
-    // otherwise uploaded images 404 for everyone.
-    cb(null, CAVE_PICTURES_DIR);
-  },
-  filename: function (req, file, cb) {
-    // Never trust the client-supplied original filename directly into a path
-    // - strip it down to just a safe extension and generate the rest, so a
-    // filename like "../../../httpdocs/evil.html" can't escape the upload
-    // directory or overwrite another file.
-    const ext = path.extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, "");
-    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
-  },
-});
-
+// Buffered in memory (never trust-written to disk under a client-influenced
+// name) so the route handler below can inspect the real file bytes with
+// detectImageType() before it ever touches the filesystem - the saved
+// filename's extension comes from that detection, never from the client's
+// declared Content-Type or original filename.
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
-  fileFilter: function (req, file, cb) {
-    if (!ALLOWED_IMAGE_MIME_TYPES.has(file.mimetype)) {
-      return cb(new Error("Only JPEG, PNG, GIF, and WebP images are allowed"));
-    }
-    cb(null, true);
-  },
 });
 
 app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, (req, res) => {
@@ -2978,7 +3004,21 @@ app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, (req,
       return res.status(400).json({ error: err.message || "Upload failed" });
     }
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-    res.json({ imageUrl: `/cave-pictures/${req.file.filename}` });
+
+    const detected = detectImageType(req.file.buffer);
+    if (!detected) {
+      return res.status(400).json({ error: "Only JPEG, PNG, GIF, and WebP images are allowed" });
+    }
+
+    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}.${detected.ext}`;
+    try {
+      fs.writeFileSync(path.join(CAVE_PICTURES_DIR, filename), req.file.buffer);
+    } catch (writeErr) {
+      console.error("Failed to save narrative image:", writeErr);
+      return res.status(500).json({ error: "Failed to save image." });
+    }
+
+    res.json({ imageUrl: `/cave-pictures/${filename}` });
   });
 });
 
@@ -3942,6 +3982,19 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required" });
+    }
+    // This route is unauthenticated (anyone can self-register), and both
+    // fields are later rendered as HTML in the webmaster's Account
+    // Management tab - restricting the charset here is what stops someone
+    // from signing up with a username/email containing HTML/JS syntax in
+    // the first place, as defense-in-depth alongside escaping on render.
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(username)) {
+      return res.status(400).json({
+        error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
+      });
+    }
+    if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
     }
     if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
