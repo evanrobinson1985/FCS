@@ -166,6 +166,57 @@ describe("route protection", () => {
   });
 });
 
+// Webmaster accounts sit at the top of the permission ladder and never hold
+// any other role - the Account Management UI doesn't offer a role/status/
+// delete control for webmaster rows at all, and these routes enforce the
+// same rule server-side so a direct API call can't do what the UI hides.
+describe("webmaster accounts are protected from other webmasters", () => {
+  before(async () => {
+    await seedUser({ username: "protectedwebmaster", password: "ProtectedPass123!", role: "webmaster" });
+  });
+
+  test("a webmaster cannot change another webmaster's role", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster", newRole: "member" });
+    assert.equal(res.status, 403);
+
+    const usersRes = await request(app).get("/api/users").set("Authorization", `Bearer ${token}`);
+    const stillWebmaster = usersRes.body.find((u) => u.username === "protectedwebmaster");
+    assert.equal(stillWebmaster.role, "webmaster");
+  });
+
+  test("a webmaster cannot disable another webmaster's account", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/toggle-user-status")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster", isActive: false });
+    assert.equal(res.status, 403);
+  });
+
+  test("a webmaster cannot delete another webmaster's account", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .delete("/api/delete-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster" });
+    assert.equal(res.status, 403);
+  });
+
+  test("a webmaster can still change a non-webmaster's role", async () => {
+    await seedUser({ username: "promotable", password: "PromotablePass123!", role: "member" });
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "promotable", newRole: "admin" });
+    assert.equal(res.status, 200);
+  });
+});
+
 describe("password hashing", () => {
   test("stores a bcrypt hash, never the plaintext password, on self-registration", async () => {
     const res = await request(app).post("/api/create-account").send({
@@ -447,6 +498,67 @@ describe("cave database storage", () => {
     const gaCave = dbRes.body.find((c) => c.id === gaRes.body.caveId);
     assert.equal(gaCave.state, "GA");
     assert.equal(gaCave.county, "AL");
+  });
+});
+
+// Uses Wyoming throughout (untouched by any other test in this file) so the
+// per-state count for it can be asserted exactly.
+describe("nationwide cave counts", () => {
+  before(async () => {
+    await seedUser({ username: "wyscopedmember", password: "WyScopedPass123!", role: "member", allowedStates: ["WY"] });
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    for (const name of ["Wyoming Cave One", "Wyoming Cave Two"]) {
+      const res = await request(app)
+        .post("/api/save-cave-database")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ action: "createNew", cave: { state: "WY", county: "AL", name } });
+      assert.equal(res.status, 200);
+    }
+  });
+
+  test("requires authentication", async () => {
+    const res = await request(app).get("/api/cave-database/state-counts");
+    assert.equal(res.status, 401);
+  });
+
+  test("reports Wyoming's count and includes it in the nationwide total", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/cave-database/state-counts").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.total, "number");
+    assert.ok(Array.isArray(res.body.states));
+    assert.equal(res.body.states.length, 50);
+
+    const wyoming = res.body.states.find((s) => s.code === "WY");
+    assert.ok(wyoming, "Wyoming must be present even with a nonzero count");
+    assert.equal(wyoming.name, "Wyoming");
+    assert.equal(wyoming.count, 2);
+
+    const sumOfStates = res.body.states.reduce((sum, s) => sum + s.count, 0);
+    assert.equal(sumOfStates, res.body.total, "per-state counts must add up to the nationwide total");
+  });
+
+  test("is NOT scoped by allowedStates - a Wyoming-only member still sees every state's count and the same nationwide total", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const webmasterRes = await request(app)
+      .get("/api/cave-database/state-counts")
+      .set("Authorization", `Bearer ${webmasterToken}`);
+
+    const memberToken = await login("wyscopedmember", "WyScopedPass123!");
+    const memberRes = await request(app)
+      .get("/api/cave-database/state-counts")
+      .set("Authorization", `Bearer ${memberToken}`);
+
+    assert.equal(memberRes.status, 200);
+    assert.equal(memberRes.body.total, webmasterRes.body.total);
+    assert.equal(memberRes.body.states.length, webmasterRes.body.states.length);
+
+    // Confirm the scoped member can see a state they are NOT granted (e.g.
+    // Florida, seeded elsewhere in this file) in this breakdown - unlike
+    // GET /api/cave-database, which would hide it entirely.
+    const floridaViaMember = memberRes.body.states.find((s) => s.code === "FL");
+    assert.ok(floridaViaMember, "a Wyoming-only member must still see Florida's count here");
   });
 });
 

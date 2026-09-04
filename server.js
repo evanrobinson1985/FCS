@@ -697,6 +697,28 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
   res.json(caveDatabase.filter((cave) => allowed.includes(resolveCaveStateAndCounty(cave).state)));
 });
 
+// Per-state and nationwide cave *counts* - deliberately NOT scoped by the
+// requesting user's allowedStates (unlike GET /api/cave-database above).
+// A state-scoped member can already see everything about their own
+// state's caves; this just adds a single aggregate number per other state
+// plus a nationwide total, so they have a sense of the whole survey's
+// scale without exposing any individual cave's location, name, or other
+// details for a state they aren't granted - only a count.
+app.get("/api/cave-database/state-counts", authenticateToken, (req, res) => {
+  const counts = {};
+  caveDatabase.forEach((cave) => {
+    const state = resolveCaveStateAndCounty(cave).state;
+    if (!state) return;
+    counts[state] = (counts[state] || 0) + 1;
+  });
+
+  const states = statesConfig
+    .map((s) => ({ code: s.code, name: s.name, count: counts[s.code] || 0 }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  res.json({ total: caveDatabase.length, states });
+});
+
 const MIN_PASSWORD_LENGTH = 10;
 
 // Transitional backward-compat default: every cave-creating route requires
@@ -3450,11 +3472,19 @@ app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), e
     
     const users = loadUsers();
     const userIndex = users.findIndex(u => u.username === username);
-    
+
     if (userIndex === -1) {
       return res.status(404).json({ error: "User not found" });
     }
-    
+
+    // Webmaster accounts are the top of the permission ladder and never
+    // hold any other role - mirrors the account-management UI, which
+    // doesn't offer a role control for webmaster rows at all, and the
+    // existing "can't delete a webmaster" rule below.
+    if (users[userIndex].role === 'webmaster') {
+      return res.status(403).json({ error: "Cannot change a webmaster's role." });
+    }
+
     users[userIndex].role = newRole;
     saveUsers(users);
     
@@ -3511,11 +3541,17 @@ app.post("/api/toggle-user-status", authenticateToken, requireRole("webmaster"),
     
     const users = loadUsers();
     const userIndex = users.findIndex(u => u.username === username);
-    
+
     if (userIndex === -1) {
       return res.status(404).json({ error: "User not found" });
     }
-    
+
+    // Webmaster accounts can't be disabled from here - see the matching
+    // note on /api/change-user-role.
+    if (users[userIndex].role === 'webmaster') {
+      return res.status(403).json({ error: "Cannot change a webmaster's status." });
+    }
+
     users[userIndex].status = isActive ? "active" : "inactive";
     saveUsers(users);
     
