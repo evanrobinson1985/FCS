@@ -19,6 +19,7 @@ const submissionsFile = process.env.SUBMISSIONS_FILE
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const XLSX = require("xlsx");
 
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
@@ -1034,6 +1035,228 @@ app.post(
     console.log(`Updated location for cave ${id}`);
     writeCaveDatabase(caves, res, {
       message: "Cave location updated successfully.",
+    });
+  }
+);
+
+// Column order/labels shared by the import template and the import parser -
+// intentionally the same shape as the "Download Updated Cave Data" export in
+// httpdocs/index.html's exportToExcel(), minus State (fixed by the ?state=
+// import target, not per-row) and Cave ID (always server-generated, never
+// trusted from the file). Each entry maps one spreadsheet column header to
+// the cave record field it becomes.
+const CAVE_IMPORT_COLUMNS = [
+  { header: "County", field: "county" },
+  { header: "Record Type", field: "recordType" },
+  { header: "Entrance No", field: "entranceNumber" },
+  { header: "Line No", field: "lineNumber" },
+  { header: "Cave Name", field: "name" },
+  { header: "Township", field: "township" },
+  { header: "Range", field: "range" },
+  { header: "Section", field: "section" },
+  { header: "Section Part", field: "sectionPart" },
+  { header: "Sub-Part", field: "subPart" },
+  { header: "Location Accuracy", field: "locationAccuracy" },
+  { header: "USGS Quad", field: "usgsQuad" },
+  { header: "Topo Symbol", field: "topoSymbol" },
+  { header: "Elevation", field: "elevation" },
+  { header: "Ownership", field: "ownership" },
+  { header: "Entry Status", field: "entryStatus" },
+  { header: "Equipment Needed", field: "equipment" },
+  { header: "Entrance Type", field: "entranceType" },
+  { header: "Field Indication", field: "fieldIndication" },
+  { header: "Location Info Type", field: "locationInfo" },
+  { header: "Map Type", field: "mapType" },
+  { header: "Map Status", field: "mapStatus" },
+  { header: "Geologic Formation", field: "geology" },
+  { header: "Topographic Province", field: "topoProvince" },
+  { header: "Cave Length", field: "length" },
+  { header: "Vertical Extent", field: "vertical" },
+  { header: "Max Water Depth", field: "waterDepth" },
+  { header: "Deepest Pitch", field: "pitch" },
+  { header: "Latitude", field: "latitude" },
+  { header: "Longitude", field: "longitude" },
+  { header: "Exploration Possibility", field: "exploration" },
+  { header: "Reporter NSS #", field: "reporter" },
+  { header: "Date YYMM", field: "date" },
+  { header: "Cave Type", field: "type" },
+  { header: "Hazardous Conditions", field: "hazardConditions" },
+  { header: "Hazard Notes", field: "hazardNotes" },
+  { header: "Owner/Entity Info", field: "ownerInfo" },
+];
+
+// Downloadable .xlsx template for a state's Excel import: a header row plus
+// one example row using that state's own first county, so whoever fills it
+// in sees a real, valid county code rather than having to guess the format.
+// Admin/webmaster only, matching every other cave-data-authoring route.
+app.get(
+  "/api/cave-database/import-template",
+  authenticateToken,
+  requireRole("admin", "webmaster"),
+  (req, res) => {
+    const stateCode = req.query.state;
+    const state = statesConfig.find((s) => s.code === stateCode);
+    if (!state) {
+      return res.status(400).json({ error: "Unknown or missing state code." });
+    }
+
+    const headerRow = CAVE_IMPORT_COLUMNS.map((c) => c.header);
+    const exampleCounty = state.counties[0];
+    const exampleRow = CAVE_IMPORT_COLUMNS.map((c) => {
+      if (c.field === "county") return exampleCounty ? exampleCounty.code : "";
+      if (c.field === "name") return "Example Cave Name";
+      if (c.field === "latitude") return 29.6;
+      if (c.field === "longitude") return -82.3;
+      return "";
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, exampleRow]);
+    ws["!cols"] = headerRow.map((h) => ({ wch: Math.max(h.length, 18) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Import Template");
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${stateCode}_cave_import_template.xlsx"`
+    );
+    res.send(buffer);
+  }
+);
+
+// Memory storage (never touches disk) for the import upload - the file is
+// parsed once, immediately, and discarded; nothing about it needs to
+// persist the way cave maps/pictures do.
+const caveImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (![".xlsx", ".xls", ".csv"].includes(ext)) {
+      return cb(new Error(`Unsupported file type: ${ext || "(no extension)"}`));
+    }
+    cb(null, true);
+  },
+});
+
+// Bulk-imports a spreadsheet of caves into one target state. Admin/webmaster
+// only - this writes the authoritative cave database, same restriction as
+// /api/save-cave-database. Every row is validated independently and the
+// response reports success/failure per row (not all-or-nothing): one bad
+// row in an otherwise-good 200-row spreadsheet shouldn't block the other
+// 199, and the per-row report tells the importer exactly what to fix.
+app.post(
+  "/api/cave-database/import",
+  authenticateToken,
+  requireRole("admin", "webmaster"),
+  (req, res) => {
+    caveImportUpload.single("importFile")(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || "Upload failed" });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded." });
+      }
+
+      const stateCode = req.body.state;
+      const state = statesConfig.find((s) => s.code === stateCode);
+      if (!state) {
+        return res.status(400).json({ error: "Unknown or missing state code." });
+      }
+      const validCountyCodes = new Set(state.counties.map((c) => c.code));
+
+      let rows;
+      try {
+        const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      } catch (parseErr) {
+        return res.status(400).json({ error: "Could not parse the uploaded file. Is it a valid spreadsheet?" });
+      }
+
+      if (rows.length === 0) {
+        return res.status(400).json({ error: "The uploaded file has no data rows." });
+      }
+
+      const caves = loadCaveDatabaseFromDisk();
+      const report = [];
+      let importedCount = 0;
+
+      rows.forEach((row, i) => {
+        const spreadsheetRow = i + 2; // 1-based, plus the header row
+        const name = String(row["Cave Name"] || "").trim();
+        const countyCode = String(row["County"] || "").trim().toUpperCase();
+        const latitude = parseFloat(row["Latitude"]);
+        const longitude = parseFloat(row["Longitude"]);
+
+        if (!name) {
+          report.push({ row: spreadsheetRow, status: "error", reason: "Missing Cave Name." });
+          return;
+        }
+        if (!countyCode) {
+          report.push({ row: spreadsheetRow, status: "error", reason: "Missing County.", name });
+          return;
+        }
+        if (!validCountyCodes.has(countyCode)) {
+          report.push({
+            row: spreadsheetRow,
+            status: "error",
+            reason: `"${countyCode}" is not a valid county code for ${state.name}.`,
+            name,
+          });
+          return;
+        }
+        if (isNaN(latitude) || isNaN(longitude)) {
+          report.push({ row: spreadsheetRow, status: "error", reason: "Missing or invalid Latitude/Longitude.", name });
+          return;
+        }
+
+        const newCave = { name, state: stateCode, county: countyCode, latitude, longitude, lat: latitude, lng: longitude };
+        CAVE_IMPORT_COLUMNS.forEach(({ header, field }) => {
+          if (["name", "county", "latitude", "longitude"].includes(field)) return;
+          const value = row[header];
+          if (value !== "" && value !== undefined && value !== null) {
+            newCave[field] = value;
+          }
+        });
+
+        // Generated against `caves`, which already includes every row
+        // imported earlier in this same batch, so IDs within one
+        // state+county still increment correctly across the whole file.
+        const caveId = generateNextCaveId(stateCode, countyCode, caves);
+        newCave.id = caveId;
+        caves.push(newCave);
+        importedCount++;
+        report.push({ row: spreadsheetRow, status: "success", caveId, name });
+      });
+
+      if (importedCount === 0) {
+        return res.json({
+          message: "No rows were imported - every row had an error.",
+          imported: 0,
+          total: rows.length,
+          report,
+        });
+      }
+
+      persistCaveDatabase(caves)
+        .then(() => {
+          console.log(`Imported ${importedCount}/${rows.length} caves for ${stateCode} from spreadsheet upload`);
+          res.json({
+            message: `Imported ${importedCount} of ${rows.length} row(s).`,
+            imported: importedCount,
+            total: rows.length,
+            report,
+          });
+        })
+        .catch((writeErr) => {
+          console.error("Failed to write cave database during import:", writeErr);
+          res.status(500).json({ error: "Failed to save imported caves." });
+        });
     });
   }
 );

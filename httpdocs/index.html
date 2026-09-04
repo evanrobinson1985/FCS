@@ -612,6 +612,23 @@
 <button class="btn-warning" onclick="downloadUpdatedCaveData()" style="margin-left:10px;">Download Updated Database</button>
 </div>
 </div>
+<!-- Bulk import: onboards a new state's existing spreadsheet as its cave
+     database. Admin/webmaster only (enforced server-side too - see
+     POST /api/cave-database/import in server.js); hidden for members by
+     toggleCaveImportSectionVisibility(), called from completeLogin(). -->
+<div id="cave-import-section" style="display: none; margin: 15px 0; padding: 12px; border: 1px solid #ccc; background: #f9f9f9;">
+<h4 style="margin-top: 0;">Import Caves from Spreadsheet</h4>
+<p style="margin-bottom: 10px;">Pick a state, download its template, fill it in, then upload it here. Each row is validated independently - a report below will show which rows imported and which need fixing.</p>
+<div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+<select id="import-state-select" style="padding: 8px;"><option value="">Select a state</option></select>
+<button class="btn-success" onclick="downloadImportTemplate()">Download Template</button>
+</div>
+<div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+<input type="file" id="cave-import-file" accept=".xlsx,.xls,.csv">
+<button class="btn-warning" onclick="uploadCaveImport()">Upload &amp; Import</button>
+</div>
+<div id="cave-import-report" style="margin-top: 10px;"></div>
+</div>
 <!-- This is the scrollable wrapper for the spreadsheet -->
 <div id="cave-database-scroll-wrapper" style="
                   width: 100%;
@@ -4291,6 +4308,117 @@ function loadFcsDatabaseTable() {
 
         populateCountySelect(countySelect, stateSelect.value, { includeAllOption });
       });
+
+      // The bulk-import state picker isn't part of a state/county cascade
+      // (county validity is checked per-row, server-side, against whatever
+      // state is chosen here) - just keep it in sync with the reference
+      // config. The section itself is admin/webmaster-only (see
+      // toggleCaveImportSectionVisibility()), so it's never restricted.
+      const importStateSelect = document.getElementById('import-state-select');
+      if (importStateSelect) {
+        const previousImportValue = importStateSelect.value;
+        populateStateSelect(importStateSelect, { includeAllOption: false });
+        if ([...importStateSelect.options].some(o => o.value === previousImportValue)) {
+          importStateSelect.value = previousImportValue;
+        }
+      }
+    }
+
+    // Shows the bulk-import UI for admin/webmaster, hides it for members -
+    // members can't write directly to the cave database (enforced
+    // server-side by POST /api/cave-database/import's requireRole check;
+    // this is just so they don't see a control that would just 403).
+    function toggleCaveImportSectionVisibility() {
+      const section = document.getElementById('cave-import-section');
+      if (!section) return;
+      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      section.style.display = (currentRole === 'admin' || currentRole === 'webmaster') ? 'block' : 'none';
+    }
+
+    // Triggers a browser download of the fill-in-the-blanks template for
+    // the state selected in #import-state-select. This is a direct
+    // navigation (not fetch()), so it needs withAuthToken() to carry the
+    // session - see the fetch-wrapper comment at the top of this file for
+    // why GETs like this can't just rely on the Authorization header.
+    function downloadImportTemplate() {
+      const stateCode = document.getElementById('import-state-select').value;
+      if (!stateCode) {
+        alert('Please select a state first.');
+        return;
+      }
+      window.location.href = withAuthToken(`/api/cave-database/import-template?state=${encodeURIComponent(stateCode)}`);
+    }
+
+    // Uploads the filled-in spreadsheet for the selected state and renders
+    // the server's per-row success/error report. Mirrors uploadCaveMaps()'s
+    // FormData/fetch pattern.
+    async function uploadCaveImport() {
+      const stateCode = document.getElementById('import-state-select').value;
+      const input = document.getElementById('cave-import-file');
+      const reportEl = document.getElementById('cave-import-report');
+
+      if (!stateCode) {
+        alert('Please select a state first.');
+        return;
+      }
+      if (!input || !input.files || input.files.length === 0) {
+        alert('Please choose a spreadsheet file first.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('importFile', input.files[0]);
+      formData.append('state', stateCode);
+
+      if (reportEl) reportEl.innerHTML = '<p>Importing...</p>';
+
+      try {
+        const response = await fetch('/api/cave-database/import', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Import failed');
+        }
+
+        renderImportReport(result);
+        input.value = '';
+
+        // The database just changed on the server - refresh what's on screen.
+        if (result.imported > 0 && typeof window.loadCaveDatabaseFromServer === 'function') {
+          window.loadCaveDatabaseFromServer().then(function() {
+            if (typeof updateCaveDataStore === 'function') updateCaveDataStore();
+          });
+        }
+      } catch (error) {
+        console.error('Cave import failed:', error);
+        if (reportEl) reportEl.innerHTML = `<p style="color:#b00;">Import failed: ${error.message}</p>`;
+      }
+    }
+
+    // Renders the { imported, total, report: [{row, status, reason, caveId, name}] }
+    // response from POST /api/cave-database/import as a simple table.
+    function renderImportReport(result) {
+      const reportEl = document.getElementById('cave-import-report');
+      if (!reportEl) return;
+
+      const rows = (result.report || []).map(r => {
+        const detail = r.status === 'success'
+          ? `Imported as <strong>${r.caveId}</strong>`
+          : `<span style="color:#b00;">${r.reason}</span>`;
+        return `<tr><td>${r.row}</td><td>${r.name || ''}</td><td>${detail}</td></tr>`;
+      }).join('');
+
+      reportEl.innerHTML = `
+        <p><strong>${result.message}</strong></p>
+        <div style="max-height: 300px; overflow-y: auto;">
+        <table class="cave-data-table">
+          <thead><tr><th>Row</th><th>Cave Name</th><th>Result</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        </div>
+      `;
     }
 
     // Get entry status name from code
@@ -6435,6 +6563,8 @@ window.addEventListener('error', function(e) {
         accountTab.style.display = 'none';
       }
     }
+
+    toggleCaveImportSectionVisibility();
 
     updateTwoFactorStatusUI(!!result.twoFactorEnabled);
 

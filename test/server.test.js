@@ -12,6 +12,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+const XLSX = require("xlsx");
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "fcs-test-"));
 
@@ -483,6 +484,137 @@ describe("state/county reference config", () => {
     const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
     assert.equal(res.status, 200);
     assert.equal(res.body.length, 50);
+  });
+});
+
+// Uses Texas throughout (never touched by any other test in this file) so
+// these tests can assert on exact generated cave IDs without needing to
+// know what other tests already did to Florida/Georgia's county numbering.
+describe("cave database Excel import", () => {
+  function buildWorkbookBuffer(headerRow, dataRows) {
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const IMPORT_HEADERS = ["County", "Cave Name", "Latitude", "Longitude"];
+
+  test("GET /api/cave-database/import-template requires admin/webmaster", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .get("/api/cave-database/import-template?state=TX")
+      .set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("GET /api/cave-database/import-template rejects an unknown state code", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .get("/api/cave-database/import-template?state=ZZ")
+      .set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 400);
+  });
+
+  test("GET /api/cave-database/import-template returns a real workbook with the expected header row", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .get("/api/cave-database/import-template?state=TX")
+      .set("Authorization", `Bearer ${token}`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+    assert.equal(res.status, 200);
+
+    const wb = XLSX.read(res.body, { type: "buffer" });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+    assert.equal(rows[0][0], "County");
+    assert.ok(rows[0].includes("Cave Name"));
+    assert.ok(rows[0].includes("Latitude"));
+    // Example row's county code should be a real Texas county.
+    assert.equal(rows[1][0], "AN");
+  });
+
+  test("POST /api/cave-database/import requires admin/webmaster", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [["AN", "Member Attempt Cave", 31.3, -95.6]]);
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "TX")
+      .attach("importFile", buffer, "import.xlsx");
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unknown target state", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [["AN", "Bad State Cave", 31.3, -95.6]]);
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "ZZ")
+      .attach("importFile", buffer, "import.xlsx");
+    assert.equal(res.status, 400);
+  });
+
+  test("imports valid rows, assigns sequential per-county IDs, and reports per-row errors without blocking the good rows", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [
+      ["AN", "Texas Anderson Cave One", 31.3, -95.6],
+      ["AN", "Texas Anderson Cave Two", 31.4, -95.7],
+      ["ZZ", "Bad County Cave", 31.5, -95.8],
+      ["AN", "", 31.6, -95.9],
+      ["AN", "Missing Coordinates Cave", "", ""],
+    ]);
+
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "TX")
+      .attach("importFile", buffer, "import.xlsx");
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.imported, 2);
+    assert.equal(res.body.total, 5);
+
+    const successRows = res.body.report.filter((r) => r.status === "success");
+    const errorRows = res.body.report.filter((r) => r.status === "error");
+    assert.equal(successRows.length, 2);
+    assert.equal(errorRows.length, 3);
+    assert.deepEqual(
+      successRows.map((r) => r.caveId).sort(),
+      ["TXAN001", "TXAN002"]
+    );
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const imported = dbRes.body.find((c) => c.id === "TXAN001");
+    assert.ok(imported);
+    assert.equal(imported.state, "TX");
+    assert.equal(imported.county, "AN");
+    assert.equal(imported.name, "Texas Anderson Cave One");
+    assert.equal(imported.latitude, 31.3);
+  });
+
+  test("reports every row as an error and writes nothing when the whole file is bad", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const dbBefore = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const countBefore = dbBefore.body.length;
+
+    const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [["ZZ", "Totally Bad Cave", 31.3, -95.6]]);
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "TX")
+      .attach("importFile", buffer, "import.xlsx");
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.imported, 0);
+
+    const dbAfter = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    assert.equal(dbAfter.body.length, countBefore, "a fully-failed import must not write anything");
   });
 });
 
