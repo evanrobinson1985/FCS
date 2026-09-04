@@ -155,6 +155,11 @@
         <input id="confirm-password" placeholder="Confirm your password" type="password" required/>
       </div>
       <div class="form-group">
+        <label for="new-account-states">State(s) you're a member for:</label>
+        <select id="new-account-states" multiple size="6" required></select>
+        <small>Hold Ctrl/Cmd to select more than one. A webmaster can grant you access to additional states later.</small>
+      </div>
+      <div class="form-group">
         <button onclick="handleCreateAccount()">Create Account</button>
         <button type="button" onclick="showLogin()">Back to Login</button>
       </div>
@@ -309,6 +314,7 @@
               <th>Email</th>
               <th>Role</th>
               <th>Status</th>
+              <th>States</th>
               <th>2FA</th>
               <th>Last Login</th>
               <th>Login IPs</th>
@@ -9644,6 +9650,35 @@ function showCreateAccount() {
   document.getElementById('forgot-password-form').style.display = 'none';
   document.getElementById('set-new-password-form').style.display = 'none';
   document.getElementById('two-factor-form').style.display = 'none';
+  populateAccountCreationStates();
+}
+
+// GET /api/states is public (no login token needed - see server.js), which
+// is exactly why the create-account form can call it: nobody filling that
+// out has a session yet. Fetched once and cached for the rest of the page's
+// life (same 50 states either way) - every other place that needs the
+// state/county reference data (Account Management's per-member state
+// editor, and more once the map/database/edit-cave tabs become state-aware)
+// should call this same cached loader rather than fetching it again.
+window.statesConfigCache = null;
+async function loadStatesConfig() {
+  if (window.statesConfigCache) return window.statesConfigCache;
+  const response = await fetch('/api/states');
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  window.statesConfigCache = (await response.json()).slice().sort((a, b) => a.name.localeCompare(b.name));
+  return window.statesConfigCache;
+}
+
+async function populateAccountCreationStates() {
+  const select = document.getElementById('new-account-states');
+  if (!select || select.options.length > 0) return;
+  try {
+    const states = await loadStatesConfig();
+    select.innerHTML = states.map(s => `<option value="${s.code}">${s.name}</option>`).join('');
+  } catch (error) {
+    console.error('Failed to load states for account creation:', error);
+    select.innerHTML = '<option value="FL">Florida</option>';
+  }
 }
 
 function showForgotPassword() {
@@ -9749,6 +9784,7 @@ async function handleCreateAccount() {
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
   const confirmPassword = document.getElementById('confirm-password').value;
+  const states = Array.from(document.getElementById('new-account-states').selectedOptions).map(o => o.value);
 
   if (!username || !email || !password || !confirmPassword) {
     alert('Please fill in all fields.');
@@ -9768,6 +9804,11 @@ async function handleCreateAccount() {
     return;
   }
 
+  if (states.length === 0) {
+    alert('Please select at least one state you are a member for.');
+    return;
+  }
+
   try {
     const response = await fetch('/api/create-account', {
       method: 'POST',
@@ -9779,6 +9820,7 @@ async function handleCreateAccount() {
         username: username,
         email: email,
         password: password,
+        states: states,
         ipAddress: await getUserIP()
       })
     });
@@ -9793,6 +9835,7 @@ async function handleCreateAccount() {
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
       document.getElementById('confirm-password').value = '';
+      document.getElementById('new-account-states').selectedIndex = -1;
     } else {
       throw new Error(result.error || 'Account creation failed');
     }
@@ -9842,15 +9885,18 @@ async function handleForgotPassword() {
 // Load account management data
 async function loadAccountManagement() {
   try {
-    const response = await fetch('/api/users', {
-      headers: {
-        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
-        'X-CSRF-Token': getCSRFToken()
-      }
-    });
+    const [response, allStates] = await Promise.all([
+      fetch('/api/users', {
+        headers: {
+          'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+          'X-CSRF-Token': getCSRFToken()
+        }
+      }),
+      loadStatesConfig()
+    ]);
 
     const users = await response.json();
-    displayUsers(users);
+    displayUsers(users, allStates);
     loadSecurityLogs();
   } catch (error) {
     console.error('Error loading account management:', error);
@@ -9858,7 +9904,7 @@ async function loadAccountManagement() {
 }
 
 // Display users in the table
-function displayUsers(users) {
+function displayUsers(users, allStates) {
   const tableBody = document.getElementById('user-list-table');
   tableBody.innerHTML = '';
 
@@ -9879,11 +9925,22 @@ function displayUsers(users) {
       '<span style="color: green;">🔒 On</span>' :
       '<span style="color: #999;">Off</span>';
 
+    // allowedStates is null for admin/webmaster (see getAllowedStatesForUser
+    // in server.js) - they're always unrestricted, so there's nothing to
+    // edit for them. Members get a multi-select the webmaster can use to
+    // grant/revoke states on the spot.
+    const statesCell = user.allowedStates === null
+      ? '<em>All states</em>'
+      : `<select multiple size="4" style="min-width: 130px;" onchange="changeUserStates('${user.username}', this)">
+          ${allStates.map(s => `<option value="${s.code}" ${user.allowedStates.includes(s.code) ? 'selected' : ''}>${s.name}</option>`).join('')}
+        </select>`;
+
     row.innerHTML = `
       <td>${user.username}</td>
       <td>${user.email}</td>
       <td><span class="role-badge role-${user.role}">${user.role}</span></td>
       <td>${statusBadge}</td>
+      <td>${statesCell}</td>
       <td>${twoFactorBadge}</td>
       <td>${lastLogin}</td>
       <td title="${user.loginIPs ? user.loginIPs.join(', ') : 'None'}">${ips}</td>
@@ -9935,6 +9992,36 @@ async function changeUserRole(username, newRole) {
     }
   } catch (error) {
     alert('Error changing user role: ' + error.message);
+    location.reload();
+  }
+}
+
+// Grant/revoke which states a member can see and submit for. Webmaster-only
+// server-side (see POST /api/change-user-states) - this button is only ever
+// shown to a webmaster in the first place, since only they see the Account
+// Management tab.
+async function changeUserStates(username, selectEl) {
+  const allowedStates = Array.from(selectEl.selectedOptions).map(o => o.value);
+
+  try {
+    const response = await fetch('/api/change-user-states', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+        'X-CSRF-Token': getCSRFToken()
+      },
+      body: JSON.stringify({ username, allowedStates })
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      loadAccountManagement(); // Refresh so the change is confirmed from the server
+    } else {
+      throw new Error(result.error);
+    }
+  } catch (error) {
+    alert('Error changing allowed states: ' + error.message);
     location.reload();
   }
 }

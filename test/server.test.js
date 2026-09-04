@@ -34,7 +34,7 @@ function usersFilePath() {
   return path.join(process.env.DATA_DIR, "users.json");
 }
 
-async function seedUser({ username, password, role, status = "active" }) {
+async function seedUser({ username, password, role, status = "active", allowedStates = [] }) {
   const file = usersFilePath();
   const users = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
   users.push({
@@ -45,6 +45,7 @@ async function seedUser({ username, password, role, status = "active" }) {
     fullName: username,
     role,
     status,
+    allowedStates,
     created: new Date().toISOString(),
     lastLogin: null,
     loginAttempts: 0,
@@ -165,6 +166,7 @@ describe("password hashing", () => {
       username: "newmember",
       email: "newmember@example.com",
       password: "SomeStrongPass123!",
+      states: ["FL"],
     });
     assert.equal(res.status, 200);
 
@@ -185,11 +187,46 @@ describe("password hashing", () => {
     assert.equal(res.status, 400);
   });
 
+  test("rejects self-registration with no state selected", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "nostateuser",
+      email: "nostateuser@example.com",
+      password: "SomeStrongPass123!",
+      states: [],
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects self-registration with an unrecognized state code", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "badstateuser",
+      email: "badstateuser@example.com",
+      password: "SomeStrongPass123!",
+      states: ["ZZ"],
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("stores the selected states as allowedStates on the new account", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "twostateuser",
+      email: "twostateuser@example.com",
+      password: "SomeStrongPass123!",
+      states: ["FL", "GA"],
+    });
+    assert.equal(res.status, 200);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "twostateuser");
+    assert.deepEqual(created.allowedStates, ["FL", "GA"]);
+  });
+
   test("a freshly hashed password actually verifies on login", async () => {
     await request(app).post("/api/create-account").send({
       username: "roundtrip",
       email: "roundtrip@example.com",
       password: "RoundTripPass123!",
+      states: ["FL"],
     });
     // Activate the pending account directly (no client-facing endpoint
     // creates an already-active account other than webmaster-managed ones).
@@ -408,9 +445,10 @@ describe("cave database storage", () => {
 });
 
 describe("state/county reference config", () => {
-  test("GET /api/states requires authentication", async () => {
+  test("GET /api/states is public (no login token) - the create-account form needs it before anyone is logged in", async () => {
     const res = await request(app).get("/api/states");
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
   });
 
   test("GET /api/states returns all 50 states with Florida's counties intact", async () => {
@@ -440,6 +478,55 @@ describe("state/county reference config", () => {
     const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
     assert.equal(res.status, 200);
     assert.equal(res.body.length, 50);
+  });
+});
+
+describe("allowed states (member state scoping)", () => {
+  before(async () => {
+    await seedUser({ username: "scopeduser", password: "ScopedPass123!", role: "member", allowedStates: ["FL"] });
+  });
+
+  test("a non-webmaster cannot change another user's allowed states", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-states")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ username: "scopeduser", allowedStates: ["FL", "GA"] });
+    assert.equal(res.status, 403);
+  });
+
+  test("webmaster can grant an additional state to a member", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-states")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ username: "scopeduser", allowedStates: ["FL", "GA"] });
+    assert.equal(res.status, 200);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const updated = users.find((u) => u.username === "scopeduser");
+    assert.deepEqual(updated.allowedStates, ["FL", "GA"]);
+  });
+
+  test("rejects an unrecognized state code", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-states")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ username: "scopeduser", allowedStates: ["ZZ"] });
+    assert.equal(res.status, 400);
+  });
+
+  test("GET /api/users reports null (unrestricted) for admin/webmaster and the real array for members", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/users").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+
+    const wm = res.body.find((u) => u.username === "webmaster1");
+    assert.equal(wm.allowedStates, null);
+
+    const scoped = res.body.find((u) => u.username === "scopeduser");
+    assert.deepEqual(scoped.allowedStates, ["FL", "GA"]);
   });
 });
 

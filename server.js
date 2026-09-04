@@ -373,6 +373,18 @@ function requireRole(...roles) {
   };
 }
 
+// Returns the states a user may see/act on: `null` means unrestricted
+// (every state) - always true for admin and webmaster, matching their
+// existing equal footing on every other cave-data route (see
+// requireRole("admin", "webmaster") throughout this file). Members are
+// scoped to whatever states have been granted to their account.
+function getAllowedStatesForUser(user) {
+  if (!user || user.role === "admin" || user.role === "webmaster") {
+    return null;
+  }
+  return Array.isArray(user.allowedStates) ? user.allowedStates : [];
+}
+
 app.post("/api/login", authLimiter, express.json(), async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -794,11 +806,13 @@ function loadStatesConfig() {
 
 loadStatesConfig();
 
-// Public reference data (real, published county/state names - no cave data)
-// that every logged-in user needs, including a brand-new member who hasn't
-// been granted any states yet (they need this list to even pick one at
-// signup). authenticateToken only - no role or allowedStates restriction.
-app.get("/api/states", authenticateToken, (req, res) => {
+// Public reference data (real, published county/state names - no cave data,
+// nothing sensitive). Deliberately NOT behind authenticateToken: the
+// create-account form needs this to populate its state picker, and that
+// happens before anyone has a login token at all. This is no more exposed
+// than before this feature existed, when Florida's county list sat in
+// plain, unauthenticated static HTML.
+app.get("/api/states", (req, res) => {
   res.json(statesConfig);
 });
 
@@ -3147,6 +3161,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       loginAttempts: user.loginAttempts,
       isEmailVerified: user.isEmailVerified,
       twoFactorEnabled: !!user.twoFactorEnabled,
+      allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
       isActive: user.status === "active"
     }));
@@ -3185,6 +3200,41 @@ app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), e
   } catch (error) {
     console.error('Error changing user role:', error);
     res.status(500).json({ error: "Failed to change user role" });
+  }
+});
+
+// Grants/revokes which states a member account can see and submit for.
+// Webmaster-only, same bucket as role changes and account deletion - not
+// opened to admin, unlike the cave-data routes, since this is account
+// administration. Admin/webmaster themselves are always unrestricted (see
+// getAllowedStatesForUser) so this has no effect on them either way.
+app.post("/api/change-user-states", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  try {
+    const { username, allowedStates } = req.body;
+
+    if (!username || !Array.isArray(allowedStates)) {
+      return res.status(400).json({ error: "Username and allowedStates (array) are required" });
+    }
+
+    const validStateCodes = new Set(statesConfig.map((s) => s.code));
+    if (!allowedStates.every((code) => validStateCodes.has(code))) {
+      return res.status(400).json({ error: "One or more selected states are not recognized." });
+    }
+
+    const users = loadUsers();
+    const userIndex = users.findIndex((u) => u.username === username);
+
+    if (userIndex === -1) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    users[userIndex].allowedStates = allowedStates;
+    saveUsers(users);
+
+    res.json({ success: true, message: "Allowed states updated", allowedStates });
+  } catch (error) {
+    console.error('Error changing user states:', error);
+    res.status(500).json({ error: "Failed to change user states" });
   }
 });
 
@@ -3290,7 +3340,7 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
 // anyone, so it's rate-limited instead of authenticated.
 app.post("/api/create-account", authLimiter, express.json(), async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, states } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required" });
@@ -3299,6 +3349,13 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
       });
+    }
+    if (!Array.isArray(states) || states.length === 0) {
+      return res.status(400).json({ error: "Please select at least one state." });
+    }
+    const validStateCodes = new Set(statesConfig.map((s) => s.code));
+    if (!states.every((code) => validStateCodes.has(code))) {
+      return res.status(400).json({ error: "One or more selected states are not recognized." });
     }
 
     const users = loadUsers();
@@ -3326,6 +3383,7 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       nssNumber: "",
       role: "member",
       status: "pending",
+      allowedStates: states,
       created: new Date().toISOString(),
       lastLogin: null,
       loginAttempts: 0,
