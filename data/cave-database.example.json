@@ -1,6 +1,7 @@
 [
   {
     "id": "FAL001",
+    "state": "FL",
     "name": "Buzzard Hollow",
     "county": "AL",
     "type": "Land Cave",
@@ -64,6 +65,7 @@
   },
   {
     "id": "FBK001",
+    "state": "FL",
     "name": "Forgotten Otter Chamber",
     "county": "BK",
     "type": "Land Cave",
@@ -123,6 +125,7 @@
   },
   {
     "id": "FBR001",
+    "state": "FL",
     "name": "Moss Pit",
     "county": "BR",
     "type": "Underwater Cave",
@@ -186,6 +189,7 @@
   },
   {
     "id": "FCH001",
+    "state": "FL",
     "name": "Cypress Grotto",
     "county": "CH",
     "type": "Underwater Cave",
@@ -247,6 +251,7 @@
   },
   {
     "id": "FCH002",
+    "state": "FL",
     "name": "Tupelo Vault",
     "county": "CH",
     "type": "Land Cave",
@@ -305,6 +310,7 @@
   },
   {
     "id": "FCH003",
+    "state": "FL",
     "name": "Pine Hollow",
     "county": "CH",
     "type": "Underwater Cave",
@@ -366,6 +372,7 @@
   },
   {
     "id": "FCI001",
+    "state": "FL",
     "name": "Ironwood Chamber",
     "county": "CI",
     "type": "Land Cave",
@@ -424,6 +431,7 @@
   },
   {
     "id": "FCI002",
+    "state": "FL",
     "name": "Twilight Buzzard Den",
     "county": "CI",
     "type": "Land Cave",
@@ -484,6 +492,7 @@
   },
   {
     "id": "FCL001",
+    "state": "FL",
     "name": "Hidden Hollow",
     "county": "CL",
     "type": "Land Cave",
@@ -545,6 +554,7 @@
   },
   {
     "id": "FCL002",
+    "state": "FL",
     "name": "Osprey Sinkhole",
     "county": "CL",
     "type": "Land Cave",
@@ -608,6 +618,7 @@
   },
   {
     "id": "FCL003",
+    "state": "FL",
     "name": "Turtle Pit",
     "county": "CL",
     "type": "Land Cave",
@@ -667,6 +678,7 @@
   },
   {
     "id": "FCL004",
+    "state": "FL",
     "name": "Quiet Sinkhole",
     "county": "CL",
     "type": "Land Cave",
@@ -729,6 +741,7 @@
   },
   {
     "id": "FCL005",
+    "state": "FL",
     "name": "Tupelo Pit",
     "county": "CL",
     "type": "Land Cave",
@@ -793,6 +806,7 @@
   },
   {
     "id": "FCO001",
+    "state": "FL",
     "name": "Blue Bayou Sink",
     "county": "CO",
     "type": "Land Cave",
@@ -854,6 +868,7 @@
   },
   {
     "id": "FCU001",
+    "state": "FL",
     "name": "Scrub Sinkhole",
     "county": "CU",
     "type": "Land Cave",
@@ -915,6 +930,7 @@
   },
   {
     "id": "FCU002",
+    "state": "FL",
     "name": "Oak Crossing",
     "county": "CU",
     "type": "Underwater Cave",
@@ -976,6 +992,7 @@
   },
   {
     "id": "FCU003",
+    "state": "FL",
     "name": "Whispering Sinkhole",
     "county": "CU",
     "type": "Land Cave",
@@ -1037,6 +1054,7 @@
   },
   {
     "id": "FCU004",
+    "state": "FL",
     "name": "Twilight Ridge Spring Cave",
     "county": "CU",
     "type": "Land Cave",
@@ -1099,6 +1117,7 @@
   },
   {
     "id": "FDE001",
+    "state": "FL",
     "name": "Limestone Cavern",
     "county": "DE",
     "type": "Land Cave",
@@ -1160,6 +1179,7 @@
   },
   {
     "id": "FDE002",
+    "state": "FL",
     "name": "Quiet Panther Hollow",
     "county": "DE",
     "type": "Land Cave",
@@ -1223,6 +1243,7 @@
   },
   {
     "id": "FDI001",
+    "state": "FL",
     "name": "Silent Panther Sink",
     "county": "DI",
     "type": "Land Cave",
@@ -1285,6 +1306,7 @@
   },
   {
     "id": "FDI002",
+    "state": "FL",
     "name": "Hidden Pine Passage",
     "county": "DI",
     "type": "Underwater Cave",
@@ -1345,6 +1367,7 @@
   },
   {
     "id": "FDI003",
+    "state": "FL",
     "name": "Fern Sinkhole",
     "county": "DI",
     "type": "Land Cave",
@@ -1405,6 +1428,7 @@
   },
   {
     "id": "FDI004",
+    "state": "FL",
     "name": "Pine Passage",
     "county": "DI",
     "type": "Land Cave",
@@ -1465,6 +1489,7 @@
   },
   {
     "id": "FDI005",
+    "state": "FL",
     "name": "Deep Hollow",
     "county": "DI",
     "type": "Land Cave",
@@ -1527,6 +1552,7 @@
   },
   {
     "id": "FDU001",
+    "state": "FL",
     "name": "Silent Heron Sink",
     "county": "DU",
     "type": "Land Cave",
@@ -1590,6 +1616,7 @@
   },
   {
     "id": "FDU002",
+    "state": "FL",
     "name": "Blue Magnolia Vault",
     "county": "DU",
     "type": "Underwater Cave",
@@ -1650,6 +1677,7 @@
   },
   {
     "id": "FGC001",
+    "state": "FL",
     "name": "Old Pine Sinkhole",
     "county": "GC",
     "type": "Land Cave",
@@ -1710,6 +1738,7 @@
   },
   {
     "id": "FGC002",
+    "state": "FL",
     "name": "Fern Spring Cave",
     "county": "GC",
     "type": "Underwater Cave",
@@ -1770,6 +1799,7 @@
   },
   {
     "id": "FGC003",
+    "state": "FL",
     "name": "Shadow Vault",
     "county": "GC",
     "type": "Land Cave",
@@ -1832,6 +1862,7 @@
   },
   {
     "id": "FGC004",
+    "state": "FL",
     "name": "Blackwater Ridge Passage",
     "county": "GC",
     "type": "Land Cave",
@@ -1890,6 +1921,7 @@
   },
   {
     "id": "FGC005",
+    "state": "FL",
     "name": "Crystal Ridge Vault",
     "county": "GC",
     "type": "Underwater Cave",
@@ -1950,6 +1982,7 @@
   },
   {
     "id": "FGG001",
+    "state": "FL",
     "name": "Emerald Ridge Passage",
     "county": "GG",
     "type": "Land Cave",
@@ -2013,6 +2046,7 @@
   },
   {
     "id": "FGL001",
+    "state": "FL",
     "name": "Old Magnolia Passage",
     "county": "GL",
     "type": "Land Cave",
@@ -2071,6 +2105,7 @@
   },
   {
     "id": "FHA001",
+    "state": "FL",
     "name": "Cypress Cavern",
     "county": "HA",
     "type": "Land Cave",
@@ -2134,6 +2169,7 @@
   },
   {
     "id": "FHA002",
+    "state": "FL",
     "name": "Crystal Magnolia Sinkhole",
     "county": "HA",
     "type": "Land Cave",
@@ -2198,6 +2234,7 @@
   },
   {
     "id": "FHA003",
+    "state": "FL",
     "name": "Otter Cavern",
     "county": "HA",
     "type": "Land Cave",
@@ -2257,6 +2294,7 @@
   },
   {
     "id": "FHA004",
+    "state": "FL",
     "name": "Sable Spring Cave",
     "county": "HA",
     "type": "Land Cave",
@@ -2318,6 +2356,7 @@
   },
   {
     "id": "FHB001",
+    "state": "FL",
     "name": "Wandering Heron Hollow",
     "county": "HB",
     "type": "Land Cave",
@@ -2381,6 +2420,7 @@
   },
   {
     "id": "FHB002",
+    "state": "FL",
     "name": "Hidden Chamber",
     "county": "HB",
     "type": "Land Cave",
@@ -2441,6 +2481,7 @@
   },
   {
     "id": "FHO001",
+    "state": "FL",
     "name": "Fern Passage",
     "county": "HO",
     "type": "Land Cave",
@@ -2501,6 +2542,7 @@
   },
   {
     "id": "FHR001",
+    "state": "FL",
     "name": "Cypress Den",
     "county": "HR",
     "type": "Land Cave",
@@ -2564,6 +2606,7 @@
   },
   {
     "id": "FHR002",
+    "state": "FL",
     "name": "Palmetto Passage",
     "county": "HR",
     "type": "Land Cave",
@@ -2625,6 +2668,7 @@
   },
   {
     "id": "FHR003",
+    "state": "FL",
     "name": "Buzzard Den",
     "county": "HR",
     "type": "Land Cave",
@@ -2681,6 +2725,7 @@
   },
   {
     "id": "FHR004",
+    "state": "FL",
     "name": "Buzzard Pit",
     "county": "HR",
     "type": "Land Cave",
@@ -2742,6 +2787,7 @@
   },
   {
     "id": "FHR005",
+    "state": "FL",
     "name": "Quiet Turtle Sink",
     "county": "HR",
     "type": "Land Cave",
@@ -2803,6 +2849,7 @@
   },
   {
     "id": "FJF001",
+    "state": "FL",
     "name": "Winding Cavern",
     "county": "JF",
     "type": "Underwater Cave",
@@ -2859,6 +2906,7 @@
   },
   {
     "id": "FJF002",
+    "state": "FL",
     "name": "Crystal Bayou Sinkhole",
     "county": "JF",
     "type": "Land Cave",
@@ -2923,6 +2971,7 @@
   },
   {
     "id": "FJF003",
+    "state": "FL",
     "name": "Hollow Sinkhole",
     "county": "JF",
     "type": "Land Cave",
@@ -2981,6 +3030,7 @@
   },
   {
     "id": "FJK001",
+    "state": "FL",
     "name": "Buzzard Cave",
     "county": "JK",
     "type": "Land Cave",
@@ -3043,6 +3093,7 @@
   },
   {
     "id": "FLF001",
+    "state": "FL",
     "name": "Golden Sink",
     "county": "LF",
     "type": "Land Cave",
@@ -3104,6 +3155,7 @@
   },
   {
     "id": "FLF002",
+    "state": "FL",
     "name": "Deep Hollow Hollow",
     "county": "LF",
     "type": "Land Cave",
@@ -3166,6 +3218,7 @@
   },
   {
     "id": "FLF003",
+    "state": "FL",
     "name": "Panther Passage",
     "county": "LF",
     "type": "Underwater Cave",
@@ -3230,6 +3283,7 @@
   },
   {
     "id": "FLF004",
+    "state": "FL",
     "name": "Otter Den",
     "county": "LF",
     "type": "Land Cave",
@@ -3292,6 +3346,7 @@
   },
   {
     "id": "FLK001",
+    "state": "FL",
     "name": "Tupelo Cave",
     "county": "LK",
     "type": "Land Cave",
@@ -3354,6 +3409,7 @@
   },
   {
     "id": "FLK002",
+    "state": "FL",
     "name": "Limestone Sabal Grotto",
     "county": "LK",
     "type": "Underwater Cave",
@@ -3410,6 +3466,7 @@
   },
   {
     "id": "FLK003",
+    "state": "FL",
     "name": "Shadow Crossing",
     "county": "LK",
     "type": "Land Cave",
@@ -3471,6 +3528,7 @@
   },
   {
     "id": "FLL001",
+    "state": "FL",
     "name": "Cypress Crossing",
     "county": "LL",
     "type": "Land Cave",
@@ -3533,6 +3591,7 @@
   },
   {
     "id": "FLL002",
+    "state": "FL",
     "name": "Moss Passage",
     "county": "LL",
     "type": "Land Cave",
@@ -3594,6 +3653,7 @@
   },
   {
     "id": "FLL003",
+    "state": "FL",
     "name": "Bayou Den",
     "county": "LL",
     "type": "Land Cave",
@@ -3657,6 +3717,7 @@
   },
   {
     "id": "FLL004",
+    "state": "FL",
     "name": "Emerald Heron Sinkhole",
     "county": "LL",
     "type": "Land Cave",
@@ -3713,6 +3774,7 @@
   },
   {
     "id": "FLV001",
+    "state": "FL",
     "name": "Osprey Cavern",
     "county": "LV",
     "type": "Land Cave",
@@ -3772,6 +3834,7 @@
   },
   {
     "id": "FLV002",
+    "state": "FL",
     "name": "Cedar Scrub Cave",
     "county": "LV",
     "type": "Land Cave",
@@ -3834,6 +3897,7 @@
   },
   {
     "id": "FLV003",
+    "state": "FL",
     "name": "Hollow Vault",
     "county": "LV",
     "type": "Underwater Cave",
@@ -3898,6 +3962,7 @@
   },
   {
     "id": "FLV004",
+    "state": "FL",
     "name": "Oak Passage",
     "county": "LV",
     "type": "Underwater Cave",
@@ -3959,6 +4024,7 @@
   },
   {
     "id": "FMN001",
+    "state": "FL",
     "name": "Forgotten Hollow Hollow",
     "county": "MN",
     "type": "Land Cave",
@@ -4015,6 +4081,7 @@
   },
   {
     "id": "FMN002",
+    "state": "FL",
     "name": "Blue Sinkhole",
     "county": "MN",
     "type": "Land Cave",
@@ -4077,6 +4144,7 @@
   },
   {
     "id": "FMN003",
+    "state": "FL",
     "name": "Deep Sinkhole",
     "county": "MN",
     "type": "Land Cave",
@@ -4135,6 +4203,7 @@
   },
   {
     "id": "FMO001",
+    "state": "FL",
     "name": "Gator Den",
     "county": "MO",
     "type": "Land Cave",
@@ -4197,6 +4266,7 @@
   },
   {
     "id": "FMO002",
+    "state": "FL",
     "name": "Lost Cavern",
     "county": "MO",
     "type": "Land Cave",
@@ -4260,6 +4330,7 @@
   },
   {
     "id": "FMO003",
+    "state": "FL",
     "name": "Sunken Sink",
     "county": "MO",
     "type": "Land Cave",
@@ -4318,6 +4389,7 @@
   },
   {
     "id": "FMR001",
+    "state": "FL",
     "name": "Palmetto Sandhill Sinkhole",
     "county": "MR",
     "type": "Land Cave",
@@ -4377,6 +4449,7 @@
   },
   {
     "id": "FMR002",
+    "state": "FL",
     "name": "Misty Passage",
     "county": "MR",
     "type": "Underwater Cave",
@@ -4437,6 +4510,7 @@
   },
   {
     "id": "FMR003",
+    "state": "FL",
     "name": "Echo Buzzard Passage",
     "county": "MR",
     "type": "Land Cave",
@@ -4498,6 +4572,7 @@
   },
   {
     "id": "FMR004",
+    "state": "FL",
     "name": "Sable Grotto",
     "county": "MR",
     "type": "Land Cave",
@@ -4558,6 +4633,7 @@
   },
   {
     "id": "FOR001",
+    "state": "FL",
     "name": "Hollow Grotto",
     "county": "OR",
     "type": "Land Cave",
@@ -4620,6 +4696,7 @@
   },
   {
     "id": "FOR002",
+    "state": "FL",
     "name": "Lost Scrub Sinkhole",
     "county": "OR",
     "type": "Land Cave",
@@ -4680,6 +4757,7 @@
   },
   {
     "id": "FOR003",
+    "state": "FL",
     "name": "Scrub Den",
     "county": "OR",
     "type": "Land Cave",
@@ -4740,6 +4818,7 @@
   },
   {
     "id": "FOR004",
+    "state": "FL",
     "name": "Golden Bayou Sink",
     "county": "OR",
     "type": "Underwater Cave",
@@ -4799,6 +4878,7 @@
   },
   {
     "id": "FOR005",
+    "state": "FL",
     "name": "Blackwater Sinkhole",
     "county": "OR",
     "type": "Land Cave",
@@ -4859,6 +4939,7 @@
   },
   {
     "id": "FOR006",
+    "state": "FL",
     "name": "Shadow Scrub Cave",
     "county": "OR",
     "type": "Underwater Cave",
@@ -4923,6 +5004,7 @@
   },
   {
     "id": "FOR007",
+    "state": "FL",
     "name": "Old Tupelo Cave",
     "county": "OR",
     "type": "Land Cave",
@@ -4984,6 +5066,7 @@
   },
   {
     "id": "FOS001",
+    "state": "FL",
     "name": "Crystal Chamber",
     "county": "OS",
     "type": "Underwater Cave",
@@ -5048,6 +5131,7 @@
   },
   {
     "id": "FPA001",
+    "state": "FL",
     "name": "Sabal Spring Cave",
     "county": "PA",
     "type": "Underwater Cave",
@@ -5104,6 +5188,7 @@
   },
   {
     "id": "FPA002",
+    "state": "FL",
     "name": "Amber Kingfisher Cavern",
     "county": "PA",
     "type": "Land Cave",
@@ -5165,6 +5250,7 @@
   },
   {
     "id": "FPA003",
+    "state": "FL",
     "name": "Sable Crossing",
     "county": "PA",
     "type": "Land Cave",
@@ -5225,6 +5311,7 @@
   },
   {
     "id": "FPA004",
+    "state": "FL",
     "name": "Quiet Hollow Chamber",
     "county": "PA",
     "type": "Land Cave",
@@ -5287,6 +5374,7 @@
   },
   {
     "id": "FPA005",
+    "state": "FL",
     "name": "Panther Vault",
     "county": "PA",
     "type": "Underwater Cave",
@@ -5348,6 +5436,7 @@
   },
   {
     "id": "FPO001",
+    "state": "FL",
     "name": "Forgotten Magnolia Grotto",
     "county": "PO",
     "type": "Land Cave",
@@ -5410,6 +5499,7 @@
   },
   {
     "id": "FPO002",
+    "state": "FL",
     "name": "Sabal Sinkhole",
     "county": "PO",
     "type": "Land Cave",
@@ -5466,6 +5556,7 @@
   },
   {
     "id": "FPO003",
+    "state": "FL",
     "name": "Heron Spring Cave",
     "county": "PO",
     "type": "Land Cave",
@@ -5527,6 +5618,7 @@
   },
   {
     "id": "FPO004",
+    "state": "FL",
     "name": "Old Kingfisher Chamber",
     "county": "PO",
     "type": "Land Cave",
@@ -5588,6 +5680,7 @@
   },
   {
     "id": "FPO005",
+    "state": "FL",
     "name": "Heron Hollow",
     "county": "PO",
     "type": "Land Cave",
@@ -5644,6 +5737,7 @@
   },
   {
     "id": "FSA001",
+    "state": "FL",
     "name": "Forgotten Den",
     "county": "SA",
     "type": "Land Cave",
@@ -5702,6 +5796,7 @@
   },
   {
     "id": "FSA002",
+    "state": "FL",
     "name": "Emerald Heron Pit",
     "county": "SA",
     "type": "Land Cave",
@@ -5763,6 +5858,7 @@
   },
   {
     "id": "FSF001",
+    "state": "FL",
     "name": "Heron Passage",
     "county": "SF",
     "type": "Land Cave",
@@ -5826,6 +5922,7 @@
   },
   {
     "id": "FSF002",
+    "state": "FL",
     "name": "Cedar Kingfisher Chamber",
     "county": "SF",
     "type": "Land Cave",
@@ -5888,6 +5985,7 @@
   },
   {
     "id": "FSF003",
+    "state": "FL",
     "name": "Sunken Hollow Crossing",
     "county": "SF",
     "type": "Land Cave",
@@ -5951,6 +6049,7 @@
   },
   {
     "id": "FSF004",
+    "state": "FL",
     "name": "Palmetto Tupelo Passage",
     "county": "SF",
     "type": "Land Cave",
@@ -6009,6 +6108,7 @@
   },
   {
     "id": "FSJ001",
+    "state": "FL",
     "name": "Misty Cavern",
     "county": "SJ",
     "type": "Land Cave",
@@ -6068,6 +6168,7 @@
   },
   {
     "id": "FSJ002",
+    "state": "FL",
     "name": "Gator Sandhill Den",
     "county": "SJ",
     "type": "Land Cave",
@@ -6131,6 +6232,7 @@
   },
   {
     "id": "FSJ003",
+    "state": "FL",
     "name": "Hidden Sandhill Grotto",
     "county": "SJ",
     "type": "Underwater Cave",
@@ -6191,6 +6293,7 @@
   },
   {
     "id": "FSJ004",
+    "state": "FL",
     "name": "Kingfisher Sinkhole",
     "county": "SJ",
     "type": "Land Cave",
@@ -6252,6 +6355,7 @@
   },
   {
     "id": "FSU001",
+    "state": "FL",
     "name": "Osprey Hollow",
     "county": "SU",
     "type": "Land Cave",
@@ -6313,6 +6417,7 @@
   },
   {
     "id": "FSU002",
+    "state": "FL",
     "name": "Winding Cypress Pit",
     "county": "SU",
     "type": "Land Cave",
@@ -6371,6 +6476,7 @@
   },
   {
     "id": "FSU003",
+    "state": "FL",
     "name": "Oak Grotto",
     "county": "SU",
     "type": "Land Cave",
@@ -6431,6 +6537,7 @@
   },
   {
     "id": "FSU004",
+    "state": "FL",
     "name": "Blue Vault",
     "county": "SU",
     "type": "Underwater Cave",
@@ -6491,6 +6598,7 @@
   },
   {
     "id": "FSU005",
+    "state": "FL",
     "name": "Gator Otter Spring Cave",
     "county": "SU",
     "type": "Land Cave",
@@ -6554,6 +6662,7 @@
   },
   {
     "id": "FUN001",
+    "state": "FL",
     "name": "Fern Hollow",
     "county": "UN",
     "type": "Underwater Cave",
@@ -6614,6 +6723,7 @@
   },
   {
     "id": "FUN002",
+    "state": "FL",
     "name": "Osprey Chamber",
     "county": "UN",
     "type": "Underwater Cave",
@@ -6676,6 +6786,7 @@
   },
   {
     "id": "FVO001",
+    "state": "FL",
     "name": "Hollow Chamber",
     "county": "VO",
     "type": "Land Cave",
@@ -6738,6 +6849,7 @@
   },
   {
     "id": "FVO002",
+    "state": "FL",
     "name": "Forgotten Fern Passage",
     "county": "VO",
     "type": "Land Cave",
@@ -6798,6 +6910,7 @@
   },
   {
     "id": "FWA001",
+    "state": "FL",
     "name": "Bayou Cavern",
     "county": "WA",
     "type": "Land Cave",
@@ -6859,6 +6972,7 @@
   },
   {
     "id": "FWA002",
+    "state": "FL",
     "name": "Limestone Spring Cave",
     "county": "WA",
     "type": "Land Cave",
@@ -6921,6 +7035,7 @@
   },
   {
     "id": "FWA003",
+    "state": "FL",
     "name": "Misty Heron Sinkhole",
     "county": "WA",
     "type": "Underwater Cave",
@@ -6984,6 +7099,7 @@
   },
   {
     "id": "FWU001",
+    "state": "FL",
     "name": "Echo Pine Chamber",
     "county": "WU",
     "type": "Underwater Cave",
@@ -7044,6 +7160,7 @@
   },
   {
     "id": "FWU002",
+    "state": "FL",
     "name": "Limestone Vault",
     "county": "WU",
     "type": "Land Cave",
@@ -7106,6 +7223,7 @@
   },
   {
     "id": "FWU003",
+    "state": "FL",
     "name": "Sabal Pit",
     "county": "WU",
     "type": "Land Cave",
@@ -7166,6 +7284,7 @@
   },
   {
     "id": "FWU004",
+    "state": "FL",
     "name": "Winding Oak Sink",
     "county": "WU",
     "type": "Land Cave",
@@ -7227,6 +7346,7 @@
   },
   {
     "id": "FWU005",
+    "state": "FL",
     "name": "Deep Scrub Crossing",
     "county": "WU",
     "type": "Land Cave",

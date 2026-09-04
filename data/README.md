@@ -60,5 +60,51 @@ cp data/users.example.json data/users.json
 | `users.json` | No | The live user/account list. |
 | `pending-submissions.json` | No | Member-submitted proposals awaiting webmaster review. Auto-created as `[]` on first server start - no dummy data needed. |
 | `backups/` | No | Automatic timestamped snapshots taken before every write to the two files above (see `backupDataFile` in `server.js`). |
-| `cave-database.example.json` | **Yes** | Dummy seed data - see above. |
+| `cave-database.example.json` | **Yes** | Dummy seed data - see above. Every record now carries an explicit `state: "FL"` field (added when multi-state support was introduced - see below), matching what the app itself writes for every new record going forward. |
 | `users.example.json` | **Yes** | Dummy seed data - see above. |
+
+## Multi-state support
+
+This started as a Florida-only site; it now hosts any number of states in
+the same database, gated by account permissions. Three things changed to
+make that possible - relevant if you're looking at `cave-database.json` or
+`users.json` directly, or writing a script against either:
+
+- **`../config/states.json`** (tracked in git, *not* in this directory -
+  it's reference data, not survey data) is the single source of truth for
+  which states/counties exist and what prefix each state's cave IDs use.
+  Florida's 67 counties and its single-letter `F` ID prefix are exactly
+  what the app has always used (real IDs like `FAL001` are untouched); every
+  other state got a 2-letter USPS-code prefix instead (`GA`, `TX`, ...) and
+  a generated county list - see `scripts/generate-states-config.js` and
+  `scripts/data/README.md` for how that list was built, and re-run that
+  script (or hand-edit the config) if a generated county code ever needs
+  correcting. The server serves this file's contents publicly at
+  `GET /api/states` (no login required - it's the same public county-name
+  data every account needs, including at signup before anyone has a token).
+
+- **Cave records** now carry explicit `state` and `county` fields (set by
+  the server on every write) instead of relying on the old convention of
+  parsing them out of a fixed-offset substring of the cave ID. Any cave
+  record written before this feature existed (i.e. every real Florida
+  record predating it) is missing these fields; the server and client both
+  fall back to parsing them out of the ID for exactly that shape (a single
+  `F`, two letters, then digits) - see `resolveCaveStateAndCounty()` in
+  `server.js` (and its client-side mirror in `httpdocs/index.html`). New
+  code should never rely on that fallback; always read/write the explicit
+  fields.
+
+- **User records** gained an `allowedStates` field: `null`/absent means
+  unrestricted (always true for `admin` and `webmaster` roles), an array of
+  state codes means a member can only see/submit for those states. Set at
+  account creation, editable afterward by a webmaster via the Account
+  Management tab (`POST /api/change-user-states`).
+
+**Bulk-importing a new state's existing spreadsheet:** a webmaster/admin
+can download a per-state `.xlsx` template and upload a filled-in version
+from the Cave Database tab's "Import Caves from Spreadsheet" panel (backed
+by `GET /api/cave-database/import-template` and
+`POST /api/cave-database/import` in `server.js`). Each row is validated and
+reported on independently - a bad row doesn't block the rest of the file
+from importing - and IDs are assigned the same way as any other new cave
+(state-prefixed, numbered sequentially per state+county).

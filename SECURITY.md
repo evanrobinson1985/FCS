@@ -254,6 +254,24 @@ Being upfront about the tradeoffs and what's left:
 - This review covered the application code you provided. It did not
   include a dependency vulnerability scan (`npm audit`) or a penetration
   test - run `npm audit` after `npm install` and periodically thereafter.
+- **Multi-state support (cave maps/narratives/pictures aren't state-scoped).**
+  When per-account `allowedStates` restrictions were added, every cave-data
+  *route* (`/api/cave-database`, pending/approved submissions) was scoped
+  to a member's granted states. Uploaded cave maps, narratives, and cave
+  pictures were not, because none of those are stored keyed by state or
+  county in the first place - they're looked up by filename/cave ID, not
+  filtered by a list endpoint. A member scoped to one state can't discover
+  another state's map/narrative/picture filenames through the UI (nothing
+  links to them), but if they already know or guess a filename/cave ID
+  belonging to a state they aren't granted, the file itself isn't blocked.
+  This doesn't expose the cave database (locations, county assignments,
+  submission data) itself, only whatever incidental detail a map file name
+  or narrative text might contain. Closing this gap fully would mean
+  restructuring how those three file types are stored (keyed by
+  state/county, with the same per-request `allowedStates` check the
+  database routes already do) - worth doing before this app is used for
+  states whose survey communities shouldn't see each other's supplementary
+  files, but out of scope for the pass that added multi-state support.
 
 ## Before you deploy
 
