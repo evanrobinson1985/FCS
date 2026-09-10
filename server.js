@@ -208,6 +208,26 @@ function verifyTwoFactorToken(token) {
 // proxy or load balancer (the normal deployment shape for this app).
 app.set("trust proxy", 1);
 
+// TEMPORARY diagnostic route - registered before anything else (including
+// the HTTPS-redirect middleware right below) so it's reachable no matter
+// what that logic does with a given request. Visit
+// https://fcs.caves.org/api/debug-headers directly in a browser (no login
+// needed) to see exactly what headers Plesk's reverse proxy is actually
+// sending through - in particular x-forwarded-proto, which the redirect
+// middleware below depends on matching exactly "https". Safe to remove
+// once the live deployment issue this is diagnosing is resolved; it only
+// echoes back the incoming request's own headers, nothing about the
+// server's internals or any other request.
+app.get("/api/debug-headers", (req, res) => {
+  res.json({
+    headers: req.headers,
+    ip: req.ip,
+    ips: req.ips,
+    secure: req.secure,
+    protocol: req.protocol,
+  });
+});
+
 // Force HTTPS in production. All traffic must be encrypted end-to-end; this
 // redirects any request that reached us over plain HTTP (as reported by the
 // TLS-terminating proxy via X-Forwarded-Proto) to the HTTPS URL instead of
