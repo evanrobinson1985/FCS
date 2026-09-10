@@ -8,7 +8,6 @@
   "scripts": {
     "start": "node server.js",
     "diagnose": "node scripts/diagnose.js",
-    "read-passenger-error": "node scripts/read-passenger-error.js",
     "test": "node --test"
   },
   "keywords": [],
