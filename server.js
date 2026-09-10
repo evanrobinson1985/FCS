@@ -4492,6 +4492,51 @@ function generateNextCaveId(stateCode, countyCode, existingCaves) {
   return `${prefix}${countyCode}${paddedNumber}`;
 }
 
+// ---- Catch-all JSON error handling ------------------------------------------
+//
+// Without these two, an unmatched route or an error thrown (or a rejected
+// promise, from an async handler) by any route above falls through to
+// Express's own default HTML error page - which is exactly what makes a
+// client-side `response.json()` call fail with a confusing "Unexpected
+// token '<' ... is not valid JSON" instead of a clear message. Every
+// response this app sends back should be JSON; these guarantee that's true
+// even for cases nothing above anticipated. Both must be registered after
+// every other route/middleware above (nothing here can catch a request
+// that already matched something earlier), which is why they sit right
+// before app.listen().
+
+// Reached only when nothing above matched - a mistyped URL, or a route a
+// client is still calling that was since removed.
+app.use((req, res) => {
+  res.status(404).json({ error: `Not found: ${req.method} ${req.path}` });
+});
+
+// Express-recognized error-handling middleware (it's the 4-parameter
+// signature that marks it as one, not the name) - catches anything thrown,
+// or any rejected promise from an async route handler (Express 5 forwards
+// those here automatically), that wasn't already handled closer to where
+// it happened.
+app.use((err, req, res, next) => {
+  console.error(`Unhandled error on ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "An unexpected server error occurred." });
+});
+
+// A crash outside of any single request (a bug in a setInterval callback,
+// like checkScheduledUpdate() above, or anywhere a promise rejection
+// wasn't caught) would otherwise take the whole process down with no trace
+// of why in the log. Logging first, then exiting, means whatever supervises
+// this process (Passenger, PM2, systemd) restarts it cleanly instead of it
+// either disappearing silently or continuing in a possibly-broken state.
+process.on("uncaughtException", (err) => {
+  console.error("FATAL: uncaught exception:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("FATAL: unhandled promise rejection:", reason);
+  process.exit(1);
+});
+
 // Start server. Guarded so the test suite can `require("../server")` to get
 // the Express app (for supertest) without also binding a real port.
 if (require.main === module) {

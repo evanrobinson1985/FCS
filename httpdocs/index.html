@@ -94,6 +94,38 @@
       return url;
     }
   };
+
+  // Every API call expects a JSON response, but a proxy/hosting-level
+  // failure in front of this app (the app not running, a gateway timeout,
+  // a misconfigured reverse proxy) answers with an HTML error page instead
+  // - response.json() then throws a cryptic "Unexpected token '<' ... is
+  // not valid JSON" that names a syntax error instead of what actually
+  // happened. This wraps that parse attempt and turns a failure into a
+  // clear, human-readable message instead, using the HTTP status (always
+  // available even when the body isn't parseable) to say what kind of
+  // failure this was. Every fetch() call against this app's own API should
+  // read its response through this rather than calling response.json()
+  // directly.
+  window.parseJsonResponse = async function (response) {
+    let text;
+    try {
+      text = await response.text();
+    } catch (e) {
+      throw new Error(`Could not read the server's response (HTTP ${response.status}).`);
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      if (response.status >= 500 || response.status === 0) {
+        throw new Error(
+          `The server is temporarily unavailable (HTTP ${response.status}). ` +
+            `Please try again in a moment - if this keeps happening, the site may be down for maintenance.`
+        );
+      }
+      throw new Error(`Unexpected response from the server (HTTP ${response.status}).`);
+    }
+  };
 </script>
 
 </head>
@@ -4115,8 +4147,14 @@ document.addEventListener('DOMContentLoaded', function() {
     window.loadCaveDatabaseFromServer = function () {
       return fetch('/api/cave-database')
         .then(response => {
-          if (!response.ok) throw new Error('Not authenticated');
-          return response.json();
+          if (!response.ok) {
+            throw new Error(
+              response.status === 401 || response.status === 403
+                ? 'Not authenticated'
+                : `Server unavailable (HTTP ${response.status})`
+            );
+          }
+          return parseJsonResponse(response);
         })
         .then(data => {
           window.caveDatabase = data;
@@ -4151,11 +4189,16 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     };
 
-    // Process cave database for map use
-    document.addEventListener('DOMContentLoaded', function() {
-      window.loadCaveDatabaseFromServer();
-    });
-    
+    // Deliberately NOT loaded here on page load: this route requires a
+    // valid session, so a request made before login is expected to fail,
+    // and was previously attempted anyway "just in case" a token from an
+    // earlier session was still valid. That never actually changed what
+    // the user saw (the login form is always shown until they submit it
+    // regardless), so it was pure noise - failed requests and misleading
+    // console errors before anyone has logged in. completeLogin() below is
+    // the only place this is called from now, once there's actually a
+    // valid session to call it with.
+
 function loadFcsDatabaseTable() { 
       const wrapper = document.getElementById("cave-database-scroll-wrapper");
       wrapper.innerHTML = ""; // Clear any previous table
@@ -4646,7 +4689,7 @@ function loadFcsDatabaseTable() {
     async function loadSiteStatus() {
       try {
         const response = await fetch('/api/site-status');
-        const status = await response.json();
+        const status = await parseJsonResponse(response);
         renderSiteBanner(status);
         return status;
       } catch (error) {
@@ -5815,7 +5858,11 @@ function loadFcsDatabaseTable() {
       }
     }
 
-    populateEditCaveDropdown();
+    // Deliberately not called here: this ran immediately at script-parse
+    // time, well before login, always finding an empty caveDataStore and
+    // logging "not ready" for no reason - updateCaveDataStore() (called
+    // from completeLogin() once there's real data) already populates this
+    // dropdown properly.
 
     // Add these debugging functions to help troubleshoot
     function diagnoseMapIssues() {
@@ -7369,12 +7416,12 @@ window.addEventListener('error', function(e) {
     loadSubmissions();
     loadApprovedSubmissions();
 
-    // The cave database is only fetchable now that we're authenticated
-    // (the earlier page-load attempt in the DOMContentLoaded handler
-    // would have gotten a 401). Load it now, then refresh the views
-    // that depend on it.
+    // The cave database (and anything that depends on it, like the
+    // narrative dropdown) is only fetchable now that we're authenticated -
+    // nothing tries to load it before this point.
     window.loadCaveDatabaseFromServer().then(function() {
       updateCaveDataStore();
+      initializeNarrativeDataAfterLogin();
     });
 
     // Add enter key support for database search
@@ -7648,7 +7695,7 @@ window.addEventListener('error', function(e) {
           })
         });
 
-        const result = await response.json();
+        const result = await parseJsonResponse(response);
 
         if (response.ok && result.twoFactorRequired) {
           // Correct password, but this account has 2FA enabled - a code was
@@ -9235,12 +9282,14 @@ async function loadCavesWithNarratives() {
   try {
     const response = await fetch('/get-caves-with-narratives');
     if (response.ok) {
-      const caveIds = await response.json();
+      const caveIds = await parseJsonResponse(response);
       cavesWithNarratives = new Set(caveIds);
       console.log(`Found ${cavesWithNarratives.size} caves with narratives`);
+    } else {
+      console.log(`Caves-with-narratives not available yet (HTTP ${response.status})`);
     }
   } catch (error) {
-    console.error('Error loading caves with narratives:', error);
+    console.error('Error loading caves with narratives:', error.message);
   }
 }
 
@@ -10022,16 +10071,20 @@ async function saveNarrativeToServer() {
   }
 }
 
-// Enhanced DOM ready handler with proper event listeners
-document.addEventListener('DOMContentLoaded', () => {
-  console.log("Initializing narrative section...");
-  
-  // Wait for cave data to be available
+// Waits for the (now-authenticated) cave database to finish loading, then
+// populates the narrative dropdown, and separately kicks off loading which
+// caves already have narratives. Called once from completeLogin() rather
+// than on page load: both need an authenticated session, so there's
+// nothing to wait for (or load) until login actually succeeds - calling
+// this before that just meant failed requests and a "Cave data not ready
+// yet, retrying..." loop spamming the console for as long as the login
+// screen was showing.
+function initializeNarrativeDataAfterLogin() {
   const waitForCaveData = () => {
     if (typeof caveDataStore !== 'undefined' && caveDataStore.length > 0) {
       console.log("Cave data available, populating narrative dropdown");
       populateNarrativeDropdown();
-      
+
       // Add event listener for dropdown changes
       const select = document.getElementById('narrative-cave-select');
       if (select) {
@@ -10043,7 +10096,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         console.error("narrative-cave-select element not found");
       }
-      
+
     } else {
       console.log("Cave data not ready yet, retrying...");
       // Retry after a short delay if cave data isn't ready yet
@@ -10052,6 +10105,12 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   waitForCaveData();
+  loadCavesWithNarratives();
+}
+
+// Enhanced DOM ready handler with proper event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  console.log("Initializing narrative section...");
 
   // Add search functionality
   const searchInput = document.getElementById('narrative-search');
@@ -10107,9 +10166,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     console.log("Narratives toggle event listener added");
   }
-
-  // Load caves with narratives when the section initializes
-  loadCavesWithNarratives();
 });
 
 </script>
