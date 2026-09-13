@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS only in production; cleartext is allowed solely for 10.0.2.2 (the
+     Android emulator's alias for the host machine), so the app can be
+     pointed at a `node server.js` instance running locally during
+     development via -PapiBaseUrl=http://10.0.2.2:3000/ -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
