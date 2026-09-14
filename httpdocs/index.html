@@ -3610,8 +3610,8 @@ function updateStatistics() {
   document.getElementById('total-caves').textContent = totalCaves;
   
   // Count by type
-  const landCaves = caveDataStore.filter(cave => cave.type.includes('Land')).length;
-  const underwaterCaves = caveDataStore.filter(cave => cave.type.includes('Underwater')).length;
+  const landCaves = caveDataStore.filter(cave => cave.type && cave.type.includes('Land')).length;
+  const underwaterCaves = caveDataStore.filter(cave => cave.type && cave.type.includes('Underwater')).length;
   document.getElementById('land-caves').textContent = landCaves;
   document.getElementById('underwater-caves').textContent = underwaterCaves;
   
@@ -8989,11 +8989,6 @@ window.addEventListener('error', function(e) {
           if (downloadBtn) {
             downloadBtn.disabled = false;
             downloadBtn.textContent = `Download ${selectedInteractiveCaveMap ? selectedInteractiveCaveMap.name : 'Map'}`;
-          }
-          
-          // Load the map if overlay is enabled
-          if (document.getElementById('cave-maps-toggle').checked) {
-            loadSelectedCaveMap(mapId);
           }
         } else {
           // Disable download button when no map selected
