@@ -4,6 +4,8 @@ package com.floridacavesurvey.android.data.model
 
 data class LoginRequest(val username: String, val password: String)
 
+data class GoogleLoginRequest(val idToken: String)
+
 data class VerifyTwoFactorRequest(val twoFactorToken: String, val code: String)
 
 data class ResendTwoFactorRequest(val twoFactorToken: String)

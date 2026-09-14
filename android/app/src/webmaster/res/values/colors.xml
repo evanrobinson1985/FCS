@@ -1,0 +1,6 @@
+<resources>
+    <!-- Distinct launcher background from the general flavor (amber vs. dark
+         green) purely so the two installed apps are easy to tell apart at a
+         glance on your home screen. -->
+    <color name="launcher_background">#7A3B12</color>
+</resources>

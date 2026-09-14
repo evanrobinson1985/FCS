@@ -20,6 +20,13 @@ interface ApiService {
     @POST("api/login")
     suspend fun login(@Body body: LoginRequest): LoginResult
 
+    /** Passwordless sign-in for one pre-designated account, restricted server-side by email
+     * (see GOOGLE_WEBMASTER_EMAIL in server.js) - returns the same pending-2FA shape as a normal
+     * login always does for this route, never a completed session on its own. Webmaster flavor
+     * only; answers 503 if the server isn't configured for it. */
+    @POST("api/google-login")
+    suspend fun googleLogin(@Body body: GoogleLoginRequest): LoginResult
+
     @POST("api/verify-2fa")
     suspend fun verifyTwoFactor(@Body body: VerifyTwoFactorRequest): LoginResult
 

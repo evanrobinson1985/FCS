@@ -43,6 +43,17 @@ class AuthViewModel(private val repo: AuthRepository) : ViewModel() {
         }
     }
 
+    fun loginWithGoogle(googleIdToken: String) {
+        viewModelScope.launch {
+            isLoading = true
+            errorMessage = null
+            safeApiCall { repo.loginWithGoogle(googleIdToken) }
+                .onSuccess { outcome -> applyOutcome(outcome) }
+                .onFailure { errorMessage = it.message }
+            isLoading = false
+        }
+    }
+
     fun submitTwoFactorCode(code: String) {
         val pending = step as? LoginStep.TwoFactor ?: return
         if (code.isBlank()) {

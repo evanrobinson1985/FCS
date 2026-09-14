@@ -21,6 +21,14 @@ android {
         val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?)
             ?: "https://floridacavesurvey.org/"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+
+        // The Google Cloud "Web application" OAuth client ID (used as the
+        // Credential Manager request's serverClientId - see the webmaster
+        // flavor and android/README.md "Google sign-in setup"). Only the
+        // webmaster flavor's login screen actually offers Google sign-in,
+        // but this is shared config either way so it isn't duplicated.
+        val googleWebClientId = (project.findProperty("googleWebClientId") as String?) ?: ""
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     buildTypes {
@@ -30,6 +38,28 @@ android {
         }
         debug {
             isMinifyEnabled = false
+        }
+    }
+
+    flavorDimensions += "audience"
+    productFlavors {
+        // The regular, public-facing app: every member signs in with their
+        // own username/password (Google sign-in is never offered here).
+        create("general") {
+            dimension = "audience"
+            buildConfigField("boolean", "SHOW_GOOGLE_SIGN_IN", "false")
+        }
+        // A second, separately-installable build for exactly one account
+        // (see GOOGLE_WEBMASTER_EMAIL server-side): its login screen leads
+        // with "Continue with Google" instead of a password field, with
+        // username/password still available underneath as a fallback. Own
+        // applicationId/name/icon so it installs as its own app alongside
+        // the general one, not a replacement for it.
+        create("webmaster") {
+            dimension = "audience"
+            applicationIdSuffix = ".webmaster"
+            versionNameSuffix = "-webmaster"
+            buildConfigField("boolean", "SHOW_GOOGLE_SIGN_IN", "true")
         }
     }
 
@@ -87,6 +117,12 @@ dependencies {
 
     // Map (hillshade tile viewer) - osmdroid, no Google API key required
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+
+    // Google sign-in (webmaster flavor only, but harmless to share) - Credential
+    // Manager is the current recommended replacement for the old GoogleSignIn API.
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

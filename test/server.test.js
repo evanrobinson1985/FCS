@@ -130,6 +130,25 @@ describe("login", () => {
   });
 });
 
+// Passwordless Google sign-in for one pre-designated account. Neither
+// GOOGLE_OAUTH_CLIENT_ID nor GOOGLE_WEBMASTER_EMAIL is set in the test
+// environment (see the process.env.* block at the top of this file), so the
+// route stays in its default-off state for every test below - which is
+// itself the thing worth asserting: the feature must be verifiably inert
+// unless someone deliberately configures both env vars.
+describe("google login (passwordless, single-account, disabled by default)", () => {
+  test("answers 503 rather than ever accepting a token when unconfigured", async () => {
+    const res = await request(app).post("/api/google-login").send({ idToken: "whatever" });
+    assert.equal(res.status, 503);
+    assert.match(res.body.error, /not configured/i);
+  });
+
+  test("still answers 503 even with no body at all", async () => {
+    const res = await request(app).post("/api/google-login").send({});
+    assert.equal(res.status, 503);
+  });
+});
+
 describe("route protection", () => {
   test("rejects unauthenticated access to the cave database", async () => {
     const res = await request(app).get("/api/cave-database");

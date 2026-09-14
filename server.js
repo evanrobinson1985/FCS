@@ -20,6 +20,7 @@ const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
+const { OAuth2Client } = require("google-auth-library");
 
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
@@ -118,6 +119,22 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
       "password reset links will be logged to the console instead of emailed."
   );
 }
+
+// --- Google sign-in (passwordless login for one specific account) ----------
+//
+// Optional, off by default. Lets ONE pre-designated account (matched by
+// email, see GOOGLE_WEBMASTER_EMAIL) sign in with "Sign in with Google"
+// instead of a password, via POST /api/google-login below. This does not
+// change or replace normal username/password login for any account,
+// including that one - it's an additional way in, not a substitute.
+//
+// GOOGLE_OAUTH_CLIENT_ID is the Google Cloud OAuth "Web client" ID used as
+// the expected audience on the ID token (see .env.example for setup
+// instructions). Without both env vars set, POST /api/google-login always
+// answers 503 - the feature is simply inert, not insecure-by-default.
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
+const GOOGLE_WEBMASTER_EMAIL = (process.env.GOOGLE_WEBMASTER_EMAIL || "").trim().toLowerCase();
+const googleOAuthClient = GOOGLE_OAUTH_CLIENT_ID ? new OAuth2Client(GOOGLE_OAUTH_CLIENT_ID) : null;
 
 async function sendPasswordResetEmail(user, resetUrl) {
   const subject = "Florida Cave Survey - Password Reset";
@@ -1049,6 +1066,101 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Passwordless login for exactly one pre-designated account (see the Google
+// sign-in config above): trades a Google ID token for the same pending-2FA
+// handoff /api/login issues for a 2FA-enabled account. Google's own sign-in
+// stands in for the password check; the emailed code below is then a real
+// second factor on top of that - not optional here the way normal 2FA is,
+// since there's no password backing this path up. The client finishes the
+// same way a normal 2FA login does, via the existing /api/verify-2fa (and
+// /api/resend-2fa) - those routes only look at the pending token's decoded
+// username, so they work for this flow unmodified.
+app.post("/api/google-login", authLimiter, express.json(), async (req, res) => {
+  try {
+    if (!googleOAuthClient || !GOOGLE_WEBMASTER_EMAIL) {
+      return res.status(503).json({ error: "Google sign-in is not configured on this server." });
+    }
+
+    const { idToken } = req.body;
+    if (!idToken || typeof idToken !== "string") {
+      return res.status(400).json({ error: "idToken is required" });
+    }
+
+    let payload;
+    try {
+      const ticket = await googleOAuthClient.verifyIdToken({
+        idToken,
+        audience: GOOGLE_OAUTH_CLIENT_ID,
+      });
+      payload = ticket.getPayload();
+    } catch (verifyError) {
+      return res.status(401).json({ error: "Invalid Google sign-in token." });
+    }
+
+    // Deliberately the same generic error for every rejection below (unknown
+    // email, wrong account, wrong role) - never confirm/deny which Google
+    // account this server is configured for.
+    const genericDenied = () => res.status(403).json({ error: "This Google account is not authorized to sign in." });
+
+    if (!payload || !payload.email_verified || typeof payload.email !== "string") {
+      return genericDenied();
+    }
+    const signedInEmail = payload.email.trim().toLowerCase();
+    if (signedInEmail !== GOOGLE_WEBMASTER_EMAIL) {
+      return genericDenied();
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => (u.email || "").trim().toLowerCase() === signedInEmail);
+    // Restricted to the webmaster role even though only one email can ever
+    // match above - a second, independent check rather than trusting the
+    // email match alone to enforce it.
+    if (!user || user.role !== "webmaster") {
+      return genericDenied();
+    }
+    if (user.status !== "active") {
+      return res.status(403).json({ error: "This account is inactive." });
+    }
+
+    user.lastLogin = new Date().toISOString();
+    user.loginAttempts = 0;
+    user.lastFailedLogin = null;
+    const clientIP = req.ip || req.connection.remoteAddress || "unknown";
+    if (!user.loginIPs) user.loginIPs = [];
+    if (!user.loginIPs.includes(clientIP)) {
+      user.loginIPs.push(clientIP);
+    }
+
+    const code = generateOtpCode();
+    user.twoFactorCodeHash = hashOtp(code);
+    user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    user.twoFactorAttempts = 0;
+    saveUsers(users);
+
+    try {
+      await sendTwoFactorCode(user, code);
+    } catch (mailErr) {
+      console.error("Failed to send two-factor code (google-login):", mailErr);
+      return res.status(500).json({ error: "Could not send verification code. Please try again." });
+    }
+
+    const twoFactorToken = jwt.sign(
+      { username: user.username, pending2FA: true },
+      JWT_SECRET,
+      { expiresIn: "10m" }
+    );
+
+    res.json({
+      twoFactorRequired: true,
+      twoFactorToken,
+      message: "Signed in with Google. A verification code has been sent to your email.",
+    });
+  } catch (error) {
+    console.error("Google login error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

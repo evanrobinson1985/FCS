@@ -20,6 +20,13 @@ class AuthRepository(
         return handleLoginResult(result)
     }
 
+    /** Always resolves to [LoginOutcome.TwoFactorRequired] on success - the server never issues a
+     * completed session from this route alone, see ApiService.googleLogin. */
+    suspend fun loginWithGoogle(googleIdToken: String): LoginOutcome {
+        val result = api.googleLogin(GoogleLoginRequest(googleIdToken))
+        return handleLoginResult(result)
+    }
+
     suspend fun verifyTwoFactor(twoFactorToken: String, code: String): LoginOutcome {
         val result = api.verifyTwoFactor(VerifyTwoFactorRequest(twoFactorToken, code))
         return handleLoginResult(result)
