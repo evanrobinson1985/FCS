@@ -15,6 +15,14 @@ Full feature parity with the web portal, against the same API:
   direct edit (admin/webmaster) or propose-an-edit submission (members).
 - **Map**: cave locations on a map, with the server's SQLite-hillshade
   tile layers selectable as an overlay.
+- **Statistics**: the website's Statistics tab, ported card-for-card (18 in
+  total) - database summary, nationwide overview, access status, cave
+  types/state/county/entry-status/equipment/geology/map-status charts,
+  dimension records, hazard stats, elevation and discovery-year
+  distributions, documentation coverage, top contributors, submission
+  funnel, and recent activity. All computed on-device from data the app
+  already fetches (cave database, state counts, narratives, submissions) -
+  there's no dedicated statistics endpoint, same as the website.
 - **Narratives**: per-cave write-ups with photo upload/download, edit and
   delete (own narratives, or any as a moderator).
 - **Admin/webmaster tools**: user management (roles, allowed states,

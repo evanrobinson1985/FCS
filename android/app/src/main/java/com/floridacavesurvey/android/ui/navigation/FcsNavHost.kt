@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Terrain
@@ -31,6 +32,7 @@ import com.floridacavesurvey.android.ui.map.MapScreen
 import com.floridacavesurvey.android.ui.narratives.NarrativeDetailScreen
 import com.floridacavesurvey.android.ui.narratives.NarrativeEditScreen
 import com.floridacavesurvey.android.ui.narratives.NarrativeListScreen
+import com.floridacavesurvey.android.ui.statistics.StatisticsScreen
 import kotlinx.coroutines.flow.collect
 
 private data class BottomTab(val destination: Destination, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
@@ -38,6 +40,7 @@ private data class BottomTab(val destination: Destination, val label: String, va
 private val MEMBER_TABS = listOf(
     BottomTab(Destination.CaveList, "Caves", Icons.Filled.Terrain),
     BottomTab(Destination.MapViewer, "Map", Icons.Filled.Map),
+    BottomTab(Destination.Statistics, "Stats", Icons.Filled.BarChart),
     BottomTab(Destination.NarrativeList, "Narratives", Icons.Filled.MenuBook),
     BottomTab(Destination.AccountSettings, "Account", Icons.Filled.AccountCircle),
 )
@@ -156,6 +159,10 @@ private fun MainAppScaffold(navController: androidx.navigation.NavHostController
 
             composable(Destination.MapViewer.route) {
                 MapScreen(onOpenCave = { navController.navigate(Destination.CaveDetail.buildRoute(it)) })
+            }
+
+            composable(Destination.Statistics.route) {
+                StatisticsScreen()
             }
 
             composable(Destination.NarrativeList.route) {

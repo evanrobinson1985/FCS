@@ -52,6 +52,37 @@ object CaveFields {
     @Suppress("UNCHECKED_CAST")
     fun entrances(cave: CaveRecord): List<Map<String, Any?>> = (cave["entrances"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
 
+    // Statistics-only accessors (see StatisticsCalculator, ported field-for-field
+    // from the website's updateStatistics() and friends).
+    fun entryStatus(cave: CaveRecord): String? = cave["entryStatus"] as? String
+    fun geology(cave: CaveRecord): String? = cave["geology"] as? String
+    fun elevation(cave: CaveRecord): String? = cave["elevation"]?.toString()
+    fun mapType(cave: CaveRecord): String? = cave["mapType"] as? String
+    fun hazardousConditions(cave: CaveRecord): String? = cave["hazardousConditions"] as? String
+    /** Raw "YYMM" discovery-date code, per the website's Cave Discovery Timeline chart. */
+    fun dateCode(cave: CaveRecord): String? = cave["date"] as? String
+
+    private val LEGACY_FLORIDA_ID_RE = Regex("^F([A-Z]{2})\\d+$")
+
+    /**
+     * Mirrors resolveCaveStateAndCounty() in both index.html and server.js: prefers the
+     * explicit state/county fields, and only backfills whichever one is missing from a legacy
+     * Florida cave ID (F + 2-letter county code + digits) - never overwrites an explicit value.
+     */
+    fun resolveStateAndCounty(cave: CaveRecord): Pair<String?, String?> {
+        var resolvedState = state(cave)
+        var resolvedCounty = county(cave)
+        val id = id(cave)
+        if ((resolvedState.isNullOrBlank() || resolvedCounty.isNullOrBlank()) && id != null) {
+            val match = LEGACY_FLORIDA_ID_RE.find(id)
+            if (match != null) {
+                if (resolvedState.isNullOrBlank()) resolvedState = "FL"
+                if (resolvedCounty.isNullOrBlank()) resolvedCounty = match.groupValues[1]
+            }
+        }
+        return resolvedState to resolvedCounty
+    }
+
     fun lastUpdated(cave: CaveRecord): String? = cave["lastUpdated"] as? String
     fun updatedBy(cave: CaveRecord): String? = cave["updatedBy"] as? String
 
@@ -131,4 +162,41 @@ val LOCATION_ACCURACY_LABELS = linkedMapOf(
     "M" to "1000 ft",
     "N" to "Mapped",
     "U" to "Unknown",
+)
+
+// --- Statistics-only label maps (distinct short forms from the website's
+// Statistics tab - deliberately different wording than EQUIPMENT_LABELS
+// above, which is the longer edit-form phrasing for the same codes) -------
+
+val EQUIPMENT_SHORT_LABELS = linkedMapOf(
+    "B" to "Boat/Flotation",
+    "D" to "Diving Gear",
+    "H" to "Handline",
+    "K" to "Kneepads",
+    "L" to "Ladder",
+    "N" to "Normal Gear",
+    "R" to "Rope",
+    "S" to "Shovel/Dig",
+    "W" to "Wetsuit",
+    "X" to "Special Equipment",
+)
+
+val GEOLOGY_LABELS = linkedMapOf(
+    "HA" to "Hawthorne",
+    "CH" to "Chattahoochee",
+    "SU" to "Suwannee",
+    "MA" to "Marianna",
+    "CR" to "Crystal River",
+    "OC" to "Ocala Limestone",
+    "" to "Unknown",
+)
+
+val MAP_TYPE_LABELS = linkedMapOf(
+    "K" to "Knotted Line & Compass",
+    "M" to "Mixed Methods",
+    "P" to "Pace & Compass",
+    "S" to "Sketch",
+    "T" to "Tape/Compass/Inclinometer",
+    "U" to "Unmapped",
+    "" to "Unknown",
 )

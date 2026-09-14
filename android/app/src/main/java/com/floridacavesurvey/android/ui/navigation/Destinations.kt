@@ -25,6 +25,8 @@ sealed class Destination(val route: String) {
 
     data object MapViewer : Destination("map_viewer")
 
+    data object Statistics : Destination("statistics")
+
     data object NarrativeList : Destination("narrative_list")
     data object NarrativeDetail : Destination("narrative_detail/{caveId}") {
         fun buildRoute(caveId: String) = "narrative_detail/${java.net.URLEncoder.encode(caveId, "UTF-8")}"

@@ -9,6 +9,7 @@ import com.floridacavesurvey.android.data.repository.CaveRepository
 import com.floridacavesurvey.android.data.repository.MapRepository
 import com.floridacavesurvey.android.data.repository.NarrativeRepository
 import com.floridacavesurvey.android.data.repository.SiteConfigRepository
+import com.floridacavesurvey.android.data.repository.StatisticsRepository
 import com.floridacavesurvey.android.data.repository.SubmissionRepository
 
 /** Simple hand-rolled dependency container (no Hilt/Dagger) - one instance per process, owned by [com.floridacavesurvey.android.FcsApplication]. */
@@ -26,4 +27,5 @@ class AppContainer(context: Context) {
     val mapRepository = MapRepository(api)
     val adminRepository = AdminRepository(api)
     val siteConfigRepository = SiteConfigRepository(api)
+    val statisticsRepository = StatisticsRepository(caveRepository, narrativeRepository, submissionRepository)
 }
