@@ -681,7 +681,14 @@
 <div class="cave-maps-admin" style="margin-top: 20px;">
   <h4>Map Georeferencer</h4>
   <p style="margin: 0 0 10px; color: #555;">Turn a scanned/PDF cave map into a georeferenced GeoTIFF or shapefile ready to upload above.</p>
-  <a href="map-georeferencer.html" target="_blank" rel="noopener" class="btn-success" style="display: inline-block; text-decoration: none; padding: 8px 14px; border-radius: 4px;">Open Map Georeferencer &#8599;</a>
+  <!-- No rel="noopener" here, deliberately: same-origin tab opened via
+       target="_blank" without noopener/noreferrer shares sessionStorage
+       with the opener, which is how the georeferencer page picks up the
+       logged-in session token to browse the (login-gated) cave maps
+       collection - see the matching comment in map-georeferencer.html.
+       Safe only because this points at our own page, never third-party
+       content. -->
+  <a href="map-georeferencer.html" target="_blank" class="btn-success" style="display: inline-block; text-decoration: none; padding: 8px 14px; border-radius: 4px;">Open Map Georeferencer &#8599;</a>
 </div>
 
 <!-- Horizontally aligned groups for hillshade, heatmap, contour -->

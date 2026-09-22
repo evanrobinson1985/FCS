@@ -200,6 +200,7 @@
 <div id="app">
   <header>
     <div class="brand"><b>Florida Cave Survey</b><span>Map Georeferencer</span></div>
+    <span style="background:var(--amber);color:#fff;font-size:10.5px;font-weight:700;letter-spacing:.4px;padding:3px 8px;border-radius:10px;margin-left:2px">BETA</span>
     <div class="steps">
       <div class="step on" data-step="1">1 · PAGES</div>
       <div class="step" data-step="2">2 · SCALE</div>
@@ -214,6 +215,9 @@
     </div>
     <div class="hint" id="headHint">Load a PDF or map image to begin.</div>
   </header>
+  <div style="flex:0 0 auto;background:#fff3e0;color:#7a4a00;border-bottom:1px solid #ffcc80;padding:7px 18px;font-size:12.5px;text-align:center">
+    ⚠ <b>Beta tool</b> — this is an early version of the georeferencer. Some features or exports may not work correctly yet; double-check results before relying on them, and save your work often.
+  </div>
 
   <main>
     <!-- STAGE 1 -->
@@ -222,6 +226,12 @@
         <div class="drop" id="drop">
           <b>Drop a PDF or image here</b> or <label style="color:var(--teal);cursor:pointer;text-decoration:underline">browse<input id="file" type="file" accept="application/pdf,image/*,.tif,.tiff" multiple hidden></label><br>
           <span style="font-size:12px">Multi-page PDFs or map images (PNG, JPG, TIFF, WebP, GIF, BMP). Select one or several to stitch.</span>
+        </div>
+        <div id="collectionPicker" style="margin-top:14px;display:none;align-items:center;gap:9px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--dim);font-weight:600">Or load from your cave maps collection:</span>
+          <select id="collectionSelect" style="max-width:320px;flex:1 1 220px"><option value="">Loading…</option></select>
+          <button class="btn small" id="collectionLoadBtn" disabled>Load selected</button>
+          <span class="hint" id="collectionMsg" style="font-size:12px"></span>
         </div>
       </div>
       <div class="thumbs" id="thumbs"></div>
@@ -458,6 +468,63 @@ function handleFiles(fileList){
   if(imgs.length) loadImages(imgs);
   else $('headHint').textContent='Unsupported file — use a PDF or an image (PNG, JPG, TIFF, WebP, GIF, BMP).';
 }
+
+// ---- Optional: load a not-yet-georeferenced map straight from the site's
+// login-gated cave maps collection, as an alternative to browsing for a
+// local file. This page is opened same-origin (see index.html's link,
+// deliberately without rel="noopener") so it can read the already-logged-in
+// session token straight out of sessionStorage - never carried in this
+// page's own URL, never sent to the third-party tile/geocoding services
+// this tool talks to. If there's no token (opened directly, or the session
+// expired), the picker just stays hidden; local file loading is unaffected.
+let authToken=null;
+try{ authToken=sessionStorage.getItem('sessionToken'); }catch(_){ authToken=null; }
+
+async function loadCaveMapsCollection(){
+  if(!authToken) return;
+  const picker=$('collectionPicker'), sel=$('collectionSelect'), btn=$('collectionLoadBtn'), msg=$('collectionMsg');
+  picker.style.display='flex';
+  try{
+    const res=await fetch('/api/cave-maps-collection/list',{headers:{'Authorization':'Bearer '+authToken}});
+    if(!res.ok){
+      sel.innerHTML='<option value="">Unavailable</option>';
+      msg.textContent = res.status===401||res.status===403
+        ? 'Your session has expired — log back in on the main site, then reopen this tool.'
+        : 'Could not load the collection.';
+      return;
+    }
+    const maps=await res.json();
+    if(!maps.length){
+      sel.innerHTML='<option value="">(collection is empty)</option>';
+      return;
+    }
+    sel.innerHTML='<option value="">— select a map —</option>' +
+      maps.map(m=>`<option value="${m.filename.replace(/"/g,'&quot;')}">${m.name}</option>`).join('');
+    sel.addEventListener('change',()=>{ btn.disabled=!sel.value; });
+  }catch(err){
+    sel.innerHTML='<option value="">Unavailable</option>';
+    msg.textContent='Could not reach the server.';
+  }
+}
+$('collectionLoadBtn').addEventListener('click', async ()=>{
+  const filename=$('collectionSelect').value;
+  if(!filename||!authToken) return;
+  const msg=$('collectionMsg'), btn=$('collectionLoadBtn');
+  btn.disabled=true; msg.textContent='Loading…';
+  try{
+    const res=await fetch('/cave-maps-collection/'+encodeURIComponent(filename),{headers:{'Authorization':'Bearer '+authToken}});
+    if(!res.ok) throw new Error('server returned '+res.status);
+    const blob=await res.blob();
+    const file=new File([blob], filename, {type:blob.type});
+    msg.textContent='';
+    handleFiles([file]);
+  }catch(err){
+    msg.textContent='Could not load that map: '+err.message;
+  }finally{
+    btn.disabled=false;
+  }
+});
+loadCaveMapsCollection();
 
 function resetPages(){ pages=[]; maps=[]; $('thumbs').innerHTML=''; projectHandle=null; }
 // ---- add pages/images to an ALREADY-georeferenced project, without disturbing existing maps ----
