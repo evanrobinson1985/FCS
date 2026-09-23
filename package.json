@@ -9,6 +9,9 @@
     "start": "node server.js",
     "diagnose": "node scripts/diagnose.js",
     "read-passenger-error": "node scripts/read-passenger-error.js",
+    "start-bg": "node scripts/start-background.js",
+    "bg-status": "node scripts/bg-status.js",
+    "stop-bg": "node scripts/stop-background.js",
     "test": "node --test"
   },
   "keywords": [],
