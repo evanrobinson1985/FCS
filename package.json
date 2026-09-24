@@ -14,6 +14,7 @@
     "stop-bg": "node scripts/stop-background.js",
     "setup-proxy": "node scripts/write-htaccess.js",
     "remove-proxy": "node scripts/remove-proxy.js",
+    "set-maintenance": "node scripts/set-maintenance.js",
     "test": "node --test"
   },
   "keywords": [],
