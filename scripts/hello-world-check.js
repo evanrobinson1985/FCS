@@ -4,7 +4,7 @@
 // in any dependency, not in any version of this app's code, ever.
 //
 // To use: in Plesk's Node.js panel, temporarily change "Application Startup
-// File" from server.js to scripts/hello-world-test.js, click Restart App,
+// File" from server.js to scripts/hello-world-check.js, click Restart App,
 // then visit the site. Change it back to server.js when done testing.
 const http = require("http");
 const port = process.env.PORT || 3000;
