@@ -1,217 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Florida Cave Survey - Under Construction</title>
-  <style>
-    :root {
-      --primary-color: #2a4d69;
-      --secondary-color: #4b86b4;
-      --accent-color: #adcbe3;
-      --text-color: #333;
-      --background-color: #f5f5f5;
-      --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-    }
-
-    html, body {
-      height: 100%;
-      width: 100%;
-    }
-
-    body {
-      background-color: var(--background-color);
-      color: var(--text-color);
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
-      text-align: center;
-      padding: 10px;
-      min-height: 100vh;
-    }
-
-    .container {
-      background-color: white;
-      box-shadow: var(--shadow);
-      padding: 20px;
-      width: 100%;
-      max-width: 800px;
-      border-radius: 10px;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-start;
-      align-items: center;
-      min-height: auto;
-    }
-
-    .header {
-      background-color: var(--primary-color);
-      color: white;
-      padding: 30px 20px;
-      width: 100%;
-      border-radius: 10px 10px 0 0;
-      margin: -20px -20px 20px -20px;
-    }
-
-    .header img {
-      width: 180px;
-      height: 180px;
-      border-radius: 50%;
-      margin-bottom: 20px;
-      object-fit: contain;
-    }
-
-    .header h1 {
-      margin: 0;
-      font-size: 2rem;
-      line-height: 1.2;
-    }
-
-    .message {
-      color: var(--secondary-color);
-      font-size: 1.3rem;
-      line-height: 1.5;
-    }
-
-    .message p {
-      margin-bottom: 10px;
-    }
-
-    .mission-section {
-      margin-top: 30px;
-      text-align: left;
-      width: 100%;
-    }
-
-    .mission-section h2 {
-      color: var(--primary-color);
-      font-size: 1.8rem;
-      margin-bottom: 20px;
-      text-align: center;
-      border-bottom: 2px solid var(--accent-color);
-      padding-bottom: 10px;
-    }
-
-    .mission-content {
-      color: var(--text-color);
-      font-size: 1rem;
-      line-height: 1.6;
-    }
-
-    .mission-content p {
-      margin-bottom: 15px;
-    }
-
-    /* Responsive adjustments */
-    @media (max-width: 768px) {
-      body {
-        align-items: flex-start;
-        padding: 5px;
-      }
-
-      .container {
-        margin: 5px;
-        padding: 15px;
-      }
-
-      .header {
-        padding: 20px 15px;
-        margin: -15px -15px 15px -15px;
-      }
-
-      .header img {
-        width: 150px;
-        height: 150px;
-        margin-bottom: 15px;
-      }
-
-      .header h1 {
-        font-size: 1.5rem;
-      }
-
-      .message {
-        font-size: 1.1rem;
-      }
-
-      .mission-section h2 {
-        font-size: 1.5rem;
-      }
-
-      .mission-content {
-        font-size: 0.95rem;
-      }
-    }
-
-    @media (max-width: 480px) {
-      body {
-        padding: 5px;
-      }
-
-      .container {
-        padding: 10px;
-      }
-
-      .header {
-        padding: 15px 10px;
-        margin: -10px -10px 10px -10px;
-      }
-
-      .header img {
-        width: 120px;
-        height: 120px;
-        margin-bottom: 10px;
-      }
-
-      .header h1 {
-        font-size: 1.3rem;
-      }
-
-      .message {
-        font-size: 1rem;
-      }
-
-      .mission-section h2 {
-        font-size: 1.3rem;
-      }
-
-      .mission-content {
-        font-size: 0.9rem;
-      }
-    }
-
-    /* For very small screens */
-    @media (max-width: 320px) {
-      .header img {
-        width: 100px;
-        height: 100px;
-      }
-
-      .header h1 {
-        font-size: 1.1rem;
-      }
-
-      .message {
-        font-size: 0.9rem;
-      }
-
-      .mission-section h2 {
-        font-size: 1.1rem;
-      }
-
-      .mission-content {
-        font-size: 0.8rem;
-      }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Florida Cave Survey &mdash; Under Construction</title>
+<meta name="description" content="Florida Cave Survey's new site is under construction. Play a quick cave-runner game while you wait.">
+<link rel="icon" href="/fcs-logo.png">
+<link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
+
+<div id="landingView">
   <div class="container">
     <div class="header">
       <img src="/fcs-logo.png" alt="Florida Cave Survey Logo" />
@@ -220,6 +19,10 @@
     <div class="message" id="maintenance-message">
       <p>We're working hard to bring you our new site.</p>
       <p>Please check back soon!</p>
+    </div>
+
+    <div class="landing-cta">
+      <button id="goToGameBtn" class="play-btn">🕹️ Play Cave Jump While You Wait</button>
     </div>
 
     <div class="mission-section">
@@ -239,25 +42,99 @@
       <a href="/portal" style="color: var(--secondary-color); font-size: 0.85rem; text-decoration: none;">Webmaster Login</a>
     </div>
   </div>
+</div>
 
-  <script>
-    // Swaps in the webmaster's custom maintenance message (set from the
-    // Website Management tab) if one is configured, replacing the default
-    // "We're working hard..." text above. Uses textContent, never
-    // innerHTML - this is plain text by design, so there's nothing to
-    // sanitize and nothing to worry about escaping.
-    fetch('/api/site-status')
-      .then(function (res) { return res.json(); })
-      .then(function (status) {
-        if (status && status.maintenanceMessage) {
-          var el = document.getElementById('maintenance-message');
-          el.innerHTML = '';
-          var p = document.createElement('p');
-          p.textContent = status.maintenanceMessage;
-          el.appendChild(p);
-        }
-      })
-      .catch(function () { /* keep the default message if this fails */ });
-  </script>
+<div id="gameView" class="wrap" hidden>
+
+  <header class="site-header">
+    <a href="#" id="backToLanding" class="back-link">&larr; Back to site info</a>
+    <h1>We&rsquo;re Digging Something New</h1>
+    <p class="tagline">
+      Our website is under construction. While we tunnel our way back online,
+      help our caver dodge bats, spiders and falling rocks.
+    </p>
+  </header>
+
+  <div class="game-shell">
+    <canvas id="game" width="960" height="480" tabindex="0" aria-label="Cave Jump game canvas"></canvas>
+
+    <div id="hud" class="hud">
+      <div class="hud-left">
+        <span class="hud-label">Score</span>
+        <span id="score" class="hud-value">0</span>
+      </div>
+      <div id="lives" class="hud-lives" aria-label="Lives remaining"></div>
+      <div class="hud-right">
+        <span class="hud-label">Best</span>
+        <span id="highscore" class="hud-value">0</span>
+      </div>
+      <button id="muteBtn" class="icon-btn" aria-label="Toggle sound" title="Toggle sound">🔊</button>
+    </div>
+
+    <div id="startOverlay" class="overlay">
+      <div class="overlay-panel">
+        <h2>Cave Jump</h2>
+        <p class="overlay-copy">Run, crawl, jump and climb your way through the cave.</p>
+        <div class="controls-grid">
+          <div><kbd>&uarr;</kbd> / <kbd>W</kbd> / <kbd>Space</kbd><span>Jump &amp; hold to climb</span></div>
+          <div><kbd>&darr;</kbd> / <kbd>S</kbd><span>Duck / crawl</span></div>
+          <div><kbd>P</kbd><span>Pause</span></div>
+        </div>
+        <p class="overlay-copy small">On mobile: tap to jump, hold the DUCK button to crawl.</p>
+        <button id="startBtn" class="play-btn" disabled>Loading&hellip;</button>
+      </div>
+    </div>
+
+    <div id="pauseOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Paused</h2>
+        <button id="resumeBtn" class="play-btn">Resume</button>
+      </div>
+    </div>
+
+    <div id="gameOverOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Cave-In!</h2>
+        <p class="overlay-copy" id="gameOverMsg">You made it partway through.</p>
+        <div class="final-stats">
+          <div><span class="hud-label">Score</span><strong id="finalScore">0</strong></div>
+          <div><span class="hud-label">Best</span><strong id="finalHigh">0</strong></div>
+        </div>
+        <button id="restartBtn" class="play-btn">Try Again</button>
+      </div>
+    </div>
+
+    <div id="touchControls" class="touch-controls">
+      <button id="touchDuck" class="touch-btn" aria-label="Duck">DUCK</button>
+      <button id="touchJump" class="touch-btn touch-jump" aria-label="Jump">JUMP</button>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>Thanks for your patience &mdash; check back soon.</p>
+  </footer>
+
+</div>
+
+<script src="/js/game.js" defer></script>
+<script>
+  // Swaps in the webmaster's custom maintenance message (set from the
+  // Website Management tab) if one is configured, replacing the default
+  // "We're working hard..." text above. Uses textContent, never
+  // innerHTML - this is plain text by design, so there's nothing to
+  // sanitize and nothing to worry about escaping.
+  fetch('/api/site-status')
+    .then(function (res) { return res.json(); })
+    .then(function (status) {
+      if (status && status.maintenanceMessage) {
+        var el = document.getElementById('maintenance-message');
+        el.innerHTML = '';
+        var p = document.createElement('p');
+        p.textContent = status.maintenanceMessage;
+        el.appendChild(p);
+      }
+    })
+    .catch(function () { /* keep the default message if this fails */ });
+</script>
 </body>
 </html>
