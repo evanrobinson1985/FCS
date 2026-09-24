@@ -1,0 +1,48 @@
+{
+  "name": "fcs-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "diagnose": "node scripts/diagnose.js",
+    "read-passenger-error": "node scripts/read-passenger-error.js",
+    "start-bg": "node scripts/start-background.js",
+    "bg-status": "node scripts/bg-status.js",
+    "stop-bg": "node scripts/stop-background.js",
+    "setup-proxy": "node scripts/write-htaccess.js",
+    "remove-proxy": "node scripts/remove-proxy.js",
+    "set-maintenance": "node scripts/set-maintenance.js",
+    "check-outer-index": "node scripts/check-outer-index.js",
+    "list-app-root": "node scripts/list-app-root.js",
+    "list-legacy-dirs": "node scripts/list-legacy-dirs.js",
+    "print-outer-maintenance": "node scripts/print-outer-maintenance.js",
+    "cleanup-app-root": "node scripts/cleanup-app-root.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.0",
+    "nodemailer": "^6.9.15",
+    "sanitize-html": "^2.13.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^8.3.0"
+  }
+}

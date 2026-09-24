@@ -1,0 +1,1203 @@
+:root {
+      --primary-color: #2a4d69;
+      --secondary-color: #4b86b4;
+      --accent-color: #adcbe3;
+      --text-color: #333;
+      --background-color: #f5f5f5;
+      --success-color: #4caf50;
+      --warning-color: #ff9800;
+      --error-color: #f44336;
+      --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+      background-color: var(--background-color);
+      color: var(--text-color);
+      line-height: 1.6;
+      padding: 20px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 100%; /* Changed from 1200px to use full width */
+      margin: 0 auto;
+      background-color: white;
+      box-shadow: var(--shadow);
+      border-radius: 0; /* Changed for full-width look */
+      overflow: hidden;
+    }
+
+    .header {
+      background-color: var(--primary-color);
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .header h1 {
+      margin-bottom: 10px;
+    }
+    
+    .login-section {
+      padding: 20px;
+      background-color: var(--accent-color);
+      text-align: center;
+    }
+
+    .login-form {
+      display: inline-block;
+      text-align: left;
+      padding: 20px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+
+    button {
+      background-color: var(--secondary-color);
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background-color: var(--primary-color);
+    }
+
+    .dashboard {
+      display: none;
+      padding: 20px;
+    }
+
+    .dashboard-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .dashboard-header h2 {
+      margin: 0;
+    }
+
+    .tab-container {
+      margin-bottom: 20px;
+    }
+
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      padding: 10px 20px;
+      background-color: #f1f1f1;
+      border: 1px solid #ddd;
+      border-bottom: none;
+      margin-right: 5px;
+      cursor: pointer;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .tab.active {
+      background-color: white;
+      border-bottom: 1px solid white;
+      margin-bottom: -1px;
+    }
+    
+    .tab-content {
+      display: none;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-top: none;
+      background-color: white;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .submission-card {
+      background-color: white;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .submission-header {
+      background-color: var(--secondary-color);
+      color: white;
+      padding: 10px 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .submission-meta {
+      background-color: #f9f9f9;
+      padding: 10px 15px;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .submission-content {
+      padding: 15px;
+    }
+
+    .submission-actions {
+      padding: 10px 15px;
+      background-color: #f9f9f9;
+      border-top: 1px solid #ddd;
+      text-align: right;
+    }
+
+    .btn-success {
+      background-color: var(--success-color);
+    }
+
+    .btn-warning {
+      background-color: var(--warning-color);
+    }
+
+    .btn-danger {
+      background-color: var(--error-color);
+    }
+
+    .btn-view-map {
+      background-color: var(--primary-color);
+      margin-right: 5px;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .status-pending {
+      background-color: var(--warning-color);
+      color: white;
+    }
+
+    .status-approved {
+      background-color: var(--success-color);
+      color: white;
+    }
+
+    .status-rejected {
+      background-color: var(--error-color);
+      color: white;
+    }
+    
+    .cave-data-table {
+      width: auto;
+      min-width: 100%; /* Changed from fixed width */
+      border-collapse: collapse;
+      table-layout: auto; /* Makes table respect column widths */
+    }
+
+    .cave-data-table th, .cave-data-table td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 100px;  /* Ensures each column has a minimum width */
+      max-width: 200px;  /* Prevents excessively wide columns */
+    }
+
+    .cave-data-table th {
+      background-color: #f1f1f1;
+    }
+
+    .cave-data-table tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+
+    .cave-data-table tr:hover {
+      background-color: #f1f1f1;
+    }
+
+    .cave-data-table .action-buttons {
+      display: flex;
+      gap: 5px;
+    }
+
+    /* Map styles */
+    #map-tab {
+      height: 100%;
+    }
+
+    /* Force correct display of map container */
+    #map-container {
+      height: 700px !important;
+      width: 100% !important;
+      position: relative !important;
+      z-index: 1 !important;
+      display: block !important;
+      visibility: visible !important;
+    }
+
+    /* Fix leaflet tile display issues */
+    .leaflet-tile {
+      visibility: visible !important;
+    }
+
+    .leaflet-container {
+      background: #ddd !important;
+      cursor: default !important;
+    }
+
+    .map-controls {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 15px;
+      margin-bottom: 15px;
+    }
+
+    .map-controls h3 {
+      margin-bottom: 10px;
+      color: var(--secondary-color);
+    }
+
+    .basemap-options {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .basemap-btn {
+      flex: 1;
+      text-align: center;
+    }
+
+    .basemap-btn.active {
+      background-color: var(--primary-color);
+    }
+
+    .cave-popup {
+      max-width: 450px;
+      max-height: 600px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .cave-popup h3 {
+      margin: 0 0 10px 0;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #ddd;
+      flex-shrink: 0;
+    }
+
+    .cave-popup-content {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 10px;
+      max-height: 450px;
+    }
+
+    .cave-popup-content::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .cave-popup-content::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 3px;
+    }
+
+    .cave-popup-content::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 3px;
+    }
+
+    .cave-popup-content::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+
+    .cave-popup .popup-actions {
+      flex-shrink: 0;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #ddd;
+      background: white;
+    }
+
+    .cave-popup p {
+      margin-bottom: 5px;
+    }
+
+    /* Statistics Page Styles */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      width: 100%;
+      margin-bottom: 20px;
+    }
+
+    .stats-card {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .stats-card.full-width {
+      grid-column: 1 / -1;
+    }
+
+    .stats-card.chart-card {
+      grid-column: span 1;
+    }
+
+    .stats-card-header {
+      padding: 15px;
+      background-color: var(--secondary-color);
+      color: white;
+    }
+
+    .stats-card-header h4 {
+      margin: 0;
+    }
+
+    .stats-card-body {
+      padding: 15px;
+    }
+
+    .stat-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .stat-item:last-child {
+      border-bottom: none;
+    }
+
+    .stat-label {
+      font-weight: bold;
+    }
+
+    .stat-value {
+      font-size: 1.2em;
+    }
+
+    .chart-container {
+      height: 250px;
+      width: 100%;
+    }
+
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .stats-table th, 
+    .stats-table td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .stats-table th {
+      background-color: #f1f1f1;
+      font-weight: bold;
+    }
+
+    .stats-table tr:hover {
+      background-color: #f9f9f9;
+    }
+
+    /* Responsive adjustments for small screens */
+    @media (max-width: 768px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .stats-card.chart-card {
+        grid-column: 1;
+      }
+
+      #cave-database-scroll-wrapper {
+        width: 100%;
+        max-height: 600px;    /* or whatever height you prefer */
+        overflow-x: auto;
+        overflow-y: auto;
+        border: 1px solid #ccc;
+        background: white;
+      }
+
+      .cave-data-table {
+        width: auto;
+        min-width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;  /* This helps with consistent column widths */
+        display: table;       /* Ensures proper table display */
+        max-width: none;  /* Removes any max-width restrictions */
+      }
+
+      .cave-data-table thead th {
+        position: sticky;
+        top: 0;
+        background: #f1f1f1;
+        z-index: 2;
+      }
+
+      #cave-database-scroll-wrapper::-webkit-scrollbar {
+        height: 12px;
+      }
+
+      #cave-database-scroll-wrapper::-webkit-scrollbar-thumb {
+        background-color: var(--primary-color);
+        border-radius: 6px;
+      }
+
+      #cave-database-scroll-wrapper::-webkit-scrollbar-track {
+        background: #eee;
+      }
+
+      /* New cave badge styling */
+      .new-cave-badge {
+        display: inline-block;
+        padding: 2px 5px;
+        background-color: #f46d43;
+        color: white;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: bold;
+        margin-right: 5px;
+      }
+
+      /* Modal styling */
+      .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+
+      .modal-content {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        width: 80%;
+        max-width: 800px;
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+
+      .close-modal {
+        cursor: pointer;
+        font-size: 24px;
+      }
+
+      /* Styling for review button */
+      .btn-review {
+        background-color: #4b86b4;
+        color: white;
+        border: none;
+        padding: 3px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        margin-left: 5px;
+      }
+
+      .btn-review:hover {
+        background-color: #2a4d69;
+      }
+
+      /* Add these to your existing CSS */
+      #map-container {
+        height: 700px !important; /* Force height to prevent sizing issues */
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: var(--shadow);
+        z-index: 1; /* Ensure proper z-index */
+      }
+
+      .basemap-btn {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        background-color: #f8f9fa;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 14px;
+        transition: all 0.2s ease;
+      }
+
+      .basemap-btn.active {
+        background-color: #4b86b4;
+        color: white;
+        border-color: #2a4d69;
+      }
+
+      .basemap-options {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+
+      /* Make sure map controls appear above other elements */
+      .leaflet-control-container {
+        z-index: 10 !important;
+      }
+
+      .hillshade-controls {
+        margin-top: 15px;
+        padding: 10px;
+        background-color: white;
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+      }
+
+      .control-group {
+        display: flex;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      .control-checkbox {
+        margin-right: 8px;
+      }
+
+      .contour-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .slider {
+        flex-grow: 1;
+        height: 5px;
+        border-radius: 5px;
+        background: #d3d3d3;
+        outline: none;
+      }
+
+      .slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: var(--secondary-color);
+        cursor: pointer;
+      }
+
+      .slider::-moz-range-thumb {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: var(--secondary-color);
+        cursor: pointer;
+      }
+
+      #contour-value {
+        min-width: 60px;
+        text-align: right;
+      }
+
+      /* Custom styling for contour lines */
+      .leaflet-layer path, 
+      .leaflet-pane path.leaflet-interactive,
+      .esri-leaflet-layer path {
+        stroke: #FF8000 !important; /* Bright orange */
+        stroke-width: 1.5px !important;
+        stroke-opacity: 0.9 !important;
+      }
+
+      /* Custom styling for contour labels */
+      .leaflet-layer text,
+      .esri-leaflet-layer text {
+        fill: #FF8000 !important; /* Bright orange */
+        font-size: 14px !important; 
+        font-weight: bold !important;
+        paint-order: stroke !important;
+        stroke: white !important;
+        stroke-width: 2px !important;
+        stroke-opacity: 0.7 !important;
+      }
+
+      /* Add a white halo around labels for better readability */
+      .contour-label {
+        color: #FF8000 !important;
+        font-size: 14px !important;
+        font-weight: bold !important;
+        text-shadow: 
+          -1px -1px 0 #fff,
+          1px -1px 0 #fff,
+          -1px 1px 0 #fff,
+          1px 1px 0 #fff;
+      }
+
+      .leaflet-tooltip.cave-label-tooltip {
+        background-color: rgba(255, 255, 255, 0.7); /* 30% transparent white background */
+        border: 0.5px solid rgba(204, 204, 204, 0.5); /* Lighter, semi-transparent border */
+        padding: 1px 3px; /* Slightly larger padding */
+        font-size: 10px; /* More moderate font size reduction */
+        font-weight: bold;
+        color: #000;
+        text-shadow: 0 0 1px rgba(255, 255, 255, 0.8);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        white-space: nowrap;
+        pointer-events: none; /* Makes the tooltip not interfere with clicks */
+      }
+
+      /* Add these styles to your existing <style> section in the head */
+      #edit-cave-form {
+        display: none;
+        margin-top: 20px;
+        padding: 20px;
+        background-color: #f9f9f9;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+
+      #edit-cave-form.active {
+        display: block !important;
+      }
+
+      #edit-cave-select {
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+      }
+
+      .edit-cave-form-container {
+        margin-top: 20px;
+      }
+
+      /* Improve form layout */
+      .form-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        margin-bottom: 15px;
+      }
+
+      .form-column {
+        flex: 1;
+        min-width: 300px;
+      }
+
+      .hillshade-opacity-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      #hillshade-opacity {
+        flex-grow: 1;
+        height: 5px;
+        border-radius: 5px;
+        background: #d3d3d3;
+        outline: none;
+      }
+
+      #hillshade-opacity::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: var(--secondary-color);
+        cursor: pointer;
+      }
+
+      #hillshade-opacity::-moz-range-thumb {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background: var(--secondary-color);
+        cursor: pointer;
+      }
+
+      #hillshade-opacity-value {
+        min-width: 45px;
+        text-align: right;
+      }
+
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+
+    .legend-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid #000;
+      margin-right: 8px;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 10px;
+    }
+
+    .control-subgroup {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .control-bar-horizontal {
+      display: flex;
+      gap: 40px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+      align-items: flex-start;
+    }
+
+    .label-control-row {
+      display: flex;
+      gap: 40px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    .control-block {
+      display: flex;
+      flex-direction: column;
+      min-width: 180px;
+    }
+
+    .control-block label {
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    .slider {
+      width: 100%;
+    }
+
+    .header-content {
+      display: flex;
+      align-items: center;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .logo-container {
+      margin-right: 20px;
+    }
+
+    .header-logo {
+      max-height: 100px; /* Slightly larger to show detail */
+      width: auto;
+      border-radius: 50%; /* Maintains the round shape */
+    }
+
+    .title-container {
+      flex: 1;
+    }
+
+    @media (max-width: 800px) {
+      .header-content {
+        flex-direction: column;
+        text-align: center;
+      }
+      
+      .logo-container {
+        margin-right: 0;
+        margin-bottom: 10px;
+      }
+      
+      .header-logo {
+        max-height: 80px;
+      }
+    }
+
+    .checkbox-group {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr); /* Two clean columns */
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+
+    .checkbox-item {
+      display: flex;
+      align-items: center;
+    }
+
+    .checkbox-item input[type="checkbox"] {
+      margin-right: 8px;
+    }
+
+    .bg-white {
+      background-color: rgb(168, 204, 228);
+    }
+
+    .rounded-lg {
+      border-radius: 8px;
+    }
+
+    .shadow-md {
+      box-shadow: 0 4px 6px rgba(63, 160, 216, 0.514);
+    }
+
+    .p-4 {
+      padding: 1rem;
+    }
+
+    .header, .tab-container, .tabs, .tab-content, .map-controls, 
+    .submission-card, .stats-grid, #cave-database-scroll-wrapper, 
+    #edit-cave-form, .form-row {
+      width: 100%;
+    }
+
+    .leaflet-coord-display {
+      background-color: white;
+      padding: 4px;
+      font-size: 12px;
+      border-radius: 4px;
+      border: 1px solid #888;
+      font-family: monospace;
+    }
+
+    .cave-map-marker {
+      background: transparent !important;
+      border: none !important;
+    }
+
+    #narrative-output img {
+      max-width: 100%;
+      margin: 10px 0;
+      cursor: move;
+    }
+
+    #quill-editor .ql-editor div[draggable] img {
+      border: 1px dashed #888;
+      padding: 4px;
+      cursor: move;
+    }
+
+    #quill-editor .ql-editor a {
+      text-decoration: none;
+    }
+
+    #download-selected-cave-map {
+      padding: 8px 12px;
+      font-size: 12px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+
+    #download-selected-cave-map:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    #download-selected-cave-map:not(:disabled):hover {
+      background-color: #28a745;
+    }
+
+    .active-map-item {
+      transition: background-color 0.2s ease;
+    }
+
+    .active-map-item:hover {
+      background-color: #f0f0f0 !important;
+    }
+
+    .active-map-item button {
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    .active-map-item .btn-success {
+      background-color: #28a745;
+      color: white;
+    }
+
+    .active-map-item .btn-danger {
+      background-color: #dc3545;
+      color: white;
+    }
+
+    .active-map-item .btn-success:hover {
+      background-color: #218838;
+    }
+
+    .active-map-item .btn-danger:hover {
+      background-color: #c82333;
+    }
+
+    #active-cave-maps-list {
+      font-size: 12px;
+    }
+
+    #active-cave-maps-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    #active-cave-maps-list::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+
+    #active-cave-maps-list::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 4px;
+    }
+
+    #active-cave-maps-list::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+
+    .btn-danger {
+      background-color: #dc3545;
+      color: white;
+      border: 1px solid #dc3545;
+    }
+
+    .btn-danger:hover {
+      background-color: #c82333;
+      border-color: #bd2130;
+    }
+
+    /* Narrative Log Styles */
+    .narrative-log-item:hover,
+    .narrative-log-item-full:hover {
+      background-color: #f0f8ff !important;
+      transform: translateX(2px);
+    }
+
+    #narrative-log::-webkit-scrollbar,
+    #full-narrative-log-content::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #narrative-log::-webkit-scrollbar-track,
+    #full-narrative-log-content::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 3px;
+    }
+
+    #narrative-log::-webkit-scrollbar-thumb,
+    #full-narrative-log-content::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 3px;
+    }
+
+    #narrative-log::-webkit-scrollbar-thumb:hover,
+    #full-narrative-log-content::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+
+    /* Modal animation */
+    #full-narrative-log-modal {
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Image delete button hover effects */
+    .narrative-image-delete-btn {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      background: rgba(220, 53, 69, 0.9);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 25px;
+      height: 25px;
+      cursor: pointer;
+      font-size: 12px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+
+    .narrative-image-delete-btn:hover {
+      background: rgba(220, 53, 69, 1);
+      transform: scale(1.1);
+    }
+
+        /* Image button styling */
+    .narrative-image-button {
+      background: rgba(40, 167, 69, 0.9);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 25px;
+      height: 25px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+
+    .narrative-image-download-btn {
+      background: rgba(40, 167, 69, 0.9);
+    }
+
+    .narrative-image-download-btn:hover {
+      background: rgba(40, 167, 69, 1);
+      transform: scale(1.1);
+    }
+
+    .narrative-image-delete-btn {
+      background: rgba(220, 53, 69, 0.9);
+    }
+
+    .narrative-image-delete-btn:hover {
+      background: rgba(220, 53, 69, 1);
+      transform: scale(1.1);
+    }
+
+    /* Button container for images */
+    .narrative-image-buttons {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      display: flex;
+      gap: 5px;
+      z-index: 10;
+    }
+
+    .auth-form {
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .auth-links {
+      text-align: center;
+      margin-top: 15px;
+    }
+
+    .auth-links a {
+      color: var(--secondary-color);
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    .auth-links a:hover {
+      text-decoration: underline;
+    }
+
+    .user-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+
+    .user-table th,
+    .user-table td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .user-table th {
+      background-color: var(--secondary-color);
+      color: white;
+    }
+
+    .user-table tr:hover {
+      background-color: #f5f5f5;
+    }
+
+    .role-badge {
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .role-webmaster {
+      background-color: #d53e4f;
+      color: white;
+    }
+
+    .role-admin {
+      background-color: #f46d43;
+      color: white;
+    }
+
+    .role-member {
+      background-color: #4b86b4;
+      color: white;
+    }
+
+    .control-section {
+      margin-bottom: 30px;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
