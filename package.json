@@ -16,6 +16,7 @@
     "remove-proxy": "node scripts/remove-proxy.js",
     "set-maintenance": "node scripts/set-maintenance.js",
     "check-outer-index": "node scripts/check-outer-index.js",
+    "list-app-root": "node scripts/list-app-root.js",
     "test": "node --test"
   },
   "keywords": [],
