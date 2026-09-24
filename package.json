@@ -19,6 +19,7 @@
     "list-app-root": "node scripts/list-app-root.js",
     "list-legacy-dirs": "node scripts/list-legacy-dirs.js",
     "print-outer-maintenance": "node scripts/print-outer-maintenance.js",
+    "cleanup-app-root": "node scripts/cleanup-app-root.js",
     "test": "node --test"
   },
   "keywords": [],
