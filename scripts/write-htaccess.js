@@ -13,7 +13,15 @@
 const path = require("path");
 const fs = require("fs");
 
-const HTACCESS_PATH = path.join(__dirname, "..", "httpdocs", ".htaccess");
+// NOTE: this deliberately targets the app root (one level up from this
+// script), NOT the app's own httpdocs/ subfolder. On the live server, Plesk
+// names the whole app root "httpdocs" too (its own unrelated convention),
+// so there are two nested "httpdocs" folders - Apache's actual document
+// root is the outer one (the app root), and that's the only place it will
+// ever look for a .htaccess when handling a request to "/". A .htaccess
+// placed inside the app's own httpdocs/ subfolder is invisible to Apache
+// for anything but requests to /httpdocs/..., which nothing ever sends.
+const HTACCESS_PATH = path.join(__dirname, "..", ".htaccess");
 const PORT = process.env.PORT || 3000;
 
 const CONTENT = `# Written by scripts/write-htaccess.js - see that file for context.
