@@ -18,6 +18,7 @@
     "check-outer-index": "node scripts/check-outer-index.js",
     "list-app-root": "node scripts/list-app-root.js",
     "list-legacy-dirs": "node scripts/list-legacy-dirs.js",
+    "print-outer-maintenance": "node scripts/print-outer-maintenance.js",
     "test": "node --test"
   },
   "keywords": [],
