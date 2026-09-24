@@ -1282,6 +1282,35 @@ describe("cave-data routes enforce allowedStates", () => {
   });
 });
 
+describe("X-Forwarded-Proto parsing (HTTPS-redirect middleware)", () => {
+  // Regression test for a real production bug: this deployment's proxy
+  // chain (nginx -> Apache) sends X-Forwarded-Proto as "https, https" (each
+  // hop appends rather than replaces), not plain "https" - an exact-match
+  // comparison against the header redirected every single request to
+  // itself forever, even though the request genuinely was HTTPS
+  // end-to-end. See the comment above isRequestOverHttps in server.js.
+  const isRequestOverHttps = app.locals.isRequestOverHttps;
+
+  test("treats a duplicated proxy chain value as HTTPS", () => {
+    assert.equal(isRequestOverHttps("https, https"), true);
+  });
+  test("treats a plain value as HTTPS", () => {
+    assert.equal(isRequestOverHttps("https"), true);
+  });
+  test("treats a value with mixed case/whitespace as HTTPS", () => {
+    assert.equal(isRequestOverHttps(" HTTPS , http"), true);
+  });
+  test("treats plain http as not HTTPS", () => {
+    assert.equal(isRequestOverHttps("http"), false);
+  });
+  test("treats a chain starting with http as not HTTPS", () => {
+    assert.equal(isRequestOverHttps("http, https"), false);
+  });
+  test("returns null (no opinion) when the header is absent", () => {
+    assert.equal(isRequestOverHttps(undefined), null);
+  });
+});
+
 describe("path traversal protection", () => {
   test("does not escape the narrative-image directory via a traversal filename", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);

@@ -228,16 +228,28 @@ app.get("/api/debug-headers", (req, res) => {
   });
 });
 
+// X-Forwarded-Proto can arrive as a comma-separated list when a request
+// passes through more than one proxy hop and each one appends its own value
+// instead of replacing it (confirmed live: this deployment's nginx->Apache
+// chain sends "https, https", not "https" - an exact-match comparison here
+// redirected every single request to itself forever, since "https, https"
+// !== "https" even though the request genuinely was HTTPS end-to-end). Per
+// the de-facto convention for this header, the first (leftmost) value is
+// the one nearest the original client and is what matters here. Exported
+// for direct unit testing since it's pure and easy to get subtly wrong.
+function isRequestOverHttps(forwardedProtoHeader) {
+  if (!forwardedProtoHeader) return null; // header absent - caller decides what that means
+  return forwardedProtoHeader.split(",")[0].trim().toLowerCase() === "https";
+}
+app.locals.isRequestOverHttps = isRequestOverHttps;
+
 // Force HTTPS in production. All traffic must be encrypted end-to-end; this
 // redirects any request that reached us over plain HTTP (as reported by the
 // TLS-terminating proxy via X-Forwarded-Proto) to the HTTPS URL instead of
 // serving it.
 app.use((req, res, next) => {
-  if (
-    isProduction &&
-    req.headers["x-forwarded-proto"] &&
-    req.headers["x-forwarded-proto"] !== "https"
-  ) {
+  const httpsResult = isRequestOverHttps(req.headers["x-forwarded-proto"]);
+  if (isProduction && httpsResult === false) {
     return res.redirect(301, `https://${req.headers.host}${req.originalUrl}`);
   }
   next();
