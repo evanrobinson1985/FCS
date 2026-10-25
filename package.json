@@ -22,6 +22,7 @@
     "cleanup-app-root": "node scripts/cleanup-app-root.js",
     "check-exposure": "node scripts/check-app-root-exposure.js",
     "relocate-private-data": "node scripts/relocate-private-data.js",
+    "list-vhost-root": "node scripts/list-vhost-root.js",
     "test": "node --test"
   },
   "keywords": [],
