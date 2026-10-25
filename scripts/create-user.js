@@ -18,16 +18,28 @@
 // data/ directory the running server reads from. Running it again for the
 // same username updates that account in place (new password/role/email)
 // rather than creating a duplicate.
+//
+// NOTE: Plesk's "Run Node.js commands" tool does NOT inherit the custom
+// environment variables configured in the Node.js panel - those are only
+// injected into the actual Passenger-managed app process, not ad-hoc one-off
+// command runs. If DATA_DIR has been relocated outside the app root (see
+// scripts/relocate-private-data.js), running this script from that command
+// box with no override will silently write to the OLD in-app-root default
+// instead of the real data directory. Pass --data-dir=<path> to override
+// DATA_DIR explicitly for a single run instead of relying on env vars.
 
 const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
 
-const [, , username, password, role, email, fullName] = process.argv;
+const rawArgs = process.argv.slice(2);
+const dataDirFlag = rawArgs.find((a) => a.startsWith("--data-dir="));
+const positional = rawArgs.filter((a) => !a.startsWith("--data-dir="));
+const [username, password, role, email, fullName] = positional;
 
 if (!username || !password || !role || !email) {
   console.error(
-    "Usage: node scripts/create-user.js <username> <password> <role: member|admin|webmaster> <email> [fullName]"
+    "Usage: node scripts/create-user.js <username> <password> <role: member|admin|webmaster> <email> [fullName] [--data-dir=/path]"
   );
   process.exit(1);
 }
@@ -44,7 +56,9 @@ if (password.length < MIN_PASSWORD_LENGTH) {
   process.exit(1);
 }
 
-const DATA_DIR = process.env.DATA_DIR
+const DATA_DIR = dataDirFlag
+  ? path.resolve(dataDirFlag.slice("--data-dir=".length))
+  : process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "..", "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
