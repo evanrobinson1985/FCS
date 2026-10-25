@@ -1293,11 +1293,19 @@ const DEFAULT_STATE_CODE = "FL";
 // cookie-based session, so the server can't tell a plain "GET /" from the
 // webmaster's own browser apart from anyone else's - see "/portal" below
 // for how a webmaster actually gets back in to turn maintenance mode off.
+//
+// The real app's markup is named portal.html, not index.html, on purpose:
+// on hosts where Apache's DocumentRoot is (or gets pointed at) this exact
+// httpdocs/ folder, Apache's DirectoryIndex auto-serves a literal
+// "index.html" directly for any bare "/" request - bypassing Passenger/
+// Express entirely, which means the maintenance-mode check below would
+// never even run. Giving the file a name DirectoryIndex won't auto-match
+// forces every "/" request through this handler instead.
 app.get("/", (req, res) => {
   if (isMaintenanceActive()) {
     return res.sendFile(path.join(__dirname, "httpdocs", "maintenance.html"));
   }
-  res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
+  res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
 });
 
 // Always serves the real app, maintenance mode or not - the "staff door"
@@ -1306,7 +1314,7 @@ app.get("/", (req, res) => {
 // everyone else. Not secret (login is still fully password/rate-limit
 // protected either way), just not the address regular visitors are given.
 app.get("/portal", (req, res) => {
-  res.sendFile(path.join(__dirname, "httpdocs", "index.html"));
+  res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
 });
 
 // Narrative photos are member content - require login to view them, same as
@@ -1638,7 +1646,7 @@ app.post(
 
 // Column order/labels shared by the import template and the import parser -
 // intentionally the same shape as the "Download Updated Cave Data" export in
-// httpdocs/index.html's exportToExcel(), minus State (fixed by the ?state=
+// httpdocs/portal.html's exportToExcel(), minus State (fixed by the ?state=
 // import target, not per-row) and Cave ID (always server-generated, never
 // trusted from the file). Each entry maps one spreadsheet column header to
 // the cave record field it becomes.
@@ -4249,7 +4257,7 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
 
 // Create account endpoint
 // This is the public "Create New Account" form on the login page (see
-// handleCreateAccount() in httpdocs/index.html) - it must stay reachable by
+// handleCreateAccount() in httpdocs/portal.html) - it must stay reachable by
 // anyone, so it's rate-limited instead of authenticated.
 app.post("/api/create-account", authLimiter, express.json(), async (req, res) => {
   try {

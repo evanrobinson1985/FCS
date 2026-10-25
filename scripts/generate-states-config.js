@@ -2,11 +2,11 @@
 // Regenerates config/states.json - the state/county reference data every
 // state's dropdowns, filters, and cave-ID generation are driven from (see
 // GET /api/states in server.js and window.loadStatesConfig() in
-// httpdocs/index.html). Re-run any time county data needs to be regenerated;
+// httpdocs/portal.html). Re-run any time county data needs to be regenerated;
 // output is deterministic given the same inputs.
 //
 // Florida is handled specially: its 67 county codes are extracted directly
-// from the live #edit-county <select> in httpdocs/index.html, so they are
+// from the live #edit-county <select> in httpdocs/portal.html, so they are
 // guaranteed byte-identical to what's already in production use (real cave
 // IDs already depend on these exact codes - they are never regenerated).
 //
@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const INDEX_HTML = path.join(ROOT, 'httpdocs', 'index.html');
+const INDEX_HTML = path.join(ROOT, 'httpdocs', 'portal.html');
 const COUNTIES_CSV = path.join(__dirname, 'data', 'us-counties.csv');
 const OUT_FILE = path.join(ROOT, 'config', 'states.json');
 
@@ -46,7 +46,7 @@ function extractFloridaCounties() {
   const html = fs.readFileSync(INDEX_HTML, 'utf8');
   const match = html.match(/<select id="edit-county">([\s\S]*?)<\/select>/);
   if (!match) {
-    throw new Error('Could not find #edit-county <select> in httpdocs/index.html');
+    throw new Error('Could not find #edit-county <select> in httpdocs/portal.html');
   }
   const options = [...match[1].matchAll(/<option value="([A-Z]{2})">([^<]+)<\/option>/g)];
   if (options.length !== 67) {
