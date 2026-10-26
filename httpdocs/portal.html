@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=5">
+ <link rel="stylesheet" href="styles.css?v=6">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -888,7 +888,7 @@
 </div>
 <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
 <input type="file" id="cave-import-file" accept=".xlsx,.xls,.csv">
-<button class="btn-warning" onclick="uploadCaveImport()">Upload &amp; Import</button>
+<button class="btn-warning" id="cave-import-upload-btn" onclick="uploadCaveImport()">Upload &amp; Import</button>
 </div>
 <div id="cave-import-report" style="margin-top: 10px;"></div>
 </div>
@@ -5383,10 +5383,19 @@ function loadFcsDatabaseTable() {
     // Uploads the filled-in spreadsheet for the selected state and renders
     // the server's per-row success/error report. Mirrors uploadCaveMaps()'s
     // FormData/fetch pattern.
+    //
+    // A large import can take a while server-side, and fetch() gives no
+    // way to track progress on a response that's still being computed (as
+    // opposed to upload progress, which isn't the bottleneck here - these
+    // files are small). Rather than leave the UI showing static
+    // "Importing..." text with no sign of life for however long that
+    // takes, this shows a spinner plus a live elapsed-time counter and
+    // disables the button so a slow import can't be double-submitted.
     async function uploadCaveImport() {
       const stateCode = document.getElementById('import-state-select').value;
       const input = document.getElementById('cave-import-file');
       const reportEl = document.getElementById('cave-import-report');
+      const uploadBtn = document.getElementById('cave-import-upload-btn');
 
       if (!stateCode) {
         alert('Please select a state first.');
@@ -5401,7 +5410,18 @@ function loadFcsDatabaseTable() {
       formData.append('importFile', input.files[0]);
       formData.append('state', stateCode);
 
-      if (reportEl) reportEl.innerHTML = '<p>Importing...</p>';
+      if (uploadBtn) uploadBtn.disabled = true;
+      const startedAt = Date.now();
+      let progressTimer = null;
+      if (reportEl) {
+        const renderProgress = () => {
+          const seconds = Math.floor((Date.now() - startedAt) / 1000);
+          reportEl.innerHTML = `<p><span class="inline-spinner"></span>Importing - still working` +
+            (seconds > 0 ? ` (${seconds}s)...` : '...') + `</p>`;
+        };
+        renderProgress();
+        progressTimer = setInterval(renderProgress, 1000);
+      }
 
       try {
         const response = await fetch('/api/cave-database/import', {
@@ -5425,6 +5445,9 @@ function loadFcsDatabaseTable() {
       } catch (error) {
         console.error('Cave import failed:', error);
         if (reportEl) reportEl.innerHTML = `<p style="color:#b00;">Import failed: ${error.message}</p>`;
+      } finally {
+        if (progressTimer) clearInterval(progressTimer);
+        if (uploadBtn) uploadBtn.disabled = false;
       }
     }
 

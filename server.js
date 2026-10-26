@@ -1803,6 +1803,27 @@ app.post(
       const report = [];
       let importedCount = 0;
 
+      // generateNextCaveId() rescans the entire cave array on every call,
+      // which is fine for the single-cave call sites elsewhere in this
+      // file but becomes O(n^2) here - called once per imported row
+      // against an array that grows by one each time. For a few thousand
+      // rows that's tens of millions of comparisons in one synchronous
+      // request, slow enough on modest hosting to look "stuck" in the UI
+      // and risk a reverse-proxy timeout. Precompute each county's current
+      // max cave number once (one O(n) pass), then increment a running
+      // counter per row (O(1) each) instead.
+      const idPrefix = getCaveIdPrefix(stateCode);
+      const maxNumberByCounty = new Map();
+      caves.forEach((cave) => {
+        const resolved = resolveCaveStateAndCounty(cave);
+        if (resolved.state !== stateCode || !resolved.county || !cave.id) return;
+        const caveNumber = parseInt(cave.id.slice(idPrefix.length + resolved.county.length), 10);
+        if (isNaN(caveNumber)) return;
+        if (!maxNumberByCounty.has(resolved.county) || caveNumber > maxNumberByCounty.get(resolved.county)) {
+          maxNumberByCounty.set(resolved.county, caveNumber);
+        }
+      });
+
       rows.forEach((row, i) => {
         const spreadsheetRow = i + 2; // 1-based, plus the header row
         const name = String(row["Cave Name"] || "").trim();
@@ -1841,10 +1862,13 @@ app.post(
           }
         });
 
-        // Generated against `caves`, which already includes every row
-        // imported earlier in this same batch, so IDs within one
-        // state+county still increment correctly across the whole file.
-        const caveId = generateNextCaveId(stateCode, countyCode, caves);
+        // Next number for this county, tracked incrementally (see
+        // maxNumberByCounty above) so IDs within one state+county still
+        // increment correctly across the whole file without rescanning
+        // `caves` on every row.
+        const nextNumber = (maxNumberByCounty.get(countyCode) || 0) + 1;
+        maxNumberByCounty.set(countyCode, nextNumber);
+        const caveId = `${idPrefix}${countyCode}${nextNumber.toString().padStart(3, "0")}`;
         newCave.id = caveId;
         caves.push(newCave);
         importedCount++;
