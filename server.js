@@ -4,6 +4,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const compression = require("compression");
 const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
@@ -254,6 +255,17 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Gzips every compressible response (HTML, JSON, CSS/JS served through
+// Express rather than Apache's own static handling) before it goes out.
+// Matters most for GET /portal (the ~430KB single-page app markup, sent on
+// every visit) and the cave-database/states-config JSON payloads, which
+// are plain text and compress 70-85% - directly cuts bandwidth on a
+// hosting account with a monthly traffic allowance. Images (the actual
+// biggest payload on the page) don't benefit - see the separate fix to
+// httpdocs/fcs-logo.png, which was 2073x2081px (1.6MB) despite never being
+// displayed larger than 100px anywhere on the site.
+app.use(compression());
 
 // Security headers: locks down where scripts/styles may load from (mitigates
 // XSS), enables HSTS so browsers refuse to downgrade this site to plain HTTP,
