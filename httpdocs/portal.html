@@ -2674,10 +2674,21 @@
         const safeReporterNSS = escapeStatsHtml(cave.reporterNSS || cave.reporter || 'Unknown');
         const safeDate = escapeStatsHtml(cave.date || 'Unknown');
         const safeNotes = cave.notes ? escapeStatsHtml(cave.notes) : '';
+        // cave.id is server-generated, but not from a trusted alphabet -
+        // for a new_cave approval it's built from the submitter's county
+        // value (see generateNextCaveId in server.js), so it must be
+        // treated as untrusted here the same as every member-supplied
+        // field above. safeId covers the HTML text below; jsId is for the
+        // onclick="...('...')" attributes further down, which need a
+        // correctly quoted-and-escaped JS string literal, not just HTML-
+        // escaped text - same pattern as jsUsername in the Account
+        // Management table.
+        const safeId = escapeStatsHtml(cave.id);
+        const jsId = escapeStatsHtml(JSON.stringify(cave.id));
 
         marker.bindPopup(`
           <div class="cave-popup">
-            <h3>${cave.id} – ${safeName}</h3>
+            <h3>${safeId} – ${safeName}</h3>
 
             <div class="cave-popup-content">
               <!-- Basic Information -->
@@ -2783,16 +2794,16 @@
             </div>
 
             <div class="popup-actions">
-              <button class="btn-view-map" onclick="viewCaveNarrative('${cave.id}')">View Narrative</button>
-              <button class="edit-cave-btn" onclick="editCaveFromMap('${cave.id}')">Edit Cave</button>
-              <button onclick="initiateMove('${cave.id}')">Click to Move</button>
+              <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
+              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId})">Edit Cave</button>
+              <button onclick="initiateMove(${jsId})">Click to Move</button>
               <button onclick="closePopup()">Close</button>
             </div>
           </div>
         `);
 
         // Add always-visible tooltip label
-        marker.bindTooltip(`${cave.id} – ${safeName}`, {
+        marker.bindTooltip(`${safeId} – ${safeName}`, {
           permanent: true,
           direction: 'right',
           offset: [10, 0],
@@ -6802,10 +6813,21 @@ window.addEventListener('error', function(e) {
         const safeReporterNSS = escapeStatsHtml(cave.reporterNSS || cave.reporter || 'Unknown');
         const safeDate = escapeStatsHtml(cave.date || 'Unknown');
         const safeNotes = cave.notes ? escapeStatsHtml(cave.notes) : '';
+        // cave.id is server-generated, but not from a trusted alphabet -
+        // for a new_cave approval it's built from the submitter's county
+        // value (see generateNextCaveId in server.js), so it must be
+        // treated as untrusted here the same as every member-supplied
+        // field above. safeId covers the HTML text below; jsId is for the
+        // onclick="...('...')" attributes further down, which need a
+        // correctly quoted-and-escaped JS string literal, not just HTML-
+        // escaped text - same pattern as jsUsername in the Account
+        // Management table.
+        const safeId = escapeStatsHtml(cave.id);
+        const jsId = escapeStatsHtml(JSON.stringify(cave.id));
 
         marker.bindPopup(`
           <div class="cave-popup">
-            <h3>${cave.id} – ${safeName}</h3>
+            <h3>${safeId} – ${safeName}</h3>
 
             <div class="cave-popup-content">
               <!-- Basic Information -->
@@ -6911,16 +6933,16 @@ window.addEventListener('error', function(e) {
             </div>
 
             <div class="popup-actions">
-              <button class="btn-view-map" onclick="viewCaveNarrative('${cave.id}')">View Narrative</button>
-              <button class="edit-cave-btn" onclick="editCaveFromMap('${cave.id}')">Edit Cave</button>
-              <button onclick="initiateMove('${cave.id}')">Click to Move</button>
+              <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
+              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId})">Edit Cave</button>
+              <button onclick="initiateMove(${jsId})">Click to Move</button>
               <button onclick="closePopup()">Close</button>
             </div>
           </div>
         `);
 
         // Add always-visible tooltip label
-        marker.bindTooltip(`${cave.id} – ${safeName}`, {
+        marker.bindTooltip(`${safeId} – ${safeName}`, {
           permanent: true,
           direction: 'right',
           offset: [10, 0],

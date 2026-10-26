@@ -2186,13 +2186,34 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req
     return res.status(403).json({ error: `You do not have access to submit for ${submissionState}.` });
   }
 
+  // Once a webmaster approves a new_cave submission, this county gets baked
+  // unescaped into the new cave's ID (see generateNextCaveId), and that ID
+  // is later rendered unescaped - including inside onclick="...('...')"
+  // attributes - in the interactive map's popup. An unvalidated county here
+  // is a stored-XSS path from any member straight to whoever next opens the
+  // map, webmaster included. Validate it the same way the Excel import
+  // already does (see validCountyCodes above) rather than trusting it as
+  // free text.
+  const submittedCounty = county || proposedData.county || "";
+  if (submittedCounty) {
+    const stateConfigForCounty = statesConfig.find((s) => s.code === submissionState);
+    const validCountyCodes = new Set(stateConfigForCounty ? stateConfigForCounty.counties.map((c) => c.code) : []);
+    if (!validCountyCodes.has(submittedCounty)) {
+      return res.status(400).json({
+        error: `"${submittedCounty}" is not a valid county code for ${submissionState}.`,
+      });
+    }
+  } else if (type === "new_cave") {
+    return res.status(400).json({ error: "Missing required field: county" });
+  }
+
   const submission = {
     submissionId: crypto.randomUUID(),
     type,
     caveId,
     caveName: caveName || proposedData.name || "",
     state: submissionState,
-    county: county || proposedData.county || "",
+    county: submittedCounty,
     proposedData,
     submittedBy: req.user.username,
     submittedAt: new Date().toISOString(),

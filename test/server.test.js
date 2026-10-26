@@ -1045,9 +1045,9 @@ describe("pending submissions", () => {
       .send({
         type: "new_cave",
         caveId: "F01TEMP",
-        county: "01",
+        county: "AL",
         submittedBy: "someone-else",
-        proposedData: { name: "Submission Test Cave", county: "01", type: "Land Cave", lat: 29.1, lng: -82.1 },
+        proposedData: { name: "Submission Test Cave", county: "AL", type: "Land Cave", lat: 29.1, lng: -82.1 },
       });
     assert.equal(res.status, 200);
     assert.equal(res.body.submission.submittedBy, "member1");
@@ -1062,8 +1062,8 @@ describe("pending submissions", () => {
       .send({
         type: "new_cave",
         caveId: "F01TEMP2",
-        county: "01",
-        proposedData: { name: "Member Cannot Approve Cave", county: "01", type: "Land Cave", lat: 29.2, lng: -82.2 },
+        county: "AL",
+        proposedData: { name: "Member Cannot Approve Cave", county: "AL", type: "Land Cave", lat: 29.2, lng: -82.2 },
       });
     const submissionId = submitRes.body.submission.submissionId;
 
@@ -1084,8 +1084,8 @@ describe("pending submissions", () => {
       .send({
         type: "new_cave",
         caveId: "F03TEMP",
-        county: "03",
-        proposedData: { name: "Approved New Cave", county: "03", type: "Land Cave", lat: 29.3, lng: -82.3 },
+        county: "BF",
+        proposedData: { name: "Approved New Cave", county: "BF", type: "Land Cave", lat: 29.3, lng: -82.3 },
       });
     const submissionId = submitRes.body.submission.submissionId;
 
@@ -1096,7 +1096,7 @@ describe("pending submissions", () => {
     assert.equal(approveRes.status, 200);
     assert.equal(approveRes.body.submission.approvedBy, "webmaster1"); // never the spoofed body value
     const assignedId = approveRes.body.submission.assignedCaveId;
-    assert.ok(assignedId && assignedId.startsWith("F03"), `expected an assigned F03 cave id, got ${assignedId}`);
+    assert.ok(assignedId && assignedId.startsWith("FBF"), `expected an assigned FBF cave id, got ${assignedId}`);
 
     const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
     const stored = dbRes.body.find((c) => c.id === assignedId);
@@ -1181,8 +1181,8 @@ describe("pending submissions", () => {
       .send({
         type: "new_cave",
         caveId: "F05TEMP",
-        county: "05",
-        proposedData: { name: "Rejected Cave", county: "05", type: "Land Cave", lat: 29.5, lng: -82.5 },
+        county: "BK",
+        proposedData: { name: "Rejected Cave", county: "BK", type: "Land Cave", lat: 29.5, lng: -82.5 },
       });
     const submissionId = submitRes.body.submission.submissionId;
 
@@ -1208,8 +1208,8 @@ describe("pending submissions", () => {
       .send({
         type: "new_cave",
         caveId: "F06TEMP",
-        county: "06",
-        proposedData: { name: "Double Approve Cave", county: "06", type: "Land Cave", lat: 29.6, lng: -82.6 },
+        county: "BR",
+        proposedData: { name: "Double Approve Cave", county: "BR", type: "Land Cave", lat: 29.6, lng: -82.6 },
       });
     const submissionId = submitRes.body.submission.submissionId;
 
@@ -1224,6 +1224,54 @@ describe("pending submissions", () => {
       .set("Authorization", `Bearer ${webmasterToken}`)
       .send({ status: "approved" });
     assert.equal(secondApprove.status, 409);
+  });
+
+  // Regression test for a stored-XSS chain: a new_cave submission's county
+  // used to be stored verbatim with no validation, and once approved it
+  // gets baked unescaped into the new cave's ID (see generateNextCaveId)
+  // - which is rendered unescaped in the interactive map's popup, including
+  // inside onclick="...('...')" attributes. A member submitting a crafted
+  // county could execute JS in whatever webmaster/admin next opened the
+  // map. Must be rejected at submission time, not just escaped on render.
+  test("rejects a new_cave submission whose county isn't a real code for the state", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FXSSTEMP",
+        county: "X'-alert(document.cookie)-'",
+        proposedData: { name: "XSS Attempt Cave", county: "X'-alert(document.cookie)-'", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new_cave submission with a plausible-looking but unrecognized county code", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FZZTEMP",
+        county: "ZZ",
+        proposedData: { name: "Bad County Code Cave", county: "ZZ", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new_cave submission with no county at all", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FNOCOUNTYTEMP",
+        proposedData: { name: "No County Cave", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
   });
 });
 
@@ -1287,8 +1335,8 @@ describe("cave-data routes enforce allowedStates", () => {
         type: "new_cave",
         caveId: "FLTEMP2",
         state: "FL",
-        county: "SC",
-        proposedData: { name: "Allowed Florida Submission", state: "FL", county: "SC" },
+        county: "CA",
+        proposedData: { name: "Allowed Florida Submission", state: "FL", county: "CA" },
       });
     assert.equal(res.status, 200);
   });
