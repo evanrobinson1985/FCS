@@ -5380,17 +5380,16 @@ function loadFcsDatabaseTable() {
       window.location.href = withAuthToken(`/api/cave-database/import-template?state=${encodeURIComponent(stateCode)}`);
     }
 
-    // Uploads the filled-in spreadsheet for the selected state and renders
-    // the server's per-row success/error report. Mirrors uploadCaveMaps()'s
-    // FormData/fetch pattern.
-    //
-    // A large import can take a while server-side, and fetch() gives no
-    // way to track progress on a response that's still being computed (as
-    // opposed to upload progress, which isn't the bottleneck here - these
-    // files are small). Rather than leave the UI showing static
-    // "Importing..." text with no sign of life for however long that
-    // takes, this shows a spinner plus a live elapsed-time counter and
-    // disables the button so a slow import can't be double-submitted.
+    // Uploads the filled-in spreadsheet for the selected state in batches
+    // (instead of one request for the whole file) so caves show up in the
+    // Cave Database list as they import, rather than all at once at the
+    // end. Each batch is parsed out client-side with the SheetJS (XLSX)
+    // library already loaded on this page, re-packaged as its own mini
+    // spreadsheet, and POSTed through the same /api/cave-database/import
+    // route a normal single-file upload would use - the server doesn't
+    // know or care that it's one piece of a larger file.
+    const CAVE_IMPORT_BATCH_SIZE = 250;
+
     async function uploadCaveImport() {
       const stateCode = document.getElementById('import-state-select').value;
       const input = document.getElementById('cave-import-file');
@@ -5406,48 +5405,113 @@ function loadFcsDatabaseTable() {
         return;
       }
 
-      const formData = new FormData();
-      formData.append('importFile', input.files[0]);
-      formData.append('state', stateCode);
-
-      if (uploadBtn) uploadBtn.disabled = true;
-      const startedAt = Date.now();
-      let progressTimer = null;
-      if (reportEl) {
-        const renderProgress = () => {
-          const seconds = Math.floor((Date.now() - startedAt) / 1000);
-          reportEl.innerHTML = `<p><span class="inline-spinner"></span>Importing - still working` +
-            (seconds > 0 ? ` (${seconds}s)...` : '...') + `</p>`;
-        };
-        renderProgress();
-        progressTimer = setInterval(renderProgress, 1000);
+      let rows;
+      try {
+        const buffer = await input.files[0].arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      } catch (err) {
+        alert('Could not read that file as a spreadsheet: ' + err.message);
+        return;
+      }
+      if (rows.length === 0) {
+        alert('That file has no data rows.');
+        return;
       }
 
+      if (uploadBtn) uploadBtn.disabled = true;
+
+      // Point the Cave Database tab's own filter at the state being
+      // imported, so newly added caves actually appear in the visible
+      // list as each batch lands instead of being hidden behind whatever
+      // filter was last selected.
+      const dbStateFilter = document.getElementById('database-filter-state');
+      if (dbStateFilter) {
+        dbStateFilter.value = stateCode;
+        populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
+      }
+
+      const startedAt = Date.now();
+      const combinedReport = [];
+      let combinedImported = 0;
+      let batchError = null;
+
+      const renderProgress = () => {
+        if (!reportEl) return;
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        reportEl.innerHTML = `<p><span class="inline-spinner"></span>Importing - ` +
+          `${combinedImported} of ${rows.length} caves imported so far` +
+          (seconds > 0 ? ` (${seconds}s)...` : '...') + `</p>`;
+      };
+      renderProgress();
+      const progressTimer = setInterval(renderProgress, 1000);
+
       try {
-        const response = await fetch('/api/cave-database/import', {
-          method: 'POST',
-          body: formData
-        });
-        const result = await response.json();
-        if (!response.ok) {
-          throw new Error(result.error || 'Import failed');
-        }
-
-        renderImportReport(result);
-        input.value = '';
-
-        // The database just changed on the server - refresh what's on screen.
-        if (result.imported > 0 && typeof window.loadCaveDatabaseFromServer === 'function') {
-          window.loadCaveDatabaseFromServer().then(function() {
-            if (typeof updateCaveDataStore === 'function') updateCaveDataStore();
+        for (let start = 0; start < rows.length; start += CAVE_IMPORT_BATCH_SIZE) {
+          const batchRows = rows.slice(start, start + CAVE_IMPORT_BATCH_SIZE);
+          const batchSheet = XLSX.utils.json_to_sheet(batchRows);
+          const batchWorkbook = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(batchWorkbook, batchSheet, 'Import Template');
+          const batchArrayBuffer = XLSX.write(batchWorkbook, { type: 'array', bookType: 'xlsx' });
+          const batchBlob = new Blob([batchArrayBuffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           });
+
+          const formData = new FormData();
+          formData.append('importFile', batchBlob, 'batch.xlsx');
+          formData.append('state', stateCode);
+
+          const response = await fetch('/api/cave-database/import', { method: 'POST', body: formData });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.error || 'Import failed');
+          }
+
+          combinedImported += result.imported || 0;
+          // Each batch's own row numbers are relative to its own
+          // mini-file (row 2 = its first data row) - offset them back to
+          // the original file's row numbers so the final report still
+          // matches what the user sees in their actual spreadsheet.
+          (result.report || []).forEach((r) => {
+            combinedReport.push(Object.assign({}, r, { row: r.row + start }));
+          });
+          renderProgress();
+
+          // Refresh what's loaded so caves imported in this batch actually
+          // show up now, not just once the whole file is done.
+          if (result.imported > 0 && typeof window.loadCaveDatabaseFromServer === 'function') {
+            await window.loadCaveDatabaseFromServer();
+            if (typeof updateCaveDataStore === 'function') updateCaveDataStore();
+            const dbTab = document.getElementById('cave-database');
+            if (dbTab && dbTab.classList.contains('active')) {
+              const searchTerm = (document.getElementById('database-search')?.value || '').toLowerCase();
+              filterDatabase(searchTerm);
+            }
+          }
         }
       } catch (error) {
         console.error('Cave import failed:', error);
-        if (reportEl) reportEl.innerHTML = `<p style="color:#b00;">Import failed: ${error.message}</p>`;
+        batchError = error;
       } finally {
-        if (progressTimer) clearInterval(progressTimer);
+        clearInterval(progressTimer);
         if (uploadBtn) uploadBtn.disabled = false;
+      }
+
+      if (batchError) {
+        if (reportEl) {
+          reportEl.innerHTML = `<p style="color:#b00;">Import failed partway through ` +
+            `(${combinedImported} of ${rows.length} caves were imported before the error): ` +
+            `${batchError.message}</p>`;
+        }
+      } else {
+        renderImportReport({
+          message: `Imported ${combinedImported} of ${rows.length} row(s).`,
+          imported: combinedImported,
+          total: rows.length,
+          report: combinedReport
+        });
+        input.value = '';
       }
     }
 
