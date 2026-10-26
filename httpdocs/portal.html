@@ -4,7 +4,18 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
-<title>Florida Cave Survey – Webmaster Portal</title>
+<title>Florida Cave Survey</title>
+<!-- Link previews (Messenger, Facebook, iMessage, etc.) scrape this page's
+     raw HTML with no login and no JS execution - they will never see the
+     role-specific title completeLogin() sets further down, only whatever
+     is static here. Keep this generic; the page's own <h1>/<h2> and
+     document.title become role-specific (Webmaster/Admin/Member Portal)
+     only after an actual login, in JS - see completeLogin(). -->
+<meta property="og:title" content="Florida Cave Survey">
+<meta property="og:site_name" content="Florida Cave Survey">
+<meta property="og:description" content="Documenting and preserving Florida's cave systems.">
+<meta property="og:image" content="/fcs-logo.png">
+<meta property="og:type" content="website">
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
@@ -142,7 +153,7 @@
 <img alt="Florida Cave Survey Logo" class="header-logo" src="fcs-logo.png"/>
 </div>
 <div class="title-container">
-<h1>Florida Cave Survey - Webmaster Portal</h1>
+<h1 id="main-header-title">Florida Cave Survey</h1>
 <p>Review and manage cave survey submissions</p>
 </div>
 </div>
@@ -254,7 +265,7 @@
 <!-- Dashboard -->
 <div class="dashboard" id="dashboard">
 <div class="dashboard-header">
-<h2>Webmaster Dashboard</h2>
+<h2 id="dashboard-heading">Webmaster Dashboard</h2>
 <div>
 <span id="logged-in-user">Logged in as: </span>
 <span id="twofa-status" style="margin-left: 15px; font-size: 0.9em;"></span>
@@ -7601,12 +7612,26 @@ window.addEventListener('error', function(e) {
   // every other route.
   window.pendingTwoFactorToken = null;
 
+  // A plain GET of this page (e.g. a link-preview scraper reading it with
+  // no login and no JS - see the <title>/og: tags in <head>) always sees
+  // the generic title. Only once a real login succeeds, here, does the
+  // page itself start saying which kind of account is using it.
+  const ROLE_DISPLAY_NAMES = { member: 'Member', admin: 'Admin', webmaster: 'Webmaster' };
+  function roleDisplayName(role) {
+    return ROLE_DISPLAY_NAMES[role] || 'Member';
+  }
+
   // Finishes a successful login (called directly for accounts without 2FA,
   // and from handleVerifyTwoFactor() once a 2FA code is confirmed) - stores
   // the session, shows the dashboard, and kicks off the initial data loads.
   function completeLogin(result) {
     console.log("Login successful for role:", result.role);
     window.pendingTwoFactorToken = null;
+
+    const roleName = roleDisplayName(result.role);
+    document.title = `Florida Cave Survey - ${roleName} Portal`;
+    document.getElementById('main-header-title').textContent = `Florida Cave Survey - ${roleName} Portal`;
+    document.getElementById('dashboard-heading').textContent = `${roleName} Dashboard`;
 
     // Store user information
     localStorage.setItem('username', result.username);
@@ -7970,6 +7995,8 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('twoFactorEnabled');
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;
+        document.title = 'Florida Cave Survey';
+        document.getElementById('main-header-title').textContent = 'Florida Cave Survey';
         document.getElementById('login-section').style.display = 'block';
         document.getElementById('dashboard').style.display = 'none';
         const exportBar = document.getElementById('export-bar');
