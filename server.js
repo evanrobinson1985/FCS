@@ -4568,6 +4568,71 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
   }
 });
 
+// Lets any logged-in account (member, admin, webmaster - no role
+// restriction, this is self-service, not an admin action; webmaster-driven
+// renames go through POST /api/create-user's role controls/the
+// scripts/rename-user.js escape hatch instead) change their own username.
+// Requires the current password, same as change-password, as
+// confirmation for an identity-sensitive change on a session that might be
+// left open on a shared/unattended machine.
+app.post("/api/change-username", authLimiter, authenticateToken, express.json(), async (req, res) => {
+  try {
+    const { newUsername, currentPassword } = req.body;
+
+    if (!newUsername || !currentPassword) {
+      return res.status(400).json({ error: "New username and current password are required" });
+    }
+    // Same charset/length rule as every other username-accepting route
+    // (POST /api/create-account, POST /api/create-user) - this username is
+    // rendered in the Account Management table too (escapeStatsHtml() on
+    // render is the other half of that defense-in-depth pair).
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(newUsername)) {
+      return res.status(400).json({
+        error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
+      });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === req.user.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const passwordMatches =
+      !!user.passwordHash && (await bcrypt.compare(currentPassword, user.passwordHash));
+    if (!passwordMatches) {
+      return res.status(401).json({ error: "Incorrect current password." });
+    }
+
+    if (newUsername === user.username) {
+      return res.status(400).json({ error: "That's already your username." });
+    }
+    if (users.some((u) => u.username === newUsername)) {
+      return res.status(400).json({ error: "That username is already taken." });
+    }
+
+    user.username = newUsername;
+    saveUsers(users);
+
+    // The JWT the client is still holding has the OLD username baked into
+    // its payload - authenticateToken, and every route that looks up
+    // `users.find(u => u.username === req.user.username)`, would stop
+    // finding this account on the very next request otherwise. Issue a
+    // fresh token the same way login does, so the client can swap it in
+    // immediately (see handleChangeUsername() in httpdocs/portal.html).
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role, fullName: user.fullName },
+      JWT_SECRET,
+      { expiresIn: "8h" }
+    );
+
+    res.json({ success: true, message: "Username updated.", username: user.username, token });
+  } catch (error) {
+    console.error("Error changing username:", error);
+    res.status(500).json({ error: "Failed to change username" });
+  }
+});
+
 // Every card that can appear on the Statistics tab (see httpdocs/portal.html's
 // data-card-id attributes and card.dataset.cardId assignments) - the
 // allowlist a saved layout's hidden/order arrays are validated against

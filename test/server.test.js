@@ -526,6 +526,88 @@ describe("change password", () => {
   });
 });
 
+describe("change username (POST /api/change-username)", () => {
+  before(async () => {
+    await seedUser({ username: "changeunameuser", password: "ChangeUnamePass123!", role: "member" });
+    await seedUser({ username: "unametaken", password: "UnameTakenPass123!", role: "member" });
+  });
+
+  test("a member (not just admin/webmaster) can change their own username given the correct password", async () => {
+    const token = await login("changeunameuser", "ChangeUnamePass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "renameduser1", currentPassword: "ChangeUnamePass123!" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.username, "renameduser1");
+    assert.ok(res.body.token, "should issue a fresh token carrying the new username");
+
+    // The old username no longer exists; the new one works, same password.
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "changeunameuser", password: "ChangeUnamePass123!" });
+    assert.equal(oldLoginRes.status, 401);
+    const newLoginToken = await login("renameduser1", "ChangeUnamePass123!");
+    assert.ok(newLoginToken);
+  });
+
+  test("the freshly issued token actually authenticates as the new username", async () => {
+    const token = await login("renameduser1", "ChangeUnamePass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "renameduser2", currentPassword: "ChangeUnamePass123!" });
+    assert.equal(res.status, 200);
+
+    // Use the token the rename itself returned - not a fresh login - to
+    // prove the new token is immediately valid for the renamed account,
+    // the way the client is expected to swap it in without re-logging in.
+    const changePassRes = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${res.body.token}`)
+      .send({ currentPassword: "ChangeUnamePass123!", newPassword: "StillWorksPass123!" });
+    assert.equal(changePassRes.status, 200);
+  });
+
+  test("rejects an incorrect current password", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "shouldnotapply", currentPassword: "TotallyWrongPassword!" });
+    assert.equal(res.status, 401);
+
+    const stillWorks = await login("unametaken", "UnameTakenPass123!");
+    assert.ok(stillWorks);
+  });
+
+  test("rejects a username that's already taken", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "member1", currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a username containing HTML/script syntax", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: '<img src=x onerror=alert(1)>', currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("requires authentication", async () => {
+    const res = await request(app)
+      .post("/api/change-username")
+      .send({ newUsername: "shouldnotapply", currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 401);
+  });
+});
+
 describe("password reset", () => {
   // No SMTP is configured in the test env, so the server logs the reset
   // link to the console instead of emailing it (see sendPasswordResetEmail
