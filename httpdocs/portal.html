@@ -8,7 +8,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=2">
+ <link rel="stylesheet" href="styles.css?v=3">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -793,23 +793,23 @@
 <p>This section allows you to browse and manage all caves in the Florida Cave Survey database.</p>
 <!-- Add search bar and filters here -->
 <div style="margin-bottom: 15px;">
-<div style="display: flex; gap: 10px; margin-bottom: 10px;">
-<input id="database-search" placeholder="Search by cave name or ID..." style="flex: 1; padding: 8px;" type="text"/>
+<div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+<input id="database-search" placeholder="Search by cave name or ID..." style="flex: 1; padding: 8px; min-width: 140px;" type="text"/>
 <button class="btn-success" onclick="searchDatabase()">Search</button>
 <button class="btn-warning" onclick="clearDatabaseSearch()">Clear</button>
 </div>
-<div style="display: flex; gap: 10px;">
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">
 <select id="database-filter-state" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All States</option>
 </select>
 <select id="database-filter-county" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All Counties</option>
 </select>
-<select id="database-filter-type" onchange="filterDatabase()" style="padding: 8px;"></select>
+<select id="database-filter-type" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All Cave Types</option>
 <option value="land">Land Caves</option>
 <option value="underwater">Underwater Caves</option>
-
+</select>
 <select id="database-filter-status" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All Entry Status</option>
 <option value="C">C - Commercial</option>

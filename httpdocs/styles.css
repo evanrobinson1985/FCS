@@ -1,3 +1,19 @@
+/* Form controls given flex: 1 (equal-width search bars/toolbars all over
+   this page) default to a min-width equal to their own content/intrinsic
+   size as a flex item, which can exceed what's actually available on a
+   narrow screen and force the whole row - and everything containing it -
+   wider than the viewport. This lets flex: 1 actually shrink them to fit. */
+input, select, textarea, button {
+  min-width: 0;
+}
+
+/* Native file-picker inputs (Upload Cave Maps, cave pictures, the Excel
+   import) render at their own intrinsic width in some mobile browsers,
+   wider than the min-width: 0 rule above can shrink - cap it directly. */
+input[type="file"] {
+  max-width: 100%;
+}
+
 :root {
       --primary-color: #2a4d69;
       --secondary-color: #4b86b4;
@@ -730,7 +746,7 @@
 
       .form-column {
         flex: 1;
-        min-width: 300px;
+        min-width: min(300px, 100%);
       }
 
       .hillshade-opacity-controls {
@@ -873,6 +889,37 @@
       grid-template-columns: repeat(2, 1fr); /* Two clean columns */
       gap: 8px;
       margin-top: 4px;
+    }
+
+    /* A plain 1fr column can still grow past its "fair share" to fit
+       content that doesn't shrink (a fixed-width input plus its label,
+       e.g. the Latitude/Longitude row on Edit Cave Data), forcing the
+       whole grid - and everything containing it - wider than a phone
+       viewport. One column gives each item the full width instead. This
+       must come after the unconditional rule above: with equal
+       specificity, a later rule wins regardless of being inside @media,
+       so placing this earlier in the file would have no effect even at a
+       matching viewport width. */
+    @media (max-width: 768px) {
+      .checkbox-group {
+        grid-template-columns: 1fr;
+      }
+
+      /* Several .checkbox-item rows pair a label with a select/input that
+         has a hardcoded inline width (e.g. style="width: 220px") sized for
+         a desktop layout - on a phone that, plus the label beside it in
+         the same flex row, regularly exceeds the available width by 50-
+         100px+. !important is required to win over the inline style; wrap
+         lets the control drop to its own line if even 100% still doesn't
+         fit next to a long label. */
+      .checkbox-item {
+        flex-wrap: wrap;
+      }
+      .checkbox-group select,
+      .checkbox-group input:not([type="checkbox"]):not([type="radio"]) {
+        width: 100% !important;
+        max-width: 100%;
+      }
     }
 
 
