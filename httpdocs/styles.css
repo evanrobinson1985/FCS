@@ -457,6 +457,28 @@ input[type="file"] {
       width: 100%;
     }
 
+    /* Caves by County can have far more bars than fit in the card at once
+       (every county with at least one cave, potentially 60+ for Florida
+       alone) - scroll horizontally instead of thinning the chart down to
+       where Chart.js starts skipping labels to avoid overlap. */
+    #counties-chart {
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    #counties-chart::-webkit-scrollbar {
+      height: 10px;
+    }
+
+    #counties-chart::-webkit-scrollbar-thumb {
+      background-color: var(--primary-color);
+      border-radius: 5px;
+    }
+
+    #counties-chart::-webkit-scrollbar-track {
+      background: #eee;
+    }
+
     .stats-table {
       width: 100%;
       border-collapse: collapse;

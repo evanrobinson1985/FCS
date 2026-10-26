@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=4">
+ <link rel="stylesheet" href="styles.css?v=5">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -4289,13 +4289,24 @@ function createCountiesChart(caveData) {
     return state ? `${countyName} (${state})` : countyName;
   });
 
-  // Create the chart
+  // Create the chart. With potentially 60+ counties, a responsive canvas
+  // squeezed into the card's width would make Chart.js auto-skip most of
+  // the labels to avoid overlap - instead, size the canvas by how many
+  // bars there are (wide enough that every label gets its own space) and
+  // let the card's #counties-chart wrapper (overflow-x: auto, see
+  // styles.css) scroll horizontally to it.
+  const container = document.getElementById('counties-chart');
+  const minChartWidth = Math.max(container.clientWidth || 0, countyLabels.length * 55);
+
   const countiesCtx = document.createElement('canvas');
   countiesCtx.id = 'counties-canvas';
-  countiesCtx.height = 220;
-  document.getElementById('counties-chart').innerHTML = '';
-  document.getElementById('counties-chart').appendChild(countiesCtx);
-  
+  countiesCtx.width = minChartWidth;
+  countiesCtx.height = 240;
+  countiesCtx.style.width = minChartWidth + 'px';
+  countiesCtx.style.height = '240px';
+  container.innerHTML = '';
+  container.appendChild(countiesCtx);
+
   const chart = new Chart(countiesCtx, {
     type: 'bar',
     data: {
@@ -4308,9 +4319,16 @@ function createCountiesChart(caveData) {
       }]
     },
     options: {
-      responsive: true,
+      responsive: false,
       maintainAspectRatio: false,
       scales: {
+        x: {
+          ticks: {
+            autoSkip: false,
+            maxRotation: 60,
+            minRotation: 45
+          }
+        },
         y: {
           beginAtZero: true,
           ticks: {
