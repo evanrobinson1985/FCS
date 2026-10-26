@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=3">
+ <link rel="stylesheet" href="styles.css?v=4">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -269,9 +269,14 @@
 <div>
 <span id="logged-in-user">Logged in as: </span>
 <span id="twofa-status" style="margin-left: 15px; font-size: 0.9em;"></span>
-<button type="button" id="twofa-toggle-btn" onclick="handleToggleTwoFactor()" style="margin-left: 5px;"></button>
-<button type="button" id="change-username-btn" onclick="toggleChangeUsernameForm()" style="margin-left: 5px;">Change Username</button>
-<button type="button" id="change-password-btn" onclick="toggleChangePasswordForm()" style="margin-left: 5px;">Change Password</button>
+<div class="settings-menu-container" style="position: relative; display: inline-block; margin-left: 8px;">
+<button type="button" id="settings-menu-btn" onclick="toggleSettingsMenu()" title="Account Settings" aria-haspopup="true" aria-expanded="false" style="font-size: 1.1em; line-height: 1; padding: 6px 10px;">⚙️</button>
+<div id="settings-menu-dropdown" style="display: none; position: absolute; right: 0; top: 100%; z-index: 100; margin-top: 4px; min-width: 190px; background: #fff; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); overflow: hidden;">
+<button type="button" id="twofa-toggle-btn" class="settings-menu-item" onclick="handleToggleTwoFactor(); closeSettingsMenu();"></button>
+<button type="button" id="change-username-btn" class="settings-menu-item" onclick="toggleChangeUsernameForm(); closeSettingsMenu();">Change Username</button>
+<button type="button" id="change-password-btn" class="settings-menu-item" onclick="toggleChangePasswordForm(); closeSettingsMenu();">Change Password</button>
+</div>
+</div>
 <button class="logout-btn" id="logout-btn">Log Out</button>
 </div>
 </div>
@@ -7840,6 +7845,30 @@ window.addEventListener('error', function(e) {
     if (statusEl) statusEl.textContent = enabled ? '🔒 2FA: On' : '2FA: Off';
     if (toggleBtn) toggleBtn.textContent = enabled ? 'Disable 2FA' : 'Enable 2FA';
   }
+
+  // Settings cog dropdown in the dashboard header - holds 2FA/Change
+  // Username/Change Password behind one icon so the header doesn't wrap
+  // into a row of buttons. Log Out stays outside this menu.
+  function toggleSettingsMenu() {
+    const dropdown = document.getElementById('settings-menu-dropdown');
+    const btn = document.getElementById('settings-menu-btn');
+    if (!dropdown) return;
+    const show = dropdown.style.display === 'none' || !dropdown.style.display;
+    dropdown.style.display = show ? 'block' : 'none';
+    if (btn) btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+  }
+
+  function closeSettingsMenu() {
+    const dropdown = document.getElementById('settings-menu-dropdown');
+    const btn = document.getElementById('settings-menu-btn');
+    if (dropdown) dropdown.style.display = 'none';
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+
+  document.addEventListener('click', function (event) {
+    const container = document.querySelector('.settings-menu-container');
+    if (container && !container.contains(event.target)) closeSettingsMenu();
+  });
 
   // Lets the logged-in user turn their own 2FA on or off. Disabling it
   // weakens the account, so the server requires the current password to
