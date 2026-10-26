@@ -331,6 +331,88 @@ describe("password hashing", () => {
   });
 });
 
+describe("webmaster-created user accounts (POST /api/create-user)", () => {
+  test("a webmaster can create an active member account directly", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
+    assert.equal(res.status, 200);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "webcreated1");
+    assert.ok(created, "new user should be present in users.json");
+    assert.equal(created.role, "member");
+    assert.equal(created.status, "active", "webmaster-created accounts should be active immediately, not pending");
+    assert.equal(created.password, undefined, "plaintext password must never be stored");
+    assert.ok(created.passwordHash.startsWith("$2"), "should store a bcrypt hash");
+
+    // And it can actually log in right away, with no separate approval step.
+    const loginToken = await login("webcreated1", "WebCreatedPass123!");
+    assert.ok(loginToken);
+  });
+
+  test("defaults fullName to username when not provided", async () => {
+    await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`)
+      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "nofullname");
+    assert.equal(created.fullName, "nofullname");
+  });
+
+  test("a member cannot create a user account", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app)
+      .post("/api/create-user")
+      .send({ username: "noauth", email: "noauth@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects a duplicate username", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "member1", email: "different@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a password shorter than the minimum length", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
+    assert.equal(res.status, 400);
+  });
+
+  // Same regression as public self-registration: this username/email is
+  // rendered in the Account Management table too.
+  test("rejects a username containing HTML/script syntax", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 400);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    assert.ok(!users.some((u) => u.email === "webxss@example.com"), "no account should have been created");
+  });
+});
+
 describe("change password", () => {
   before(async () => {
     await seedUser({ username: "changepassuser", password: "OldPassword123!", role: "member" });

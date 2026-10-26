@@ -342,6 +342,31 @@
   
   <div class="account-management-controls">
     <div class="control-section">
+      <h4>Create New Account</h4>
+      <p style="margin-bottom: 10px;">
+        Creates a normal member account immediately (active, no pending approval needed) - unlike the public
+        "Create New Account" link on the login page, which always starts pending until a webmaster approves it.
+        Grant states and change role from the table below once it's created.
+      </p>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+        <label>Username<br>
+          <input type="text" id="new-user-username" style="padding: 6px; width: 160px;">
+        </label>
+        <label>Email<br>
+          <input type="email" id="new-user-email" style="padding: 6px; width: 200px;">
+        </label>
+        <label>Full Name (optional)<br>
+          <input type="text" id="new-user-fullname" style="padding: 6px; width: 160px;">
+        </label>
+        <label>Password<br>
+          <input type="text" id="new-user-password" style="padding: 6px; width: 160px;">
+        </label>
+        <button type="button" class="btn-success" onclick="createUserAccount()">Create Account</button>
+      </div>
+      <p id="create-user-status" style="margin-top: 8px;"></p>
+    </div>
+
+    <div class="control-section">
       <h4>User Accounts</h4>
       <div class="user-list-container">
         <table class="user-table">
@@ -10729,6 +10754,51 @@ async function handleForgotPassword() {
   } catch (error) {
     console.error('Password reset error:', error);
     alert('Password reset failed: ' + error.message);
+  }
+}
+
+// Creates a normal (member) account directly, active immediately. See
+// POST /api/create-user in server.js - webmaster-only, unlike the public
+// self-registration flow which always starts pending.
+async function createUserAccount() {
+  const username = document.getElementById('new-user-username').value.trim();
+  const email = document.getElementById('new-user-email').value.trim();
+  const fullName = document.getElementById('new-user-fullname').value.trim();
+  const password = document.getElementById('new-user-password').value;
+  const statusEl = document.getElementById('create-user-status');
+
+  if (!username || !email || !password) {
+    statusEl.textContent = 'Username, email, and password are required.';
+    statusEl.style.color = 'red';
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/create-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+        'X-CSRF-Token': getCSRFToken()
+      },
+      body: JSON.stringify({ username, email, password, fullName })
+    });
+
+    const result = await response.json();
+    if (response.ok && result.success) {
+      statusEl.textContent = result.message;
+      statusEl.style.color = 'green';
+      document.getElementById('new-user-username').value = '';
+      document.getElementById('new-user-email').value = '';
+      document.getElementById('new-user-fullname').value = '';
+      document.getElementById('new-user-password').value = '';
+      loadAccountManagement(); // Refresh the list
+    } else {
+      throw new Error(result.error || 'Failed to create account');
+    }
+  } catch (error) {
+    statusEl.textContent = 'Error: ' + error.message;
+    statusEl.style.color = 'red';
   }
 }
 

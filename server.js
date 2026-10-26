@@ -4080,6 +4080,74 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
   }
 });
 
+// Lets a webmaster create a normal member account directly from Account
+// Management, active immediately - unlike the public self-registration
+// flow (POST /api/create-account above), which always starts "pending"
+// and needs separate approval. A webmaster creating the account directly
+// is already that approval, so this skips the pending step. Role is
+// always "member"; use /api/change-user-role afterward to promote it.
+app.post("/api/create-user", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
+  try {
+    const { username, email, password, fullName } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: "Username, email, and password are required" });
+    }
+    // Same charset restriction as public self-registration - this username/
+    // email is rendered in the Account Management table too (escapeStatsHtml()
+    // on render is the other half of this defense-in-depth pair).
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(username)) {
+      return res.status(400).json({
+        error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
+      });
+    }
+    if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
+      });
+    }
+
+    const users = loadUsers();
+    if (users.find((u) => u.username === username)) {
+      return res.status(400).json({ error: "Username already exists" });
+    }
+    if (users.find((u) => u.email === email)) {
+      return res.status(400).json({ error: "Email already exists" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const newUser = {
+      id: `member-${Date.now()}`,
+      username,
+      email,
+      passwordHash,
+      fullName: fullName || username,
+      nssNumber: "",
+      role: "member",
+      status: "active",
+      allowedStates: [], // grant via the per-row states control once created
+      created: new Date().toISOString(),
+      lastLogin: null,
+      loginAttempts: 0,
+      isEmailVerified: true,
+      twoFactorEnabled: false,
+      loginIPs: [],
+    };
+
+    users.push(newUser);
+    saveUsers(users);
+
+    res.json({ success: true, message: `Account "${username}" created and active.` });
+  } catch (error) {
+    console.error("Error creating user:", error);
+    res.status(500).json({ error: "Failed to create user" });
+  }
+});
+
 // Change user role
 app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
   try {
