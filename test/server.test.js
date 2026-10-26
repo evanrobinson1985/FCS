@@ -413,6 +413,66 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
   });
 });
 
+describe("statistics card preferences (GET/POST /api/stats-preferences)", () => {
+  test("defaults to empty hidden/order before anything is ever saved", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { hidden: [], order: [] });
+  });
+
+  test("a member (not just admin/webmaster) can save and read back their own layout", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const saveRes = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: ["equipment", "geology"], order: ["nationwide", "summary"] });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(getRes.status, 200);
+    assert.deepEqual(getRes.body, { hidden: ["equipment", "geology"], order: ["nationwide", "summary"] });
+  });
+
+  test("one account's saved layout doesn't affect another's", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ hidden: ["dimensions"], order: [] });
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hidden.includes("dimensions"), "webmaster1's own layout should be unaffected by member1's save");
+  });
+
+  test("rejects an unrecognized card id", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: ["not-a-real-card"], order: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a non-array hidden/order", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: "summary", order: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects an unauthenticated request on both routes", async () => {
+    const getRes = await request(app).get("/api/stats-preferences");
+    assert.equal(getRes.status, 401);
+    const postRes = await request(app).post("/api/stats-preferences").send({ hidden: [], order: [] });
+    assert.equal(postRes.status, 401);
+  });
+});
+
 describe("change password", () => {
   before(async () => {
     await seedUser({ username: "changepassuser", password: "OldPassword123!", role: "member" });

@@ -4568,6 +4568,56 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
   }
 });
 
+// Every card that can appear on the Statistics tab (see httpdocs/portal.html's
+// data-card-id attributes and card.dataset.cardId assignments) - the
+// allowlist a saved layout's hidden/order arrays are validated against
+// below, so a user's own record can never end up holding arbitrary strings.
+const KNOWN_STATS_CARD_IDS = new Set([
+  "summary", "nationwide", "access-status", "cave-types", "states", "counties",
+  "entry-status", "equipment", "recent-activity", "dimensions",
+  "historical-timeline", "geology", "hazards", "elevation",
+  "documentation-coverage", "top-contributors", "map-status", "submission-funnel",
+]);
+
+// A personal display preference, not an admin action - any logged-in
+// account (member, admin, webmaster alike) can set which Statistics cards
+// they want hidden and what order they want the rest shown in. Saved on
+// the account itself (not just the browser) so it follows them to any
+// device.
+app.get("/api/stats-preferences", authenticateToken, (req, res) => {
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json(user.statsPreferences || { hidden: [], order: [] });
+});
+
+app.post("/api/stats-preferences", authenticateToken, express.json(), (req, res) => {
+  try {
+    const { hidden, order } = req.body;
+    if (!Array.isArray(hidden) || !Array.isArray(order)) {
+      return res.status(400).json({ error: "hidden and order must be arrays" });
+    }
+    const isValidIdList = (list) => list.every((id) => typeof id === "string" && KNOWN_STATS_CARD_IDS.has(id));
+    if (!isValidIdList(hidden) || !isValidIdList(order)) {
+      return res.status(400).json({ error: "hidden/order contains an unrecognized card id" });
+    }
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === req.user.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    user.statsPreferences = { hidden, order };
+    saveUsers(users);
+    res.json({ success: true, statsPreferences: user.statsPreferences });
+  } catch (error) {
+    console.error("Error saving statistics preferences:", error);
+    res.status(500).json({ error: "Failed to save statistics preferences" });
+  }
+});
+
 // Every real Florida cave ID predating multi-state support looks like this:
 // a single "F", exactly 2 letters (the county code), then digits. Used only
 // as a fallback for records written before the explicit state/county fields

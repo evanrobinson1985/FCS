@@ -871,9 +871,21 @@
 <div class="tab-content" id="statistics">
 <h3>Florida Cave Survey Statistics</h3>
 <p>Overview of the cave database statistics and analytics.</p>
-<div class="stats-grid">
+<div id="stats-customize-bar" style="margin-bottom: 10px;">
+<button type="button" class="btn-success" onclick="toggleStatsCustomizeMode()" id="stats-customize-toggle-btn">Customize Layout</button>
+</div>
+<div id="stats-customize-panel" style="display: none; margin-bottom: 15px; padding: 12px; border: 1px solid #ccc; background: #f9f9f9; border-radius: 4px;">
+<p style="margin-bottom: 10px;">Show/hide cards and reorder them with the arrows. Changes apply immediately - click Save Layout to keep them for next time (saved to your account, so they follow you to any device), or Reset to Default to undo everything.</p>
+<div id="stats-customize-list"></div>
+<div style="margin-top: 10px;">
+<button type="button" class="btn-success" onclick="saveStatsLayout()">Save Layout</button>
+<button type="button" class="btn-warning" onclick="resetStatsLayout()">Reset to Default</button>
+<span id="stats-layout-save-status" style="margin-left: 10px;"></span>
+</div>
+</div>
+<div class="stats-grid" id="stats-grid">
 <!-- Summary Cards -->
-<div class="stats-card">
+<div class="stats-card" data-card-id="summary">
 <div class="stats-card-header">
 <h4>Database Summary</h4>
 </div>
@@ -896,7 +908,7 @@
 </div>
 </div>
 </div>
-<div class="stats-card">
+<div class="stats-card" data-card-id="nationwide">
 <div class="stats-card-header">
 <h4>Nationwide Overview</h4>
 </div>
@@ -912,7 +924,7 @@
 <p style="margin: 8px 0 0; font-size: 0.85em; color: #666;">Always shows every state's total, regardless of which states your account can browse in detail.</p>
 </div>
 </div>
-<div class="stats-card">
+<div class="stats-card" data-card-id="access-status">
 <div class="stats-card-header">
 <h4>Access Status</h4>
 </div>
@@ -936,7 +948,7 @@
 </div>
 </div>
 <!-- Charts -->
-<div class="stats-card chart-card">
+<div class="stats-card chart-card" data-card-id="cave-types">
 <div class="stats-card-header">
 <h4>Cave Types Distribution</h4>
 </div>
@@ -944,7 +956,7 @@
 <div class="chart-container" id="cave-types-chart"></div>
 </div>
 </div>
-<div class="stats-card chart-card">
+<div class="stats-card chart-card" data-card-id="states">
 <div class="stats-card-header">
 <h4>Caves by State</h4>
 </div>
@@ -952,7 +964,7 @@
 <div class="chart-container" id="states-chart"></div>
 </div>
 </div>
-<div class="stats-card chart-card">
+<div class="stats-card chart-card" data-card-id="counties">
 <div class="stats-card-header">
 <h4>Caves by County</h4>
 </div>
@@ -960,7 +972,7 @@
 <div class="chart-container" id="counties-chart"></div>
 </div>
 </div>
-<div class="stats-card chart-card">
+<div class="stats-card chart-card" data-card-id="entry-status">
 <div class="stats-card-header">
 <h4>Caves by Entry Status</h4>
 </div>
@@ -968,7 +980,7 @@
 <div class="chart-container" id="entry-status-chart"></div>
 </div>
 </div>
-<div class="stats-card chart-card">
+<div class="stats-card chart-card" data-card-id="equipment">
 <div class="stats-card-header">
 <h4>Equipment Requirements</h4>
 </div>
@@ -976,9 +988,11 @@
 <div class="chart-container" id="equipment-chart"></div>
 </div>
 </div>
-</div>
-<!-- Recent Activity Section -->
-<div class="stats-card full-width">
+<!-- Recent Activity Section - inside the grid (not a separate sibling
+     element) so it participates in the same hide/reorder system as every
+     other card; .full-width already makes it span every column via
+     grid-column, so this is a no-op visually. -->
+<div class="stats-card full-width" data-card-id="recent-activity">
 <div class="stats-card-header">
 <h4>Recent Activity</h4>
 </div>
@@ -2941,10 +2955,11 @@
 // Create the Dimensions Stats Card
 function createDimensionsStatsCard() {
   const statsGrid = document.querySelector('.stats-grid');
-  
+
   // Create the card
   const card = document.createElement('div');
   card.className = 'stats-card';
+  card.dataset.cardId = 'dimensions';
   
   // Add header
   card.innerHTML = `
@@ -2982,10 +2997,11 @@ function createDimensionsStatsCard() {
 // Create the Historical Data Chart
 function createHistoricalDataChart() {
   const statsGrid = document.querySelector('.stats-grid');
-  
+
   // Create the card for a full-width chart
   const card = document.createElement('div');
   card.className = 'stats-card full-width';
+  card.dataset.cardId = 'historical-timeline';
   
   card.innerHTML = `
     <div class="stats-card-header">
@@ -3102,10 +3118,11 @@ function createHistoricalDataChart() {
 // Create the Geology Card
 function createGeologyCard() {
   const statsGrid = document.querySelector('.stats-grid');
-  
+
   // Create the card
   const card = document.createElement('div');
   card.className = 'stats-card chart-card';
+  card.dataset.cardId = 'geology';
   
   card.innerHTML = `
     <div class="stats-card-header">
@@ -3189,10 +3206,11 @@ function createGeologyCard() {
 // Create Hazard Stats Card
 function createHazardStatsCard() {
   const statsGrid = document.querySelector('.stats-grid');
-  
+
   // Create the card
   const card = document.createElement('div');
   card.className = 'stats-card';
+  card.dataset.cardId = 'hazards';
   
   card.innerHTML = `
     <div class="stats-card-header">
@@ -3278,10 +3296,11 @@ function updateHazardStats() {
 // Create Elevation Distribution Chart
 function createElevationDistributionChart() {
   const statsGrid = document.querySelector('.stats-grid');
-  
+
   // Create the card
   const card = document.createElement('div');
   card.className = 'stats-card chart-card';
+  card.dataset.cardId = 'elevation';
   
   card.innerHTML = `
     <div class="stats-card-header">
@@ -3379,6 +3398,7 @@ function createDocumentationCoverageCard() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card';
+  card.dataset.cardId = 'documentation-coverage';
   card.innerHTML = `
     <div class="stats-card-header">
       <h4>Documentation Coverage</h4>
@@ -3430,6 +3450,7 @@ function createTopContributorsCard() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card full-width';
+  card.dataset.cardId = 'top-contributors';
   card.innerHTML = `
     <div class="stats-card-header">
       <h4>Top Contributors</h4>
@@ -3506,6 +3527,7 @@ function createMapStatusChart() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card chart-card';
+  card.dataset.cardId = 'map-status';
   card.innerHTML = `
     <div class="stats-card-header">
       <h4>Map / Survey Status</h4>
@@ -3579,6 +3601,7 @@ function createSubmissionFunnelCard() {
   const statsGrid = document.querySelector('.stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card';
+  card.dataset.cardId = 'submission-funnel';
   card.innerHTML = `
     <div class="stats-card-header">
       <h4>Submission Review Funnel</h4>
@@ -3645,6 +3668,16 @@ async function updateSubmissionFunnel() {
 
 // Update the statistics page with real data
 function updateStatistics() {
+  // Several cards below call `new Chart(...)` directly - if this runs
+  // before the Chart.js <script> tag (added at DOMContentLoaded) has
+  // actually finished loading over the network, that throws a
+  // ReferenceError partway through and every stat after the first chart
+  // silently never updates. Retry briefly instead of assuming it's ready.
+  if (typeof Chart === 'undefined') {
+    setTimeout(updateStatistics, 150);
+    return;
+  }
+
   console.log("Updating statistics with cave data...");
 
   // Nationwide totals/breakdown come from their own endpoint rather than
@@ -3785,16 +3818,211 @@ if (!document.getElementById('avg-cave-length')) {
   // Update UI with dimension stats
   if (document.getElementById('avg-cave-length')) {
     document.getElementById('avg-cave-length').textContent = `${avgLength} ft`;
-    document.getElementById('longest-cave').textContent = 
+    document.getElementById('longest-cave').textContent =
       `${longestCave.name} (${parseFloat(longestCave.length)} ft)`;
     document.getElementById('avg-vertical').textContent = `${avgVertical} ft`;
-    document.getElementById('deepest-cave').textContent = 
+    document.getElementById('deepest-cave').textContent =
       `${deepestCave.name} (${parseFloat(deepestCave.vertical)} ft)`;
-    document.getElementById('max-water-depth').textContent = 
+    document.getElementById('max-water-depth').textContent =
       `${maxWaterDepth} ft (${deepestWaterCave.name})`;
   }
 
+  // Every card above is created once (guarded on its own inner element not
+  // existing yet) then just has its numbers refreshed on later calls, so
+  // DOM order alone can't reflect a saved layout after the first run -
+  // apply the show/hide + order preference every time instead, once the
+  // full set of cards for this call is in place.
+  ensureStatsPreferencesLoaded().then(applyStatsLayout);
+}
 
+// ---- Statistics card customization (show/hide, reorder) ---------------
+// A personal display preference, not an admin feature - every account
+// type (member, admin, webmaster) can hide cards they don't care about and
+// reorder the rest. Saved to the account server-side (POST
+// /api/stats-preferences) so it's the same on any device, not just this
+// browser. Cards are positioned via the CSS `order` property rather than
+// actually moving DOM nodes - .stats-grid is a CSS grid, which (like flex)
+// honors `order` on its children, so this needs no DOM surgery and can't
+// conflict with the create-once-then-refresh pattern every card above uses.
+const STATS_CARD_TITLES = {
+  'summary': 'Database Summary',
+  'nationwide': 'Nationwide Overview',
+  'access-status': 'Access Status',
+  'cave-types': 'Cave Types Distribution',
+  'states': 'Caves by State',
+  'counties': 'Caves by County',
+  'entry-status': 'Caves by Entry Status',
+  'equipment': 'Equipment Requirements',
+  'recent-activity': 'Recent Activity',
+  'dimensions': 'Dimension Statistics',
+  'geology': 'Geological Distribution',
+  'hazards': 'Hazard Statistics',
+  'elevation': 'Elevation Distribution',
+  'historical-timeline': 'Cave Discovery Timeline',
+  'documentation-coverage': 'Documentation Coverage',
+  'top-contributors': 'Top Contributors',
+  'map-status': 'Map / Survey Status',
+  'submission-funnel': 'Submission Review Funnel',
+};
+// Matches the order each card is actually appended to the DOM the first
+// time updateStatistics() runs - the fallback for any card not mentioned
+// in a saved order (new cards added later, or before a layout is ever
+// customized/saved) and what "Reset to Default" restores.
+const STATS_CARD_DEFAULT_ORDER = [
+  'summary', 'nationwide', 'access-status', 'cave-types', 'states', 'counties',
+  'entry-status', 'equipment', 'recent-activity', 'dimensions', 'geology',
+  'hazards', 'elevation', 'historical-timeline', 'documentation-coverage',
+  'top-contributors', 'map-status', 'submission-funnel',
+];
+
+let statsHiddenCards = [];
+let statsCardOrder = [];
+let statsPreferencesLoaded = false;
+let statsPreferencesLoadingPromise = null;
+
+function ensureStatsPreferencesLoaded() {
+  if (statsPreferencesLoaded) return Promise.resolve();
+  if (statsPreferencesLoadingPromise) return statsPreferencesLoadingPromise;
+  statsPreferencesLoadingPromise = fetch('/api/stats-preferences', {
+    headers: {
+      'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+      'X-CSRF-Token': getCSRFToken()
+    }
+  })
+    .then(response => response.ok ? response.json() : { hidden: [], order: [] })
+    .then(prefs => {
+      statsHiddenCards = Array.isArray(prefs.hidden) ? prefs.hidden : [];
+      statsCardOrder = Array.isArray(prefs.order) ? prefs.order : [];
+      statsPreferencesLoaded = true;
+    })
+    .catch(error => {
+      console.error('Error loading statistics preferences:', error);
+      statsPreferencesLoaded = true; // fall back to the default layout rather than retrying forever
+    });
+  return statsPreferencesLoadingPromise;
+}
+
+function effectiveStatsOrder() {
+  // Any card the saved order doesn't mention (never customized yet, or a
+  // card added after the user last saved) falls back to its position in
+  // the default order, placed after everything the saved order does cover.
+  const known = statsCardOrder.filter(id => STATS_CARD_TITLES[id]);
+  const missing = STATS_CARD_DEFAULT_ORDER.filter(id => !known.includes(id));
+  return [...known, ...missing];
+}
+
+function applyStatsLayout() {
+  const order = effectiveStatsOrder();
+  document.querySelectorAll('#stats-grid .stats-card[data-card-id]').forEach(card => {
+    const id = card.dataset.cardId;
+    card.style.display = statsHiddenCards.includes(id) ? 'none' : '';
+    const index = order.indexOf(id);
+    card.style.order = index === -1 ? 999 : index;
+  });
+}
+
+function toggleStatsCustomizeMode() {
+  const panel = document.getElementById('stats-customize-panel');
+  const isOpening = panel.style.display === 'none';
+  panel.style.display = isOpening ? 'block' : 'none';
+  if (isOpening) {
+    ensureStatsPreferencesLoaded().then(renderStatsCustomizePanel);
+  }
+}
+
+function renderStatsCustomizePanel() {
+  const list = document.getElementById('stats-customize-list');
+  list.innerHTML = '';
+  const order = effectiveStatsOrder();
+
+  order.forEach((id, index) => {
+    const title = STATS_CARD_TITLES[id];
+    if (!title) return;
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid #eee;';
+
+    const checkboxLabel = document.createElement('label');
+    checkboxLabel.style.cssText = 'display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer;';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !statsHiddenCards.includes(id);
+    checkbox.onchange = () => {
+      if (checkbox.checked) {
+        statsHiddenCards = statsHiddenCards.filter(h => h !== id);
+      } else if (!statsHiddenCards.includes(id)) {
+        statsHiddenCards.push(id);
+      }
+      applyStatsLayout();
+    };
+    checkboxLabel.appendChild(checkbox);
+    checkboxLabel.appendChild(document.createTextNode(title));
+    row.appendChild(checkboxLabel);
+
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.textContent = '↑';
+    upBtn.title = 'Move up';
+    upBtn.disabled = index === 0;
+    upBtn.onclick = () => {
+      const current = effectiveStatsOrder();
+      [current[index - 1], current[index]] = [current[index], current[index - 1]];
+      statsCardOrder = current;
+      applyStatsLayout();
+      renderStatsCustomizePanel();
+    };
+    row.appendChild(upBtn);
+
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button';
+    downBtn.textContent = '↓';
+    downBtn.title = 'Move down';
+    downBtn.disabled = index === order.length - 1;
+    downBtn.onclick = () => {
+      const current = effectiveStatsOrder();
+      [current[index], current[index + 1]] = [current[index + 1], current[index]];
+      statsCardOrder = current;
+      applyStatsLayout();
+      renderStatsCustomizePanel();
+    };
+    row.appendChild(downBtn);
+
+    list.appendChild(row);
+  });
+}
+
+async function saveStatsLayout() {
+  const statusEl = document.getElementById('stats-layout-save-status');
+  try {
+    const response = await fetch('/api/stats-preferences', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+        'X-CSRF-Token': getCSRFToken()
+      },
+      body: JSON.stringify({ hidden: statsHiddenCards, order: effectiveStatsOrder() })
+    });
+    const result = await response.json();
+    if (response.ok && result.success) {
+      statsCardOrder = result.statsPreferences.order;
+      statsHiddenCards = result.statsPreferences.hidden;
+      statusEl.textContent = 'Layout saved.';
+      statusEl.style.color = 'green';
+    } else {
+      throw new Error(result.error || 'Failed to save layout');
+    }
+  } catch (error) {
+    statusEl.textContent = 'Error: ' + error.message;
+    statusEl.style.color = 'red';
+  }
+}
+
+async function resetStatsLayout() {
+  statsHiddenCards = [];
+  statsCardOrder = [];
+  applyStatsLayout();
+  renderStatsCustomizePanel();
+  await saveStatsLayout();
 }
 
 // Update equipment chart with real data
@@ -4161,36 +4389,32 @@ function createEntryStatusChart(commercial, government, private, other) {
   });
 }
 
-// Add event listener to update statistics when the tab is clicked
+// Load Chart.js once up front. Previously this also gated the ONLY place
+// that attached the Statistics tab's click listener (inside
+// chartScript.onload) - a real bug, not just a sandbox quirk: a click that
+// happened before this external script finished loading over the network
+// found no listener attached at all and did nothing, with no way to
+// recover short of reloading the whole page. The tab-click handler now
+// always calls updateStatistics() directly (see the main tab-click
+// handler above); updateStatistics() itself waits for Chart.js to be
+// ready (see the guard at its top) instead of the tab depending on load
+// timing.
 document.addEventListener('DOMContentLoaded', function() {
-  // Add Chart.js library
   const chartScript = document.createElement('script');
   chartScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js';
   document.head.appendChild(chartScript);
-  
-  // Wait for Chart.js to load
-  chartScript.onload = function() {
-    // Add an event listener for the statistics tab
-    const statisticsTab = document.querySelector('[data-tab="statistics"]');
-    if (statisticsTab) {
-      statisticsTab.addEventListener('click', function() {
-        // Update the statistics when the tab is selected
-        updateStatistics();
-      });
-    }
-    
-    // Also update statistics after login (if starting on the statistics tab)
-    const loginBtn = document.getElementById('login-btn');
-    if (loginBtn) {
-      loginBtn.addEventListener('click', function() {
-        setTimeout(function() {
-          if (document.getElementById('statistics').classList.contains('active')) {
-            updateStatistics();
-          }
-        }, 500);
-      });
-    }
-  };
+
+  // Also update statistics after login (if starting on the statistics tab)
+  const loginBtn = document.getElementById('login-btn');
+  if (loginBtn) {
+    loginBtn.addEventListener('click', function() {
+      setTimeout(function() {
+        if (document.getElementById('statistics').classList.contains('active')) {
+          updateStatistics();
+        }
+      }, 500);
+    });
+  }
 });
 
     // Load the cave database from the authenticated API. This requires a
@@ -7847,6 +8071,10 @@ window.addEventListener('error', function(e) {
             return;
           }
           loadWebsiteManagementSettings();
+        }
+
+        if (tabContentId === 'statistics') {
+          updateStatistics();
         }
       });
     });
