@@ -4577,9 +4577,17 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1);
 });
 
-// Start server. Guarded so the test suite can `require("../server")` to get
-// the Express app (for supertest) without also binding a real port.
-if (require.main === module) {
+// Start server. Guarded on NODE_ENV (the test suite sets it to "test"
+// before requiring this file - see test/server.test.js) rather than
+// `require.main === module`, so the test suite can `require("../server")`
+// to get the Express app (for supertest) without also binding a real port.
+//
+// This must NOT be guarded on require.main === module: Phusion Passenger
+// loads this file via require(), not as the main script, so that check is
+// always false under Passenger - meaning app.listen() never ran there and
+// every request timed out waiting for a server that was never actually
+// listening.
+if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Webmaster portal running at http://localhost:${PORT}`);
     console.log("Cave maps directories:");
