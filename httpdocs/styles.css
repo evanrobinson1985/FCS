@@ -1150,8 +1150,18 @@
       text-decoration: underline;
     }
 
+    .user-list-container {
+      /* The table has too many columns to fit a phone-width viewport - without
+         this, content past the edge is just clipped with no way to reach it
+         (the page itself doesn't scroll horizontally). This lets the table
+         scroll within its own box instead, on touch or with a trackpad/wheel. */
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
     .user-table {
       width: 100%;
+      min-width: 820px;
       border-collapse: collapse;
       margin-top: 10px;
     }
