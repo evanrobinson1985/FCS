@@ -852,6 +852,10 @@
 </div>
 <div id="cave-import-report" style="margin-top: 10px;"></div>
 </div>
+<!-- Outside the scrollable wrapper below on purpose - pagination controls
+     need to stay visible regardless of how far the table itself is
+     scrolled, horizontally or vertically. -->
+<div id="cave-database-pagination" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;"></div>
 <!-- This is the scrollable wrapper for the spreadsheet -->
 <div id="cave-database-scroll-wrapper" style="
                   width: 100%;
@@ -4248,126 +4252,18 @@ document.addEventListener('DOMContentLoaded', function() {
     // the only place this is called from now, once there's actually a
     // valid session to call it with.
 
-function loadFcsDatabaseTable() { 
-      const wrapper = document.getElementById("cave-database-scroll-wrapper");
-      wrapper.innerHTML = ""; // Clear any previous table
-
-      const table = document.createElement("table");
-      table.className = "cave-data-table";
-
-      // Use the complete list of headers
-      const headers = [
-        'State', 'County', 'Cave ID', 'Record Type', 'Entrance No', 'Line No', 'Cave Name',
-        'Township', 'Range', 'Section', 'Section Part', 'Sub-Part',
-        'Location Accuracy', 'USGS Quad', 'Topo Symbol', 'Elevation',
-        'Ownership', 'Entry Status', 'Equipment Needed', 'Entrance Type',
-        'Field Indication', 'Location Info Type', 'Map Type', 'Map Status',
-        'Geologic Formation', 'Topographic Province', 'Cave Length',
-        'Vertical Extent', 'Max Water Depth', 'Deepest Pitch',
-        'Latitude', 'Longitude', 'Exploration Possibility',
-        'Reporter NSS #', 'Date YYMM', 'Cave Type', 'Hazardous Conditions', 
-        'Hazard Notes', 'Owner/Entity Info', 'Actions'
-      ];
-
-      const thead = document.createElement("thead");
-      const headerRow = document.createElement("tr");
-      headers.forEach(header => {
-        const th = document.createElement("th");
-        th.textContent = header;
-        headerRow.appendChild(th);
-      });
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
-
-      const tbody = document.createElement("tbody");
+function loadFcsDatabaseTable() {
+      // Was a second, near-identical full-table-render copy of
+      // displayFilteredData() below (same columns, same Actions buttons) -
+      // consolidated so there's one paginated implementation instead of two
+      // copies that could drift out of sync, and so the initial post-login
+      // load gets the same pagination as a search/filter does. One
+      // behavior change from consolidating: "Entrance No" now blanks
+      // rather than defaulting to "1" when unset, matching
+      // displayFilteredData's existing behavior - the two copies had
+      // quietly disagreed on this.
       const displayData = window.caveDataStore || window.caveDatabase || [];
-
-      displayData.forEach(cave => {
-        const row = document.createElement("tr");
-        const resolved = resolveCaveStateAndCounty(cave);
-
-        // Create a complete data object with all fields, handling undefined values
-        const values = {
-          'State': resolved.state || '',
-          'County': resolved.county || '',
-          'Cave ID': cave.id || '',
-          'Record Type': cave.recordType || '',
-          'Entrance No': cave.entranceNumber || '1',
-          'Line No': cave.lineNumber || '',
-          'Cave Name': cave.name || '',
-          'Township': cave.township || '',
-          'Range': cave.range || '',
-          'Section': cave.section || '',
-          'Section Part': cave.sectionPart || '',
-          'Sub-Part': cave.subPart || '',
-          'Location Accuracy': cave.locationAccuracy || '',
-          'USGS Quad': cave.usgsQuad || '',
-          'Topo Symbol': cave.topoSymbol || '',
-          'Elevation': cave.elevation || '',
-          'Ownership': cave.ownership || '',
-          'Entry Status': cave.entryStatus || '',
-          'Equipment Needed': Array.isArray(cave.equipment) ? cave.equipment.join('') : (cave.equipment || ''),
-          'Entrance Type': cave.entranceType || '',
-          'Field Indication': cave.fieldIndication || '',
-          'Location Info Type': cave.locationInfo || '',
-          'Map Type': cave.mapType || '',
-          'Map Status': cave.mapStatus || '',
-          'Geologic Formation': cave.geology || '',
-          'Topographic Province': cave.topoProvince || '',
-          'Cave Length': cave.length || '',
-          'Vertical Extent': cave.vertical || '',
-          'Max Water Depth': cave.waterDepth || cave.water || '',
-          'Deepest Pitch': cave.pitch || '',
-          'Latitude': cave.latitude || cave.lat || '',
-          'Longitude': cave.longitude || cave.lng || '',
-          'Exploration Possibility': Array.isArray(cave.exploration) ? cave.exploration.join('') : (cave.exploration || ''),
-          'Reporter NSS #': cave.reporter || cave.reporterNSS || '',
-          'Date YYMM': cave.date || '',
-          'Cave Type': cave.type || (cave.name && /spring|underwater|blue|grotto|sink|siphon/i.test(cave.name) ? 'Underwater Cave' : 'Land Cave'),
-          'Hazardous Conditions': cave.hazards ? [
-            cave.hazards.badAir ? 'Bad Air' : '',
-            cave.hazards.unstable ? 'Unstable' : '',
-            cave.hazards.casualties ? 'Casualties' : ''
-          ].filter(h => h).join(', ') : '',
-          'Hazard Notes': cave.hazards?.notes || '',
-          'Owner/Entity Info': cave.ownerInfo || '',
-          'Actions': ''
-        };
-
-        // Add each field to the row
-        headers.forEach(header => {
-          const td = document.createElement("td");
-
-          if (header === 'Actions') {
-            const viewBtn = document.createElement('button');
-            viewBtn.className = 'btn-view-map view-on-map-btn';
-            viewBtn.textContent = 'View on Map';
-            viewBtn.dataset.caveId = cave.id;
-            viewBtn.dataset.lat = cave.lat || cave.latitude;
-            viewBtn.dataset.lng = cave.lng || cave.longitude;
-
-            const editBtn = document.createElement('button');
-            editBtn.className = 'btn-edit edit-cave-btn';
-            editBtn.textContent = 'Edit';
-            editBtn.onclick = function () {
-              editCaveFromMap(cave.id);
-            };
-
-            td.appendChild(viewBtn);
-            td.appendChild(document.createTextNode(' '));
-            td.appendChild(editBtn);
-          } else {
-            td.textContent = values[header] || '';
-          }
-
-          row.appendChild(td);
-        });
-
-        tbody.appendChild(row);
-      });
-
-      table.appendChild(tbody);
-      wrapper.appendChild(table);
+      displayFilteredData(displayData);
     }
 
   
@@ -7129,13 +7025,38 @@ window.addEventListener('error', function(e) {
       displayFilteredData(filteredData);
     }
 
+    // Rendering the whole filtered set at once is fine at today's scale
+    // (a couple hundred caves) but would mean rebuilding 1000s of DOM rows
+    // - noticeably janky - on every search/filter change as the database
+    // grows toward a complete Florida survey (low thousands of records).
+    // Paginating keeps each render's DOM work bounded regardless of how
+    // large the database gets. Export CSV/Excel/GPX are unaffected - they
+    // already read from caveDataStore directly, not from what's currently
+    // on screen.
+    const CAVE_DB_PAGE_SIZE = 100;
+    let caveDbFilteredData = [];
+    let caveDbCurrentPage = 1;
+
     function displayFilteredData(filteredData) {
+      caveDbFilteredData = filteredData;
+      caveDbCurrentPage = 1;
+      renderCaveDatabasePage();
+    }
+
+    function renderCaveDatabasePage() {
       const wrapper = document.getElementById("cave-database-scroll-wrapper");
       wrapper.innerHTML = "";
-      
+
+      const totalRows = caveDbFilteredData.length;
+      const totalPages = Math.max(1, Math.ceil(totalRows / CAVE_DB_PAGE_SIZE));
+      if (caveDbCurrentPage > totalPages) caveDbCurrentPage = totalPages;
+      const startIdx = (caveDbCurrentPage - 1) * CAVE_DB_PAGE_SIZE;
+      const pageData = caveDbFilteredData.slice(startIdx, startIdx + CAVE_DB_PAGE_SIZE);
+      renderCaveDatabasePaginationControls(totalRows, totalPages, startIdx, pageData.length);
+
       const table = document.createElement("table");
       table.className = "cave-data-table";
-      
+
       const headers = [
         'State', 'County', 'Cave ID', 'Record Type', 'Entrance No', 'Line No',
         'Cave Name', 'Township', 'Range', 'Section', 'Section Part', 'Sub-Part',
@@ -7148,7 +7069,7 @@ window.addEventListener('error', function(e) {
         'Reporter NSS #', 'Date YYMM', 'Cave Type', 'Hazardous Conditions',
         'Hazard Notes', 'Owner/Entity Info', 'Actions'
       ];
-      
+
       const thead = document.createElement("thead");
       const headerRow = document.createElement("tr");
       headers.forEach(header => {
@@ -7158,10 +7079,10 @@ window.addEventListener('error', function(e) {
       });
       thead.appendChild(headerRow);
       table.appendChild(thead);
-      
-      // Add filtered data
+
+      // Add this page's data
       const tbody = document.createElement("tbody");
-      filteredData.forEach(cave => {
+      pageData.forEach(cave => {
         const row = document.createElement("tr");
         const resolved = resolveCaveStateAndCounty(cave);
 
@@ -7239,9 +7160,44 @@ window.addEventListener('error', function(e) {
         
         tbody.appendChild(row);
       });
-      
+
       table.appendChild(tbody);
       wrapper.appendChild(table);
+    }
+
+    function renderCaveDatabasePaginationControls(totalRows, totalPages, startIdx, pageRowCount) {
+      const container = document.getElementById("cave-database-pagination");
+      container.innerHTML = "";
+
+      const info = document.createElement("span");
+      info.textContent = totalRows === 0
+        ? "No caves match the current search/filters."
+        : `Showing ${startIdx + 1}-${startIdx + pageRowCount} of ${totalRows}`;
+      container.appendChild(info);
+
+      if (totalPages <= 1) return;
+
+      const prevBtn = document.createElement("button");
+      prevBtn.textContent = "← Previous";
+      prevBtn.disabled = caveDbCurrentPage === 1;
+      prevBtn.onclick = () => {
+        caveDbCurrentPage--;
+        renderCaveDatabasePage();
+      };
+      container.appendChild(prevBtn);
+
+      const pageLabel = document.createElement("span");
+      pageLabel.textContent = `Page ${caveDbCurrentPage} of ${totalPages}`;
+      container.appendChild(pageLabel);
+
+      const nextBtn = document.createElement("button");
+      nextBtn.textContent = "Next →";
+      nextBtn.disabled = caveDbCurrentPage === totalPages;
+      nextBtn.onclick = () => {
+        caveDbCurrentPage++;
+        renderCaveDatabasePage();
+      };
+      container.appendChild(nextBtn);
     }
 
     // Edit cave search functions
