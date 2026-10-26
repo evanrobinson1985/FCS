@@ -379,6 +379,11 @@
 
     <div class="control-section">
       <h4>User Accounts</h4>
+      <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+        <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
+        <button type="button" class="btn-success" onclick="searchUserAccounts()">Search</button>
+        <button type="button" class="btn-warning" onclick="clearUserAccountSearch()">Clear</button>
+      </div>
       <div class="user-list-container">
         <table class="user-table">
           <thead>
@@ -11036,6 +11041,13 @@ async function createUserAccount() {
 }
 
 // Load account management data
+// Cached so searchUserAccounts()/clearUserAccountSearch() can re-filter and
+// redisplay without a server round-trip on every keystroke/click - account
+// lists are small enough for this site that filtering client-side, the
+// same way Cave Database search already does against caveDataStore, is
+// simpler than adding a dedicated search endpoint.
+let lastLoadedUsers = [];
+
 async function loadAccountManagement() {
   try {
     const [response, allStates] = await Promise.all([
@@ -11049,11 +11061,31 @@ async function loadAccountManagement() {
     ]);
 
     const users = await response.json();
+    lastLoadedUsers = users;
     displayUsers(users, allStates);
     loadSecurityLogs();
   } catch (error) {
     console.error('Error loading account management:', error);
   }
+}
+
+function searchUserAccounts() {
+  const term = document.getElementById('user-account-search').value.trim().toLowerCase();
+  if (!term) {
+    displayUsers(lastLoadedUsers, lastLoadedAllStates);
+    return;
+  }
+  const filtered = lastLoadedUsers.filter(u =>
+    (u.username && u.username.toLowerCase().includes(term)) ||
+    (u.email && u.email.toLowerCase().includes(term)) ||
+    (u.fullName && u.fullName.toLowerCase().includes(term))
+  );
+  displayUsers(filtered, lastLoadedAllStates);
+}
+
+function clearUserAccountSearch() {
+  document.getElementById('user-account-search').value = '';
+  displayUsers(lastLoadedUsers, lastLoadedAllStates);
 }
 
 // Display users in the table
