@@ -5463,15 +5463,36 @@ function loadFcsDatabaseTable() {
       let currentStage = 'starting';
       const logImportDebug = (msg) => console.log(`[IMPORT-DEBUG] +${Date.now() - startedAt}ms ${msg}`);
       let serverDebugEntries = [];
+      let pollStatus = 'not checked yet';
+      let pollInFlight = false;
+      let pollSentAt = null;
       const pollServerDebugLog = async () => {
+        // If a poll never comes back, that alone is a finding (it means
+        // the whole Node process is wedged, not just this one request) -
+        // so track whether one is still outstanding instead of letting
+        // overlapping polls hide that.
+        if (pollInFlight) {
+          pollStatus = `poll sent ${Math.floor((Date.now() - pollSentAt) / 1000)}s ago, still waiting (server may be fully unresponsive)`;
+          renderProgress();
+          return;
+        }
+        pollInFlight = true;
+        pollSentAt = Date.now();
         try {
           const r = await fetch('/api/diagnostics/import-debug-log');
           if (r.ok) {
             const data = await r.json();
             serverDebugEntries = data.entries || [];
-            renderProgress();
+            pollStatus = `ok, responded in ${Date.now() - pollSentAt}ms, ${serverDebugEntries.length} entries total`;
+          } else {
+            pollStatus = `server responded with HTTP ${r.status}`;
           }
-        } catch (e) { /* ignore - this is just a diagnostic side-channel */ }
+        } catch (e) {
+          pollStatus = `poll FAILED: ${e.message}`;
+        } finally {
+          pollInFlight = false;
+          renderProgress();
+        }
       };
       const serverDebugPollTimer = setInterval(pollServerDebugLog, 1500);
       pollServerDebugLog();
@@ -5487,7 +5508,7 @@ function loadFcsDatabaseTable() {
           (seconds > 0 ? ` (${seconds}s)...` : '...') +
           `<br><small>(${currentStage})</small></p>` +
           `<pre style="background:#111;color:#0f0;font-size:11px;padding:8px;max-height:180px;overflow:auto;white-space:pre-wrap;">` +
-          `Server log (temp debug):\n${recentServerLines || '(waiting for server log...)'}</pre>`;
+          `Server log (temp debug) - poll status: ${pollStatus}\n${recentServerLines || '(no server log entries yet)'}</pre>`;
       };
       renderProgress();
       const progressTimer = setInterval(renderProgress, 1000);
