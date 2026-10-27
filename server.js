@@ -1322,11 +1322,22 @@ app.get("/api/states", (req, res) => {
 // the submission-approval route, which writes the cave database and then
 // the submissions file) can do so without nesting callbacks.
 function persistCaveDatabase(caves) {
+  // TEMP DEBUG - see the matching [IMPORT-DEBUG] block in
+  // POST /api/cave-database/import; remove together with it.
+  const t0 = Date.now();
   backupDataFile(CAVE_DB_FILE);
+  const t1 = Date.now();
+  console.log(`[IMPORT-DEBUG] backupDataFile took ${t1 - t0}ms`);
+  const json = JSON.stringify(caves, null, 2);
+  const t2 = Date.now();
+  console.log(`[IMPORT-DEBUG] JSON.stringify (${json.length} bytes) took ${t2 - t1}ms`);
   return fs.promises
-    .writeFile(CAVE_DB_FILE, JSON.stringify(caves, null, 2), "utf8")
+    .writeFile(CAVE_DB_FILE, json, "utf8")
     .then(() => {
+      const t3 = Date.now();
+      console.log(`[IMPORT-DEBUG] writeFile took ${t3 - t2}ms`);
       reloadCaveDatabase();
+      console.log(`[IMPORT-DEBUG] reloadCaveDatabase took ${Date.now() - t3}ms`);
     });
 }
 
@@ -1645,13 +1656,24 @@ app.post(
   authenticateToken,
   requireRole("webmaster"),
   (req, res) => {
+    // TEMP DEBUG - diagnosing a production hang on this route. Remove
+    // this whole block (every console.log tagged [IMPORT-DEBUG]) once
+    // the stuck-import issue is understood and fixed.
+    const importDebugStart = Date.now();
+    const importDebugElapsed = () => `${Date.now() - importDebugStart}ms`;
+    console.log(`[IMPORT-DEBUG] route entered, Content-Length=${req.headers["content-length"]}`);
+
     caveImportUpload.single("importFile")(req, res, (err) => {
+      console.log(`[IMPORT-DEBUG] multer finished parsing upload at +${importDebugElapsed()}`);
       if (err) {
+        console.log(`[IMPORT-DEBUG] multer error: ${err.message}`);
         return res.status(400).json({ error: err.message || "Upload failed" });
       }
       if (!req.file) {
+        console.log(`[IMPORT-DEBUG] no req.file after multer`);
         return res.status(400).json({ error: "No file uploaded." });
       }
+      console.log(`[IMPORT-DEBUG] file received: ${req.file.originalname}, ${req.file.size} bytes, state=${req.body.state}`);
 
       const stateCode = req.body.state;
       const state = statesConfig.find((s) => s.code === stateCode);
@@ -1666,14 +1688,18 @@ app.post(
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       } catch (parseErr) {
+        console.log(`[IMPORT-DEBUG] XLSX parse failed at +${importDebugElapsed()}: ${parseErr.message}`);
         return res.status(400).json({ error: "Could not parse the uploaded file. Is it a valid spreadsheet?" });
       }
+      console.log(`[IMPORT-DEBUG] XLSX parsed at +${importDebugElapsed()}: ${rows.length} rows`);
 
       if (rows.length === 0) {
         return res.status(400).json({ error: "The uploaded file has no data rows." });
       }
 
+      console.log(`[IMPORT-DEBUG] loading existing cave database from disk at +${importDebugElapsed()}`);
       const caves = loadCaveDatabaseFromDisk();
+      console.log(`[IMPORT-DEBUG] loaded ${caves.length} existing caves at +${importDebugElapsed()}`);
       const report = [];
       let importedCount = 0;
 
@@ -1697,6 +1723,7 @@ app.post(
           maxNumberByCounty.set(resolved.county, caveNumber);
         }
       });
+      console.log(`[IMPORT-DEBUG] maxNumberByCounty precompute done at +${importDebugElapsed()}`);
 
       rows.forEach((row, i) => {
         const spreadsheetRow = i + 2; // 1-based, plus the header row
@@ -1748,6 +1775,7 @@ app.post(
         importedCount++;
         report.push({ row: spreadsheetRow, status: "success", caveId, name });
       });
+      console.log(`[IMPORT-DEBUG] row validation loop done at +${importDebugElapsed()}: imported ${importedCount}/${rows.length}`);
 
       if (importedCount === 0) {
         return res.json({
@@ -1758,9 +1786,12 @@ app.post(
         });
       }
 
+      console.log(`[IMPORT-DEBUG] starting persistCaveDatabase at +${importDebugElapsed()} (${caves.length} total caves to write)`);
       persistCaveDatabase(caves)
         .then(() => {
+          console.log(`[IMPORT-DEBUG] persistCaveDatabase finished at +${importDebugElapsed()}`);
           console.log(`Imported ${importedCount}/${rows.length} caves for ${stateCode} from spreadsheet upload`);
+          console.log(`[IMPORT-DEBUG] sending response at +${importDebugElapsed()}`);
           res.json({
             message: `Imported ${importedCount} of ${rows.length} row(s).`,
             imported: importedCount,
@@ -1769,6 +1800,7 @@ app.post(
           });
         })
         .catch((writeErr) => {
+          console.log(`[IMPORT-DEBUG] persistCaveDatabase FAILED at +${importDebugElapsed()}: ${writeErr.message}`);
           console.error("Failed to write cave database during import:", writeErr);
           res.status(500).json({ error: "Failed to save imported caves." });
         });

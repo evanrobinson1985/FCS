@@ -5455,19 +5455,27 @@ function loadFcsDatabaseTable() {
       const combinedReport = [];
       let combinedImported = 0;
       let batchError = null;
+      // TEMP DEBUG - diagnosing a production hang on this upload. Remove
+      // currentStage/console.log('[IMPORT-DEBUG] ...') once resolved.
+      let currentStage = 'starting';
+      const importDebugLog = (msg) => console.log(`[IMPORT-DEBUG] +${Date.now() - startedAt}ms ${msg}`);
 
       const renderProgress = () => {
         if (!reportEl) return;
         const seconds = Math.floor((Date.now() - startedAt) / 1000);
         reportEl.innerHTML = `<p><span class="inline-spinner"></span>Importing - ` +
           `${combinedImported} of ${rows.length} caves imported so far` +
-          (seconds > 0 ? ` (${seconds}s)...` : '...') + `</p>`;
+          (seconds > 0 ? ` (${seconds}s)...` : '...') +
+          `<br><small>(${currentStage})</small></p>`;
       };
       renderProgress();
       const progressTimer = setInterval(renderProgress, 1000);
 
       try {
         for (let start = 0; start < rows.length; start += CAVE_IMPORT_BATCH_SIZE) {
+          const batchNum = Math.floor(start / CAVE_IMPORT_BATCH_SIZE) + 1;
+          currentStage = `building batch ${batchNum} file`;
+          importDebugLog(currentStage);
           const batchRows = rows.slice(start, start + CAVE_IMPORT_BATCH_SIZE);
           const batchSheet = XLSX.utils.json_to_sheet(batchRows);
           const batchWorkbook = XLSX.utils.book_new();
@@ -5481,7 +5489,11 @@ function loadFcsDatabaseTable() {
           formData.append('importFile', batchBlob, 'batch.xlsx');
           formData.append('state', stateCode);
 
+          currentStage = `uploading batch ${batchNum} (${batchRows.length} rows, waiting on server)`;
+          importDebugLog(currentStage);
           const response = await fetch('/api/cave-database/import', { method: 'POST', body: formData });
+          importDebugLog(`batch ${batchNum} response received, status ${response.status}`);
+          currentStage = `reading batch ${batchNum} response`;
           const result = await response.json();
           if (!response.ok) {
             throw new Error(result.error || 'Import failed');
@@ -5500,6 +5512,8 @@ function loadFcsDatabaseTable() {
           // Refresh what's loaded so caves imported in this batch actually
           // show up now, not just once the whole file is done.
           if (result.imported > 0 && typeof window.loadCaveDatabaseFromServer === 'function') {
+            currentStage = `batch ${batchNum} imported, refreshing map/list`;
+            importDebugLog(currentStage);
             await window.loadCaveDatabaseFromServer();
             if (typeof updateCaveDataStore === 'function') updateCaveDataStore();
             const dbTab = document.getElementById('cave-database');
