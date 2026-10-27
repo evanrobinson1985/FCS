@@ -325,6 +325,81 @@ describe("password hashing", () => {
   });
 });
 
+describe("admin notification emails", () => {
+  // No SMTP is configured in the test env, so these log to the console
+  // instead of actually emailing (see sendAdminNotification in server.js) -
+  // same capture pattern as the password-reset tests above.
+  async function captureNotificationLog(action) {
+    const originalLog = console.log;
+    let capturedLine = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      if (line.startsWith('[DEV] Admin notification "')) capturedLine = line;
+      originalLog(...args);
+    };
+    try {
+      await action();
+    } finally {
+      console.log = originalLog;
+    }
+    return capturedLine;
+  }
+
+  before(async () => {
+    await seedUser({ username: "notifyadmin", password: "NotifyAdminPass123!", role: "admin" });
+    await seedUser({
+      username: "notifypendingwebmaster",
+      password: "NotifyPendingWmPass123!",
+      role: "webmaster",
+      status: "pending",
+    });
+  });
+
+  test("a new self-registration notifies active webmasters, not admins or inactive webmasters", async () => {
+    const line = await captureNotificationLog(async () => {
+      const res = await request(app).post("/api/create-account").send({
+        username: "notifytestaccount",
+        email: "notifytestaccount@example.com",
+        password: "SomeStrongPass123!",
+        states: ["FL"],
+      });
+      assert.equal(res.status, 200);
+    });
+
+    assert.ok(line, "expected a [DEV] admin notification to be logged");
+    assert.match(line, /New Account Awaiting Approval/);
+    assert.match(line, /webmaster1@example\.com/);
+    assert.doesNotMatch(line, /notifyadmin@example\.com/, "admin should not be notified of a new account");
+    assert.doesNotMatch(
+      line,
+      /notifypendingwebmaster@example\.com/,
+      "a pending (not yet active) webmaster should not be notified"
+    );
+  });
+
+  test("a new pending submission notifies both active webmasters and admins", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+
+    const line = await captureNotificationLog(async () => {
+      const res = await request(app)
+        .post("/api/pending-submissions")
+        .set("Authorization", `Bearer ${memberToken}`)
+        .send({
+          type: "new_cave",
+          caveId: "F01NOTIFYTEMP",
+          county: "AL",
+          proposedData: { name: "Notification Test Cave", county: "AL", type: "Land Cave", lat: 29.1, lng: -82.1 },
+        });
+      assert.equal(res.status, 200);
+    });
+
+    assert.ok(line, "expected a [DEV] admin notification to be logged");
+    assert.match(line, /Submission Pending Review/);
+    assert.match(line, /webmaster1@example\.com/);
+    assert.match(line, /notifyadmin@example\.com/);
+  });
+});
+
 describe("webmaster-created user accounts (POST /api/create-user)", () => {
   test("a webmaster can create an active member account directly", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);

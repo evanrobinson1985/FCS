@@ -192,6 +192,84 @@ async function sendTwoFactorCode(user, code) {
   });
 }
 
+// --- Admin/webmaster email notifications (new submissions, new accounts) ---
+//
+// Mirrors the password-reset/2FA email pattern above: reuses the same
+// mailTransporter, and falls back to a console log (not a failure) when
+// SMTP isn't configured, so the feature degrades the same way in dev.
+
+function getNotificationRecipients(roles) {
+  return loadUsers()
+    .filter((u) => roles.includes(u.role) && u.status === "active" && u.email)
+    .map((u) => u.email);
+}
+
+// Same "first configured origin, falling back to the request's own host"
+// logic POST /api/forgot-password already uses to build its reset link.
+function siteOrigin(req) {
+  return (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
+}
+
+async function sendAdminNotification(recipients, subject, text) {
+  if (recipients.length === 0) return;
+  if (!mailTransporter) {
+    console.log(`[DEV] Admin notification "${subject}" would be sent to: ${recipients.join(", ")}\n${text}`);
+    return;
+  }
+  // One send per recipient (not one message with everyone in "to") so
+  // reviewers don't see each other's email addresses, and so one bad
+  // address can't block the others.
+  await Promise.all(
+    recipients.map((to) =>
+      mailTransporter
+        .sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text })
+        .catch((err) => console.error(`Failed to send admin notification to ${to}:`, err.message))
+    )
+  );
+}
+
+// New member submission (cave proposal or edit) waiting for review -
+// notified to everyone who can actually approve one (admin + webmaster,
+// matching PATCH /api/pending-submissions/:id's own requireRole). Errors
+// are caught internally - a failed notification should never break the
+// submission itself, even though the caller awaits this.
+async function notifyNewSubmission(submission, req) {
+  try {
+    const recipients = getNotificationRecipients(["admin", "webmaster"]);
+    const subject = `Florida Cave Survey - New ${submission.type === "new_cave" ? "Cave" : "Edit"} Submission Pending Review`;
+    const text =
+      "A new submission is waiting for review on the Florida Cave Survey.\n\n" +
+      `Type: ${submission.type === "new_cave" ? "New cave" : "Cave edit"}\n` +
+      `Cave: ${submission.caveName || submission.caveId} (${submission.caveId})\n` +
+      `State/County: ${submission.state}/${submission.county}\n` +
+      `Submitted by: ${submission.submittedBy}\n\n` +
+      `Review it here: ${siteOrigin(req)}/portal`;
+    await sendAdminNotification(recipients, subject, text);
+  } catch (err) {
+    console.error("Error sending new-submission notification:", err);
+  }
+}
+
+// New self-registered account waiting for approval - notified to
+// webmasters only, matching POST /api/toggle-user-status's own
+// requireRole("webmaster") (admin can't activate an account). Same
+// error-swallowing contract as notifyNewSubmission above.
+async function notifyNewAccount(user, req) {
+  try {
+    const recipients = getNotificationRecipients(["webmaster"]);
+    const subject = "Florida Cave Survey - New Account Awaiting Approval";
+    const text =
+      "A new account has signed up and is waiting for approval.\n\n" +
+      `Username: ${user.username}\n` +
+      `Email: ${user.email}\n` +
+      `Requested states: ${(user.allowedStates || []).join(", ") || "(none)"}\n\n` +
+      `Approve or reject it in Account Management: ${siteOrigin(req)}/portal`;
+    await sendAdminNotification(recipients, subject, text);
+  } catch (err) {
+    console.error("Error sending new-account notification:", err);
+  }
+}
+
 // Verifies a short-lived pending-2FA token (issued by /api/login) and
 // returns its decoded payload, or null if it's missing, expired, invalid,
 // or isn't actually a pending-2FA token.
@@ -2086,7 +2164,9 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req
           return res.status(500).json({ error: "Could not save submission." });
         }
         console.log("Submission saved successfully");
-        res.json({ message: "Submission received.", submission });
+        notifyNewSubmission(submission, req).then(() => {
+          res.json({ message: "Submission received.", submission });
+        });
       }
     );
   });
@@ -4290,6 +4370,8 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
 
     users.push(newUser);
     saveUsers(users);
+
+    await notifyNewAccount(newUser, req);
 
     res.json({
       success: true,
