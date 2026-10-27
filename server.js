@@ -3331,6 +3331,47 @@ if (!fs.existsSync(CAVE_PICTURES_DIR)) {
   fs.mkdirSync(CAVE_PICTURES_DIR, { recursive: true });
 }
 
+// Read-only diagnostic for exactly one question: "where on disk is this
+// running process actually looking for its data?" Written after a live
+// deployment turned out to have its File Manager view and its Node
+// process's working directory pointing at two different `narratives/`
+// folders (one with real content, one empty) with no way to tell from
+// Plesk's UI alone which was which. Reports __dirname plus each
+// env-overridable storage directory's resolved path, whether it exists,
+// and (capped, filenames only - never file contents) what's in it, so a
+// webmaster can compare this against what they see in Plesk's file
+// manager instead of guessing. Webmaster-only: this reveals real
+// filesystem paths on the server, which nobody outside ops needs to see.
+app.get("/api/diagnostics/storage-paths", authenticateToken, requireRole("webmaster"), (req, res) => {
+  function describe(dirPath) {
+    const resolved = path.resolve(dirPath);
+    const exists = fs.existsSync(resolved);
+    let entries = [];
+    let entryCount = null;
+    if (exists) {
+      try {
+        const all = fs.readdirSync(resolved);
+        entryCount = all.length;
+        entries = all.slice(0, 25);
+      } catch (err) {
+        entries = [`<error reading directory: ${err.message}>`];
+      }
+    }
+    return { resolvedPath: resolved, exists, entryCount, sampleEntries: entries };
+  }
+
+  res.json({
+    appRoot: __dirname,
+    nodeProcessCwd: process.cwd(),
+    directories: {
+      narratives: describe(NARRATIVE_DIR),
+      caveMaps: describe(caveMapsDir),
+      cavePictures: describe(CAVE_PICTURES_DIR),
+      data: describe(DATA_DIR),
+    },
+  });
+});
+
 // Sniffs the actual file type from its magic bytes rather than trusting the
 // client-supplied Content-Type (multer's `file.mimetype`, which is just
 // whatever the uploader's request declared). Without this, a file

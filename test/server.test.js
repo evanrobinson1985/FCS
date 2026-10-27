@@ -2111,6 +2111,34 @@ describe("website management: site status, banner, and maintenance mode", () => 
       assert.ok(body.siteConfig);
     });
   });
+
+  describe("GET /api/diagnostics/storage-paths", () => {
+    test("requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/diagnostics/storage-paths").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("reports app root and resolved paths for every storage directory, with file names but never content", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/diagnostics/storage-paths").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.ok(typeof res.body.appRoot === "string" && res.body.appRoot.length > 0);
+      assert.ok(typeof res.body.nodeProcessCwd === "string" && res.body.nodeProcessCwd.length > 0);
+
+      for (const key of ["narratives", "caveMaps", "cavePictures", "data"]) {
+        const dir = res.body.directories[key];
+        assert.ok(dir, `missing directories.${key}`);
+        assert.equal(typeof dir.resolvedPath, "string");
+        assert.equal(typeof dir.exists, "boolean");
+        if (dir.exists) {
+          assert.equal(typeof dir.entryCount, "number");
+          assert.ok(Array.isArray(dir.sampleEntries));
+          assert.ok(dir.sampleEntries.length <= 25);
+        }
+      }
+    });
+  });
 });
 
 describe("website management: self-update from GitHub", () => {

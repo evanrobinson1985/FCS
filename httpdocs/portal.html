@@ -594,6 +594,13 @@
         <!-- Populated by loadUsageSnapshot() -->
       </div>
     </div>
+
+    <div class="control-section">
+      <h4>Storage Path Diagnostics</h4>
+      <p style="margin-bottom: 10px;">Shows exactly where the running server is reading/writing its data on disk right now - useful if something uploaded through Plesk's File Manager (narratives, cave maps, etc.) isn't showing up on the site, since that usually means a mismatch between where files were placed and where this app is actually looking. Shows folder paths and file names only, never file contents.</p>
+      <button type="button" class="btn-success" onclick="loadStoragePathDiagnostics()">Check Storage Paths</button>
+      <pre id="storage-path-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
+    </div>
   </div>
 </div>
 
@@ -5388,6 +5395,45 @@ function loadFcsDatabaseTable() {
       } catch (error) {
         console.error('Error loading usage snapshot:', error);
         gridEl.textContent = 'Unable to load usage snapshot.';
+      }
+    }
+
+    // Calls GET /api/diagnostics/storage-paths and prints the result as
+    // readable plain text - the whole point is to compare these paths and
+    // file names against what's visible in Plesk's File Manager, so raw
+    // JSON with real line breaks is more useful here than a styled table.
+    async function loadStoragePathDiagnostics() {
+      const outputEl = document.getElementById('storage-path-diagnostics-output');
+      if (!outputEl) return;
+      outputEl.textContent = 'Checking...';
+
+      try {
+        const response = await fetch('/api/diagnostics/storage-paths');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+        const lines = [];
+        lines.push(`App root (__dirname): ${result.appRoot}`);
+        lines.push(`Node process working directory: ${result.nodeProcessCwd}`);
+        lines.push('');
+
+        Object.entries(result.directories).forEach(([name, info]) => {
+          lines.push(`${name}:`);
+          lines.push(`  path: ${info.resolvedPath}`);
+          lines.push(`  exists: ${info.exists}`);
+          if (info.exists) {
+            lines.push(`  entry count: ${info.entryCount}`);
+            if (info.sampleEntries.length > 0) {
+              lines.push(`  entries (first ${info.sampleEntries.length}): ${info.sampleEntries.join(', ')}`);
+            }
+          }
+          lines.push('');
+        });
+
+        outputEl.textContent = lines.join('\n');
+      } catch (error) {
+        console.error('Error loading storage path diagnostics:', error);
+        outputEl.textContent = 'Error: ' + error.message;
       }
     }
 
