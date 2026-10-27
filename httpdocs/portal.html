@@ -520,6 +520,16 @@
     </div>
 
     <div class="control-section">
+      <h4>Tab Visibility</h4>
+      <p style="margin-bottom: 10px;">Hide a tab from the dashboard - for everyone, every role - while a feature in it is broken or still being worked on. Checked means visible; unchecked means hidden. Account Management and Website Management can't be hidden here, so there's always a way back in.</p>
+      <div id="tab-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveTabVisibility()">Save Tab Visibility</button>
+        <span id="tab-visibility-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
       <h4>Login Security</h4>
       <p style="margin-bottom: 10px;">After this many failed attempts in a row, an account is temporarily locked out (in addition to the site's own IP-based rate limiting). Applies immediately to the next login attempt.</p>
       <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px;">
@@ -4978,6 +4988,87 @@ function loadFcsDatabaseTable() {
       }
     }
 
+    // Tabs a webmaster is allowed to hide site-wide, and the label each
+    // shows in the tab bar - kept in sync with HIDEABLE_TABS in server.js
+    // (which is the actual source of truth/validation; this is just for
+    // building the checkbox list and the on-page labels). Account
+    // Management and Website Management are deliberately not here, same
+    // reason as server.js: hiding either would remove the only way back.
+    const HIDEABLE_TAB_DEFS = [
+      { id: 'pending-submissions', label: 'Pending Submissions' },
+      { id: 'approved-submissions', label: 'Approved Submissions' },
+      { id: 'cave-database', label: 'Cave Database' },
+      { id: 'map-tab', label: 'Interactive Map' },
+      { id: 'statistics', label: 'Statistics' },
+      { id: 'edit-cave-tab', label: 'Edit Cave Data' },
+      { id: 'cave-maps-section', label: 'Cave Maps' },
+      { id: 'narrative-tab', label: 'Narrative' },
+    ];
+
+    function renderTabVisibilityList(hiddenTabs) {
+      const container = document.getElementById('tab-visibility-list');
+      if (!container) return;
+      const hiddenSet = new Set(hiddenTabs || []);
+      container.innerHTML = HIDEABLE_TAB_DEFS.map(({ id, label }) => `
+        <label style="display: flex; align-items: center; gap: 8px;">
+          <input type="checkbox" class="tab-visibility-checkbox" data-tab-id="${id}" style="width: 18px; height: 18px;" ${hiddenSet.has(id) ? '' : 'checked'}>
+          ${label}
+        </label>
+      `).join('');
+    }
+
+    async function saveTabVisibility() {
+      const statusEl = document.getElementById('tab-visibility-save-status');
+      const hiddenTabs = Array.from(document.querySelectorAll('.tab-visibility-checkbox'))
+        .filter(cb => !cb.checked)
+        .map(cb => cb.dataset.tabId);
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hiddenTabs }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) {
+          statusEl.textContent = hiddenTabs.length === 0
+            ? 'Saved. Every tab is visible.'
+            : `Saved. ${hiddenTabs.length} tab${hiddenTabs.length === 1 ? '' : 's'} hidden.`;
+          statusEl.style.color = 'green';
+        }
+        applyHiddenTabs(hiddenTabs);
+      } catch (error) {
+        console.error('Error saving tab visibility:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    // Hides/shows the tab bar itself to match the current hiddenTabs list -
+    // applied right after login, for every role (unlike maintenance mode,
+    // which only blocks members). If the tab that's currently active just
+    // got hidden (e.g. a webmaster hid it in another session and this
+    // session only just loaded), falls back to the first still-visible tab
+    // so the dashboard never shows a blank, inactive panel.
+    function applyHiddenTabs(hiddenTabs) {
+      const hiddenSet = new Set(hiddenTabs || []);
+      let activeTabIsHidden = false;
+
+      document.querySelectorAll('.tab[data-tab]').forEach(tabEl => {
+        const tabId = tabEl.getAttribute('data-tab');
+        if (!HIDEABLE_TAB_DEFS.some(def => def.id === tabId)) return; // not a hideable tab (e.g. account/website management)
+        const hide = hiddenSet.has(tabId);
+        tabEl.style.display = hide ? 'none' : '';
+        if (hide && tabEl.classList.contains('active')) activeTabIsHidden = true;
+      });
+
+      if (activeTabIsHidden) {
+        const fallback = Array.from(document.querySelectorAll('.tab[data-tab]'))
+          .find(tabEl => tabEl.style.display !== 'none');
+        if (fallback) fallback.click();
+      }
+    }
+
     // Populates the Website Management tab's controls from the current
     // server-side settings. Called when the tab is opened.
     // Full config, including the login lockout policy - deliberately not
@@ -5057,6 +5148,8 @@ function loadFcsDatabaseTable() {
       const autoUpdateTimeInput = document.getElementById('auto-update-time-input');
       if (autoUpdateToggle) autoUpdateToggle.checked = !!status.autoUpdateEnabled;
       if (autoUpdateTimeInput) autoUpdateTimeInput.value = status.autoUpdateTime || '03:00';
+
+      renderTabVisibilityList(status.hiddenTabs || []);
 
       renderBannerPreview(status);
       loadUsageSnapshot();
@@ -7798,18 +7891,21 @@ window.addEventListener('error', function(e) {
     toggleCaveImportSectionVisibility();
     toggleWebsiteManagementTabVisibility();
 
-    // A member who reached the app (via /portal) while maintenance mode is
-    // on can technically log in, but every API call they'd make is 503'd
-    // server-side (see the maintenance-mode gate in server.js) - show them
-    // one clear message instead of a dashboard full of failed requests.
-    // Admin/webmaster are never blocked, matching the server-side gate.
-    if (result.role === 'member') {
-      loadSiteStatus().then(status => {
-        if (status && status.maintenanceMode) {
-          showMaintenanceBlockForMember(status.maintenanceMessage);
-        }
-      });
-    }
+    // One status fetch, two uses: applyHiddenTabs() runs for every role
+    // (unlike the maintenance block below, hidden tabs apply to
+    // admin/webmaster too), and a member who reached the app (via /portal)
+    // while maintenance mode is on can technically log in, but every API
+    // call they'd make is 503'd server-side (see the maintenance-mode gate
+    // in server.js) - show them one clear message instead of a dashboard
+    // full of failed requests. Admin/webmaster are never blocked by
+    // maintenance mode, matching the server-side gate.
+    loadSiteStatus().then(status => {
+      if (!status) return;
+      applyHiddenTabs(status.hiddenTabs || []);
+      if (result.role === 'member' && status.maintenanceMode) {
+        showMaintenanceBlockForMember(status.maintenanceMessage);
+      }
+    });
 
     updateTwoFactorStatusUI(!!result.twoFactorEnabled);
 

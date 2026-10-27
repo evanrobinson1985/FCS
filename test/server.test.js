@@ -1957,6 +1957,72 @@ describe("website management: site status, banner, and maintenance mode", () => 
     });
   });
 
+  describe("hidden tabs", () => {
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: [] });
+    });
+
+    test("rejects a non-array value", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: "statistics" });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects a tab ID that isn't on the hideable list", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: ["statistics", "not-a-real-tab"] });
+      assert.equal(res.status, 400);
+    });
+
+    // Account Management and Website Management must never be hideable -
+    // hiding Website Management would remove the only way to ever un-hide
+    // anything again.
+    test("rejects account-management and website-management specifically", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      for (const tabId of ["account-management", "website-management"]) {
+        const res = await request(app)
+          .post("/api/site-config")
+          .set("Authorization", `Bearer ${token}`)
+          .send({ hiddenTabs: [tabId] });
+        assert.equal(res.status, 400, `${tabId} should be rejected`);
+      }
+    });
+
+    test("accepts a valid list, dedupes it, and GET /api/site-status reflects it", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const postRes = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: ["statistics", "map-tab", "statistics"] });
+      assert.equal(postRes.status, 200);
+      assert.deepEqual(postRes.body.hiddenTabs.sort(), ["map-tab", "statistics"]);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.status, 200);
+      assert.deepEqual(statusRes.body.hiddenTabs.sort(), ["map-tab", "statistics"]);
+    });
+
+    test("an empty list means every tab is visible again", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: [] });
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.hiddenTabs, []);
+    });
+  });
+
   describe("configurable login lockout policy", () => {
     before(async () => {
       await seedUser({ username: "lockoutconfigtest", password: "LockoutConfigPass123!", role: "member" });

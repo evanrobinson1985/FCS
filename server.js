@@ -383,7 +383,30 @@ const DEFAULT_SITE_CONFIG = {
   // format, in the server's own local time zone.
   autoUpdateEnabled: false,
   autoUpdateTime: "03:00",
+  // Tab IDs (data-tab values in portal.html's tab bar) currently hidden
+  // site-wide - for taking a broken or in-progress feature out of
+  // circulation without a deploy. Applies to every role equally,
+  // including admin/webmaster; see HIDEABLE_TABS below for why Account
+  // Management and Website Management can never be in this list.
+  hiddenTabs: [],
 };
+
+// The only tabs a webmaster is allowed to hide via hiddenTabs above.
+// Account Management and Website Management are deliberately excluded -
+// hiding Website Management would remove the only place to ever un-hide
+// anything again, and hiding Account Management would do the same for
+// user/role management. Keep this in sync with the data-tab values in
+// portal.html's tab bar.
+const HIDEABLE_TABS = [
+  "pending-submissions",
+  "approved-submissions",
+  "cave-database",
+  "map-tab",
+  "statistics",
+  "edit-cave-tab",
+  "cave-maps-section",
+  "narrative-tab",
+];
 
 function loadSiteConfig() {
   try {
@@ -476,6 +499,7 @@ app.get("/api/site-status", (req, res) => {
     bannerColor: siteConfig.bannerColor,
     readOnlyMode: siteConfig.readOnlyMode,
     readOnlyMessage: siteConfig.readOnlyMessage,
+    hiddenTabs: siteConfig.hiddenTabs,
   });
 });
 
@@ -505,7 +529,17 @@ app.post(
       loginLockoutMinutes,
       autoUpdateEnabled,
       autoUpdateTime,
+      hiddenTabs,
     } = req.body;
+
+    if (
+      hiddenTabs !== undefined &&
+      (!Array.isArray(hiddenTabs) || hiddenTabs.some((t) => !HIDEABLE_TABS.includes(t)))
+    ) {
+      return res.status(400).json({
+        error: `hiddenTabs must be an array of: ${HIDEABLE_TABS.join(", ")}.`,
+      });
+    }
 
     if (bannerColor !== undefined && !["red", "yellow"].includes(bannerColor)) {
       return res.status(400).json({ error: "bannerColor must be 'red' or 'yellow'." });
@@ -556,6 +590,7 @@ app.post(
     if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
     if (typeof autoUpdateEnabled === "boolean") updated.autoUpdateEnabled = autoUpdateEnabled;
     if (autoUpdateTime !== undefined) updated.autoUpdateTime = autoUpdateTime || DEFAULT_SITE_CONFIG.autoUpdateTime;
+    if (hiddenTabs !== undefined) updated.hiddenTabs = [...new Set(hiddenTabs)];
 
     siteConfig = updated;
     saveSiteConfig(siteConfig);
