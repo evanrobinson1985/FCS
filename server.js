@@ -1705,11 +1705,13 @@ const CAVE_IMPORT_COLUMNS = [
 // Downloadable .xlsx template for a state's Excel import: a header row plus
 // one example row using that state's own first county, so whoever fills it
 // in sees a real, valid county code rather than having to guess the format.
-// Admin/webmaster only, matching every other cave-data-authoring route.
+// Webmaster only - bulk import is for seeding a state's initial dataset;
+// day-to-day additions after that go through the normal member-submission
+// + admin/webmaster-review workflow instead (see requireRole below).
 app.get(
   "/api/cave-database/import-template",
   authenticateToken,
-  requireRole("admin", "webmaster"),
+  requireRole("webmaster"),
   (req, res) => {
     const stateCode = req.query.state;
     const state = statesConfig.find((s) => s.code === stateCode);
@@ -1760,16 +1762,18 @@ const caveImportUpload = multer({
   },
 });
 
-// Bulk-imports a spreadsheet of caves into one target state. Admin/webmaster
-// only - this writes the authoritative cave database, same restriction as
-// /api/save-cave-database. Every row is validated independently and the
-// response reports success/failure per row (not all-or-nothing): one bad
-// row in an otherwise-good 200-row spreadsheet shouldn't block the other
-// 199, and the per-row report tells the importer exactly what to fix.
+// Bulk-imports a spreadsheet of caves into one target state. Webmaster
+// only - this is for seeding a state's initial survey data in one shot;
+// from there the database is meant to grow through the normal member-
+// submission + admin/webmaster-review workflow, not further bulk writes.
+// Every row is validated independently and the response reports
+// success/failure per row (not all-or-nothing): one bad row in an
+// otherwise-good 200-row spreadsheet shouldn't block the other 199, and
+// the per-row report tells the importer exactly what to fix.
 app.post(
   "/api/cave-database/import",
   authenticateToken,
-  requireRole("admin", "webmaster"),
+  requireRole("webmaster"),
   (req, res) => {
     caveImportUpload.single("importFile")(req, res, (err) => {
       if (err) {

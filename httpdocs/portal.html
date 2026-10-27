@@ -4871,15 +4871,16 @@ function loadFcsDatabaseTable() {
       }
     }
 
-    // Shows the bulk-import UI for admin/webmaster, hides it for members -
-    // members can't write directly to the cave database (enforced
-    // server-side by POST /api/cave-database/import's requireRole check;
-    // this is just so they don't see a control that would just 403).
+    // Shows the bulk-import UI for webmaster only, hides it for everyone
+    // else - it's meant for seeding a state's initial survey data in one
+    // shot, not an ongoing admin tool (enforced server-side by POST
+    // /api/cave-database/import's requireRole check; this is just so
+    // non-webmasters don't see a control that would just 403).
     function toggleCaveImportSectionVisibility() {
       const section = document.getElementById('cave-import-section');
       if (!section) return;
       const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
-      section.style.display = (currentRole === 'admin' || currentRole === 'webmaster') ? 'block' : 'none';
+      section.style.display = (currentRole === 'webmaster') ? 'block' : 'none';
     }
 
     // ---- Website Management: maintenance mode + notification banner ----

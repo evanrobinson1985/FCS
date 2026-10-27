@@ -861,6 +861,10 @@ describe("state/county reference config", () => {
 // these tests can assert on exact generated cave IDs without needing to
 // know what other tests already did to Florida/Georgia's county numbering.
 describe("cave database Excel import", () => {
+  before(async () => {
+    await seedUser({ username: "importadmin", password: "ImportAdminPass123!", role: "admin" });
+  });
+
   function buildWorkbookBuffer(headerRow, dataRows) {
     const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
     const wb = XLSX.utils.book_new();
@@ -870,8 +874,21 @@ describe("cave database Excel import", () => {
 
   const IMPORT_HEADERS = ["County", "Cave Name", "Latitude", "Longitude"];
 
-  test("GET /api/cave-database/import-template requires admin/webmaster", async () => {
+  test("GET /api/cave-database/import-template requires webmaster", async () => {
     const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .get("/api/cave-database/import-template?state=TX")
+      .set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  // Bulk import is a one-time "seed the initial dataset" tool, not an
+  // ongoing admin capability - everything after that initial seed is
+  // meant to go through the normal member-submission + review workflow,
+  // so even admin (which can do most other cave-data-authoring actions)
+  // is deliberately excluded here.
+  test("GET /api/cave-database/import-template rejects admin, not just members", async () => {
+    const token = await login("importadmin", "ImportAdminPass123!");
     const res = await request(app)
       .get("/api/cave-database/import-template?state=TX")
       .set("Authorization", `Bearer ${token}`);
@@ -908,9 +925,20 @@ describe("cave database Excel import", () => {
     assert.equal(rows[1][0], "AN");
   });
 
-  test("POST /api/cave-database/import requires admin/webmaster", async () => {
+  test("POST /api/cave-database/import requires webmaster", async () => {
     const token = await login("member1", MEMBER_PASSWORD);
     const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [["AN", "Member Attempt Cave", 31.3, -95.6]]);
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "TX")
+      .attach("importFile", buffer, "import.xlsx");
+    assert.equal(res.status, 403);
+  });
+
+  test("POST /api/cave-database/import rejects admin, not just members", async () => {
+    const token = await login("importadmin", "ImportAdminPass123!");
+    const buffer = buildWorkbookBuffer(IMPORT_HEADERS, [["AN", "Admin Attempt Cave", 31.3, -95.6]]);
     const res = await request(app)
       .post("/api/cave-database/import")
       .set("Authorization", `Bearer ${token}`)
