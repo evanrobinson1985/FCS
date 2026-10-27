@@ -2855,8 +2855,17 @@
         cavesLayer.addLayer(marker);
       });
       
-      // If no caves match the filter, show a message
-      if (filteredCaves.length === 0) {
+      // If no caves match the filter, show a message - but only when there
+      // was actual cave data to filter in the first place. This also runs
+      // automatically before caveDataStore has finished loading (right
+      // after login, now that the map is the default landing tab - see
+      // initializeMap()'s own call, handleMapTabClick()'s "make sure caves
+      // are loaded" check, and updateCaveDataStore() below, all of which
+      // can fire while caveDataStore is still empty), and that's not a
+      // real "your filters matched nothing" case worth a blocking alert()
+      // - it's just not loaded yet, and will correct itself automatically
+      // once it is.
+      if (filteredCaves.length === 0 && caveDataStore.length > 0) {
         alert("No caves match the current filters. Try adjusting your filters.");
       } else if (filteredCaves.length === 1) {
         // If only one cave is shown, zoom to it
