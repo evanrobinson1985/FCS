@@ -5536,7 +5536,22 @@ function loadFcsDatabaseTable() {
           const response = await fetch('/api/cave-database/import', { method: 'POST', body: formData });
           logImportDebug(`batch ${batchNum} response received, status ${response.status}`);
           currentStage = `reading batch ${batchNum} response`;
-          const result = await response.json();
+          const rawResponseText = await response.text();
+          let result;
+          try {
+            result = JSON.parse(rawResponseText);
+          } catch (parseErr) {
+            // TEMP DEBUG - our own server always returns JSON, so a
+            // non-JSON body here means something in front of Node
+            // (a WAF, the reverse proxy, etc.) intercepted this request
+            // before it ever reached our app. Show the raw body so its
+            // reason/rule ID is visible instead of a bare parse error.
+            logImportDebug(`batch ${batchNum} response was not JSON - first 500 chars: ${rawResponseText.slice(0, 500)}`);
+            throw new Error(
+              `Server returned a non-JSON response (HTTP ${response.status}), likely blocked before reaching the app. ` +
+              `Raw response: ${rawResponseText.slice(0, 300)}`
+            );
+          }
           if (!response.ok) {
             throw new Error(result.error || 'Import failed');
           }
@@ -5576,9 +5591,16 @@ function loadFcsDatabaseTable() {
 
       if (batchError) {
         if (reportEl) {
+          // batchError.message may contain a raw HTML block page (see the
+          // TEMP DEBUG non-JSON-response handling above) - escape it so it
+          // shows as visible text instead of being silently swallowed as
+          // markup by innerHTML.
+          const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+          ));
           reportEl.innerHTML = `<p style="color:#b00;">Import failed partway through ` +
             `(${combinedImported} of ${rows.length} caves were imported before the error): ` +
-            `${batchError.message}</p>`;
+            `${escapeHtml(batchError.message)}</p>`;
         }
       } else {
         renderImportReport({
