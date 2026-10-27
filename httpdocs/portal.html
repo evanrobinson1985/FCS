@@ -5843,6 +5843,18 @@ function loadFcsDatabaseTable() {
         caveDataStore = window.caveDataStore;
       }
       populateEditCaveDropdown();
+
+      // Since every role now lands on the Interactive Map tab immediately
+      // after login (before this data has even finished loading - this
+      // runs in loadCaveDatabaseFromServer()'s .then()), handleMapTabClick()
+      // may already have run once against an empty caveDataStore and found
+      // nothing to place. Nothing else re-triggers loadCavesToMap() when
+      // the real data arrives after that, so do it here too - cavesLayer
+      // only exists once the map has actually been initialized, so this is
+      // a no-op before that (e.g. if Leaflet somehow failed to load).
+      if (cavesLayer) {
+        loadCavesToMap();
+      }
     }
 
     function populateEditCaveDropdown() {
