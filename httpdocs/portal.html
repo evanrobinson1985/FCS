@@ -321,7 +321,7 @@
 </div>
 <div class="tab-container">
 <div class="tabs">
-<div class="tab active" data-tab="pending-submissions">Pending Submissions</div>
+<div class="tab" id="pending-submissions-tab" data-tab="pending-submissions">Pending Submissions</div>
 <div class="tab" data-tab="approved-submissions">Approved Submissions</div>
 <div class="tab" data-tab="cave-database">Cave Database</div>
 <div class="tab" data-tab="map-tab">Interactive Map</div>
@@ -800,7 +800,7 @@
 </div>
 </div>
 </div>
-<div class="tab-content active" id="pending-submissions">
+<div class="tab-content" id="pending-submissions">
 <h3>Pending Submissions</h3>
 <div id="pending-submissions-list">
 </div>
@@ -5022,14 +5022,26 @@ function loadFcsDatabaseTable() {
     // got hidden (e.g. a webmaster hid it in another session and this
     // session only just loaded), falls back to the first still-visible tab
     // so the dashboard never shows a blank, inactive panel.
+    //
+    // Also enforces one fixed, non-configurable rule alongside the
+    // webmaster-controlled hiddenTabs list: Pending Submissions is never
+    // shown to a plain member, full stop - members can't approve/reject
+    // anything there anyway (see createSubmissionCard's canReview check),
+    // and reviewing what other members have proposed isn't meant to be
+    // public to members. This is UI-only, matching how Account Management/
+    // Website Management are already handled - the data itself stays
+    // readable via GET /api/pending-submissions (member-visible Statistics
+    // cards like Top Contributors and the Submission Funnel depend on
+    // that), only the tab is gated.
     function applyHiddenTabs(hiddenTabs) {
       const hiddenSet = new Set(hiddenTabs || []);
+      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
       let activeTabIsHidden = false;
 
       document.querySelectorAll('.tab[data-tab]').forEach(tabEl => {
         const tabId = tabEl.getAttribute('data-tab');
         if (!HIDEABLE_TAB_DEFS.some(def => def.id === tabId)) return; // not a hideable tab (e.g. account/website management)
-        const hide = hiddenSet.has(tabId);
+        const hide = hiddenSet.has(tabId) || (tabId === 'pending-submissions' && currentRole === 'member');
         tabEl.style.display = hide ? 'none' : '';
         if (hide && tabEl.classList.contains('active')) activeTabIsHidden = true;
       });
@@ -7794,6 +7806,16 @@ window.addEventListener('error', function(e) {
 
     toggleCaveImportSectionVisibility();
     toggleWebsiteManagementTabVisibility();
+
+    // Every role lands on the Interactive Map first after logging in,
+    // instead of whatever tab happened to be marked active in the static
+    // HTML. Clicking the real tab button (rather than just toggling CSS
+    // classes by hand) runs its existing special-case setup too -
+    // handleMapTabClick() initializes the Leaflet map - exactly like a
+    // normal click would, the same pattern already used elsewhere (e.g.
+    // searchEditCave()'s jump to the Edit Cave Data tab).
+    const defaultTab = document.querySelector('.tab[data-tab="map-tab"]');
+    if (defaultTab) defaultTab.click();
 
     // One status fetch, two uses: applyHiddenTabs() runs for every role
     // (unlike the maintenance block below, hidden tabs apply to
