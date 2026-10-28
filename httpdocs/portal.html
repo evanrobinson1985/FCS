@@ -5324,6 +5324,30 @@ function loadFcsDatabaseTable() {
       }
     }
 
+    // Fetches a URL and parses the body as JSON, but on parse failure shows
+    // the raw response text instead of a bare "Unexpected token" error -
+    // the only way we previously found that the cave import route was
+    // being blocked by Cloudflare before reaching the app was seeing the
+    // actual block-page HTML. Diagnostic panels need the same treatment so
+    // a block on them is equally diagnosable.
+    async function fetchDiagnosticJson(url, options) {
+      const response = await fetch(url, options);
+      const rawText = await response.text();
+      let result;
+      try {
+        result = JSON.parse(rawText);
+      } catch (parseErr) {
+        throw new Error(
+          `Server returned a non-JSON response (HTTP ${response.status}), likely blocked before reaching the app. ` +
+          `Raw response: ${rawText.slice(0, 500)}`
+        );
+      }
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      return result;
+    }
+
     function renderMailConfig(lines, result) {
       lines.push(`SMTP configured: ${result.configured}`);
       if (result.missingEnvVars.length > 0) {
@@ -5344,9 +5368,7 @@ function loadFcsDatabaseTable() {
       if (!outputEl) return;
       outputEl.textContent = 'Checking...';
       try {
-        const response = await fetch('/api/diagnostics/test-email');
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const result = await fetchDiagnosticJson('/api/diagnostics/test-email');
 
         const lines = [];
         renderMailConfig(lines, result);
@@ -5369,9 +5391,7 @@ function loadFcsDatabaseTable() {
       if (!outputEl) return;
       outputEl.textContent = 'Sending test email...';
       try {
-        const response = await fetch('/api/diagnostics/test-email', { method: 'POST' });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const result = await fetchDiagnosticJson('/api/diagnostics/test-email', { method: 'POST' });
 
         const lines = [];
         renderMailConfig(lines, result);
