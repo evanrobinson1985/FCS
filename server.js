@@ -120,6 +120,19 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 10000,
+    // Mail servers often can't present a publicly-trusted certificate for
+    // "localhost"/127.0.0.1 (no CA will issue one for that name), so
+    // pointing SMTP_HOST at the loopback interface - the fix for the
+    // hairpin-NAT-style hang connecting to this server's own public
+    // hostname - commonly means a self-signed cert on that connection.
+    // That's an acceptable trade-off for a connection that never leaves
+    // the machine, but it's a real reduction in transport security, so it
+    // requires this explicit opt-in rather than being silently relaxed by
+    // default - keeps strict verification as the default for any SMTP_HOST
+    // pointing at a real external provider (Gmail, SendGrid, etc).
+    tls: {
+      rejectUnauthorized: process.env.SMTP_ALLOW_SELF_SIGNED !== "true",
+    },
   });
   console.log("✅ SMTP configured - password reset emails will be sent for real");
 } else {
