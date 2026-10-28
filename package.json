@@ -23,6 +23,7 @@
     "check-exposure": "node scripts/check-app-root-exposure.js",
     "relocate-private-data": "node scripts/relocate-private-data.js",
     "list-vhost-root": "node scripts/list-vhost-root.js",
+    "bulk-import-local": "node scripts/bulk-import-caves-local.js",
     "test": "node --test"
   },
   "keywords": [],

@@ -95,12 +95,22 @@ function parseArgs(argv) {
 }
 
 function main() {
-  const { positional, dataDir, dryRun } = parseArgs(process.argv.slice(2));
-  const [xlsxPath, stateCode] = positional;
+  const { positional, dataDir: dataDirArg, dryRun: dryRunArg } = parseArgs(process.argv.slice(2));
+  // Falls back to environment variables for every input, not just
+  // --data-dir - useful when running this through a host control panel's
+  // "run script" feature (e.g. Plesk's Node.js "Run script" button, which
+  // already applies the app's own configured env vars like DATA_DIR) that
+  // may not offer a convenient way to pass command-line arguments. Set
+  // IMPORT_FILE / IMPORT_STATE / IMPORT_DRY_RUN there instead if so.
+  const xlsxPath = positional[0] || process.env.IMPORT_FILE;
+  const stateCode = positional[1] || process.env.IMPORT_STATE;
+  const dataDir = dataDirArg || process.env.DATA_DIR;
+  const dryRun = dryRunArg || process.env.IMPORT_DRY_RUN === "true";
 
   if (!xlsxPath || !stateCode || !dataDir) {
     console.error(
-      "Usage: node scripts/bulk-import-caves-local.js <path-to-xlsx> <stateCode> --data-dir=/path/to/data [--dry-run]"
+      "Usage: node scripts/bulk-import-caves-local.js <path-to-xlsx> <stateCode> --data-dir=/path/to/data [--dry-run]\n" +
+      "(or set IMPORT_FILE / IMPORT_STATE / DATA_DIR / IMPORT_DRY_RUN=true as environment variables instead)"
     );
     process.exit(1);
   }
