@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Florida Cave Survey &mdash; Under Construction</title>
+<meta name="description" content="Florida Cave Survey's new site is under construction. Play a quick cave-runner game while you wait.">
+<link rel="icon" href="/fcs-logo.png">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div id="landingView">
+  <div class="container">
+    <div class="header">
+      <img src="/fcs-logo.png" alt="Florida Cave Survey Logo" />
+      <h1>Website Under Construction</h1>
+    </div>
+    <div class="message" id="maintenance-message">
+      <p>We're working hard to bring you our new site.</p>
+      <p>Please check back soon!</p>
+    </div>
+
+    <div class="landing-cta">
+      <button id="goToGameBtn" class="play-btn">🕹️ Play Cave Jump While You Wait</button>
+    </div>
+
+    <div class="mission-section">
+      <h2>Our Mission</h2>
+      <div class="mission-content">
+        <p>The Florida Cave Survey is dedicated to the systematic documentation, scientific study, and preservation of Florida's unique cave systems and karst landscapes. We are committed to promoting responsible cave conservation through comprehensive mapping, research, and education while fostering positive relationships with landowners, government agencies, and the broader community.</p>
+
+        <p>Our mission encompasses protecting Florida's diverse cave-dwelling wildlife, including critically important bat populations and other specialized cave fauna that depend on these fragile underground ecosystems. We practice and advocate for exemplary stewardship that safeguards sensitive species and their habitats while advancing scientific understanding of Florida's subterranean environments.</p>
+
+        <p>Through respectful collaboration with private landowners and public land managers, we work to balance exploration, research, and preservation. We believe that by building trust, conducting careful documentation, and promoting responsible cave practices, we can ensure these irreplaceable natural treasures and their wildlife inhabitants are protected for future generations while maintaining access for legitimate scientific and educational purposes.</p>
+
+        <p>The Florida Cave Survey serves as a bridge between the scientific community, conservation organizations, and property owners, working together to protect Florida's remarkable underground frontier and the unique life it sustains.</p>
+      </div>
+    </div>
+
+    <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid var(--accent-color); width: 100%;">
+      <a href="/portal" style="color: var(--secondary-color); font-size: 0.85rem; text-decoration: none;">Webmaster Login</a>
+    </div>
+  </div>
+</div>
+
+<div id="gameView" class="wrap" hidden>
+
+  <header class="site-header">
+    <a href="#" id="backToLanding" class="back-link">&larr; Back to site info</a>
+    <h1>We&rsquo;re Digging Something New</h1>
+    <p class="tagline">
+      Our website is under construction. While we tunnel our way back online,
+      help our caver dodge bats, spiders and falling rocks.
+    </p>
+  </header>
+
+  <div class="game-shell">
+    <canvas id="game" width="960" height="480" tabindex="0" aria-label="Cave Jump game canvas"></canvas>
+
+    <div id="hud" class="hud">
+      <div class="hud-left">
+        <span class="hud-label">Score</span>
+        <span id="score" class="hud-value">0</span>
+      </div>
+      <div id="lives" class="hud-lives" aria-label="Lives remaining"></div>
+      <div class="hud-right">
+        <span class="hud-label">Best</span>
+        <span id="highscore" class="hud-value">0</span>
+      </div>
+      <button id="muteBtn" class="icon-btn" aria-label="Toggle sound" title="Toggle sound">🔊</button>
+    </div>
+
+    <div id="startOverlay" class="overlay">
+      <div class="overlay-panel">
+        <h2>Cave Jump</h2>
+        <p class="overlay-copy">Run, crawl, jump and climb your way through the cave.</p>
+        <div class="controls-grid">
+          <div><kbd>&uarr;</kbd> / <kbd>W</kbd> / <kbd>Space</kbd><span>Jump &amp; hold to climb</span></div>
+          <div><kbd>&darr;</kbd> / <kbd>S</kbd><span>Duck / crawl</span></div>
+          <div><kbd>P</kbd><span>Pause</span></div>
+        </div>
+        <p class="overlay-copy small">On mobile: tap to jump, hold the DUCK button to crawl.</p>
+        <button id="startBtn" class="play-btn" disabled>Loading&hellip;</button>
+      </div>
+    </div>
+
+    <div id="pauseOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Paused</h2>
+        <button id="resumeBtn" class="play-btn">Resume</button>
+      </div>
+    </div>
+
+    <div id="gameOverOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Cave-In!</h2>
+        <p class="overlay-copy" id="gameOverMsg">You made it partway through.</p>
+        <div class="final-stats">
+          <div><span class="hud-label">Score</span><strong id="finalScore">0</strong></div>
+          <div><span class="hud-label">Best</span><strong id="finalHigh">0</strong></div>
+        </div>
+        <button id="restartBtn" class="play-btn">Try Again</button>
+      </div>
+    </div>
+
+    <div id="touchControls" class="touch-controls">
+      <button id="touchDuck" class="touch-btn" aria-label="Duck">DUCK</button>
+      <button id="touchJump" class="touch-btn touch-jump" aria-label="Jump">JUMP</button>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>Thanks for your patience &mdash; check back soon.</p>
+  </footer>
+
+</div>
+
+<script src="/js/game.js" defer></script>
+<script>
+  // Swaps in the webmaster's custom maintenance message (set from the
+  // Website Management tab) if one is configured, replacing the default
+  // "We're working hard..." text above. Uses textContent, never
+  // innerHTML - this is plain text by design, so there's nothing to
+  // sanitize and nothing to worry about escaping.
+  fetch('/api/site-status')
+    .then(function (res) { return res.json(); })
+    .then(function (status) {
+      if (status && status.maintenanceMessage) {
+        var el = document.getElementById('maintenance-message');
+        el.innerHTML = '';
+        var p = document.createElement('p');
+        p.textContent = status.maintenanceMessage;
+        el.appendChild(p);
+      }
+    })
+    .catch(function () { /* keep the default message if this fails */ });
+</script>
+</body>
+</html>
