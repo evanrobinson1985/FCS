@@ -111,6 +111,15 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    // Nodemailer's own defaults (2 minutes) are long enough that a hung
+    // connection (e.g. SMTP_HOST pointing back at this same server over a
+    // path that hangs instead of failing - a "hairpin NAT" case) ties up
+    // the whole request past a reverse proxy's own gateway timeout,
+    // turning a clear connection error into an opaque 504. Fail fast
+    // instead, with an error message that actually says what happened.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
   console.log("✅ SMTP configured - password reset emails will be sent for real");
 } else {
