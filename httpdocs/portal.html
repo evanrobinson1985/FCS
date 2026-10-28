@@ -11266,8 +11266,7 @@ async function handleCreateAccount() {
         username: username,
         email: email,
         password: password,
-        states: states,
-        ipAddress: await getUserIP()
+        states: states
       })
     });
 
@@ -11308,8 +11307,7 @@ async function handleForgotPassword() {
         'X-CSRF-Token': getCSRFToken()
       },
       body: JSON.stringify({
-        email: email,
-        ipAddress: await getUserIP()
+        email: email
       })
     });
 
@@ -11734,17 +11732,6 @@ function getCSRFToken() {
   // Get CSRF token from meta tag or cookie
   const metaTag = document.querySelector('meta[name="csrf-token"]');
   return metaTag ? metaTag.getAttribute('content') : '';
-}
-
-async function getUserIP() {
-  try {
-    const response = await fetch('https://api.ipify.org?format=json');
-    const data = await response.json();
-    return data.ip;
-  } catch (error) {
-    console.warn('Could not get user IP:', error);
-    return 'unknown';
-  }
 }
 
 </script>
