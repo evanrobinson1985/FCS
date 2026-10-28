@@ -24,6 +24,7 @@
     "relocate-private-data": "node scripts/relocate-private-data.js",
     "list-vhost-root": "node scripts/list-vhost-root.js",
     "bulk-import-local": "node scripts/bulk-import-caves-local.js",
+    "restore-cave-database": "node scripts/restore-cave-database-backup.js",
     "test": "node --test"
   },
   "keywords": [],
