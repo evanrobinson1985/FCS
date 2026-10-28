@@ -3264,6 +3264,63 @@ app.get("/api/diagnostics/storage-paths", authenticateToken, requireRole("webmas
   });
 });
 
+// Outbound-mail diagnostics. POST /api/forgot-password deliberately never
+// reveals whether sending actually succeeded (that's what stops it being
+// used to enumerate registered emails), so there's no way to tell from
+// that endpoint alone whether a failure is "no account with that email" or
+// "SMTP is misconfigured" or "SMTP auth is failing". This route exists
+// purely to answer that, for a webmaster troubleshooting their own setup -
+// it reports exactly what's configured, verifies the SMTP connection, and
+// (POST only) sends a real test email to the calling webmaster's own
+// account, surfacing the real error instead of swallowing it.
+function describeMailConfig() {
+  return {
+    configured: !!mailTransporter,
+    smtpHost: process.env.SMTP_HOST || null,
+    smtpPort: process.env.SMTP_PORT || null,
+    smtpSecure: process.env.SMTP_SECURE || null,
+    smtpUser: process.env.SMTP_USER || null,
+    smtpFrom: process.env.SMTP_FROM || process.env.SMTP_USER || null,
+    missingEnvVars: ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"].filter((name) => !process.env[name]),
+  };
+}
+
+app.get("/api/diagnostics/test-email", authenticateToken, requireRole("webmaster"), async (req, res) => {
+  const config = describeMailConfig();
+  if (!mailTransporter) {
+    return res.json({ ...config, verify: { ok: false, error: "SMTP not configured - see missingEnvVars." } });
+  }
+  try {
+    await mailTransporter.verify();
+    res.json({ ...config, verify: { ok: true } });
+  } catch (err) {
+    res.json({ ...config, verify: { ok: false, error: err.message, code: err.code } });
+  }
+});
+
+app.post("/api/diagnostics/test-email", authenticateToken, requireRole("webmaster"), async (req, res) => {
+  const config = describeMailConfig();
+  if (!mailTransporter) {
+    return res.json({ ...config, sendTest: { ok: false, error: "SMTP not configured - see missingEnvVars." } });
+  }
+  const users = loadUsers();
+  const me = users.find((u) => u.id === req.user.id);
+  if (!me || !me.email) {
+    return res.status(400).json({ error: "Your account has no email address on file." });
+  }
+  try {
+    await mailTransporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: me.email,
+      subject: "Florida Cave Survey - test email",
+      text: "This is a test email from the Website Management > Email Diagnostics panel. If you received this, outbound email is working.",
+    });
+    res.json({ ...config, sendTest: { ok: true, sentTo: me.email } });
+  } catch (err) {
+    res.json({ ...config, sendTest: { ok: false, sentTo: me.email, error: err.message, code: err.code } });
+  }
+});
+
 // Sniffs the actual file type from its magic bytes rather than trusting the
 // client-supplied Content-Type (multer's `file.mimetype`, which is just
 // whatever the uploader's request declared). Without this, a file

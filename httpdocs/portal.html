@@ -566,6 +566,14 @@
       <button type="button" class="btn-success" onclick="loadStoragePathDiagnostics()">Check Storage Paths</button>
       <pre id="storage-path-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
     </div>
+
+    <div class="control-section">
+      <h4>Email Diagnostics</h4>
+      <p style="margin-bottom: 10px;">"Forgot password" never reveals whether sending actually succeeded (so it can't be used to find out which emails are registered), so there's no way to tell from that form alone whether email is broken. Use this instead: "Check Configuration" reports what's set and tests the SMTP connection without sending anything; "Send Test Email" also sends a real email to your own account's address and reports the exact result.</p>
+      <button type="button" class="btn-success" onclick="checkEmailConfig()">Check Configuration</button>
+      <button type="button" class="btn-primary" onclick="sendTestEmail()">Send Test Email</button>
+      <pre id="email-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
+    </div>
   </div>
 </div>
 
@@ -5312,6 +5320,71 @@ function loadFcsDatabaseTable() {
         outputEl.textContent = lines.join('\n');
       } catch (error) {
         console.error('Error loading storage path diagnostics:', error);
+        outputEl.textContent = 'Error: ' + error.message;
+      }
+    }
+
+    function renderMailConfig(lines, result) {
+      lines.push(`SMTP configured: ${result.configured}`);
+      if (result.missingEnvVars.length > 0) {
+        lines.push(`Missing env vars: ${result.missingEnvVars.join(', ')}`);
+      }
+      lines.push(`SMTP_HOST: ${result.smtpHost ?? '(not set)'}`);
+      lines.push(`SMTP_PORT: ${result.smtpPort ?? '(not set)'}`);
+      lines.push(`SMTP_SECURE: ${result.smtpSecure ?? '(not set)'}`);
+      lines.push(`SMTP_USER: ${result.smtpUser ?? '(not set)'}`);
+      lines.push(`SMTP_FROM (effective): ${result.smtpFrom ?? '(not set)'}`);
+      lines.push('');
+    }
+
+    // Calls GET /api/diagnostics/test-email - reports what's configured and
+    // tests the SMTP connection/login without sending anything.
+    async function checkEmailConfig() {
+      const outputEl = document.getElementById('email-diagnostics-output');
+      if (!outputEl) return;
+      outputEl.textContent = 'Checking...';
+      try {
+        const response = await fetch('/api/diagnostics/test-email');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+        const lines = [];
+        renderMailConfig(lines, result);
+        lines.push(`SMTP connection test: ${result.verify.ok ? 'OK' : 'FAILED'}`);
+        if (!result.verify.ok) {
+          lines.push(`  error: ${result.verify.error}`);
+          if (result.verify.code) lines.push(`  code: ${result.verify.code}`);
+        }
+        outputEl.textContent = lines.join('\n');
+      } catch (error) {
+        console.error('Error checking email config:', error);
+        outputEl.textContent = 'Error: ' + error.message;
+      }
+    }
+
+    // Calls POST /api/diagnostics/test-email - also sends a real test email
+    // to the logged-in webmaster's own account and reports the real result.
+    async function sendTestEmail() {
+      const outputEl = document.getElementById('email-diagnostics-output');
+      if (!outputEl) return;
+      outputEl.textContent = 'Sending test email...';
+      try {
+        const response = await fetch('/api/diagnostics/test-email', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+
+        const lines = [];
+        renderMailConfig(lines, result);
+        lines.push(`Test email to ${result.sendTest.sentTo || '(unknown)'}: ${result.sendTest.ok ? 'SENT' : 'FAILED'}`);
+        if (!result.sendTest.ok) {
+          lines.push(`  error: ${result.sendTest.error}`);
+          if (result.sendTest.code) lines.push(`  code: ${result.sendTest.code}`);
+        } else {
+          lines.push('  Check your inbox (and spam folder) for it.');
+        }
+        outputEl.textContent = lines.join('\n');
+      } catch (error) {
+        console.error('Error sending test email:', error);
         outputEl.textContent = 'Error: ' + error.message;
       }
     }
