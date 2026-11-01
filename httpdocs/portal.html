@@ -2994,7 +2994,13 @@
     
 // Create the Dimensions Stats Card
 function createDimensionsStatsCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
 
   // Create the card
   const card = document.createElement('div');
@@ -3036,7 +3042,13 @@ function createDimensionsStatsCard() {
 
 // Create the Historical Data Chart
 function createHistoricalDataChart() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
 
   // Create the card for a full-width chart
   const card = document.createElement('div');
@@ -3157,7 +3169,13 @@ function createHistoricalDataChart() {
 
 // Create the Geology Card
 function createGeologyCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
 
   // Create the card
   const card = document.createElement('div');
@@ -3245,7 +3263,13 @@ function createGeologyCard() {
 
 // Create Hazard Stats Card
 function createHazardStatsCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
 
   // Create the card
   const card = document.createElement('div');
@@ -3335,7 +3359,13 @@ function updateHazardStats() {
 
 // Create Elevation Distribution Chart
 function createElevationDistributionChart() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
 
   // Create the card
   const card = document.createElement('div');
@@ -3435,7 +3465,13 @@ function escapeStatsHtml(value) {
 // report. Backed by /get-caves-with-narratives, the same real,
 // server-side narrative system the Narrative tab itself uses.
 function createDocumentationCoverageCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card';
   card.dataset.cardId = 'documentation-coverage';
@@ -3487,7 +3523,13 @@ async function updateDocumentationCoverage() {
 // Leaderboard by narratives written (/get-all-narratives-log) and submissions
 // made (/api/pending-submissions).
 function createTopContributorsCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card full-width';
   card.dataset.cardId = 'top-contributors';
@@ -3564,7 +3606,13 @@ async function updateTopContributors() {
 // mapType and mapStatus exist on every cave record but nothing charts them
 // today. Codes match the <select> options in the Edit Cave form.
 function createMapStatusChart() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card chart-card';
   card.dataset.cardId = 'map-status';
@@ -3638,7 +3686,13 @@ function createMapStatusChart() {
 // Pending/approved/rejected counts and average time to approval, from the
 // real submission queue (/api/pending-submissions).
 function createSubmissionFunnelCard() {
-  const statsGrid = document.querySelector('.stats-grid');
+  // getElementById, not a '.stats-grid' class selector - the Website
+  // Management tab's Usage Snapshot grid (#usage-snapshot-grid) also has
+  // that class and appears earlier in the DOM, so querySelector('.stats-grid')
+  // silently matched that one instead of the Statistics tab's own grid,
+  // leaving these cards created but invisible (and invisible to the
+  // Customize Layout panel, which only looks inside #stats-grid).
+  const statsGrid = document.getElementById('stats-grid');
   const card = document.createElement('div');
   card.className = 'stats-card';
   card.dataset.cardId = 'submission-funnel';
