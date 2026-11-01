@@ -7674,19 +7674,28 @@ window.addEventListener('error', function(e) {
     }
 
     // Rendering the whole filtered set at once is fine at today's scale
-    // (a couple hundred caves) but would mean rebuilding 1000s of DOM rows
-    // - noticeably janky - on every search/filter change as the database
+    // (a couple hundred caves) but means rebuilding 1000s of DOM rows -
+    // noticeably janky - on every search/filter change as the database
     // grows toward a complete Florida survey (low thousands of records).
-    // Paginating keeps each render's DOM work bounded regardless of how
-    // large the database gets. Export CSV/Excel/GPX are unaffected - they
-    // already read from caveDataStore directly, not from what's currently
-    // on screen.
+    // Paginating by default keeps each render's DOM work bounded regardless
+    // of how large the database gets, while "Show All" (caveDbShowAll)
+    // lets someone opt into the slower full render when they actually want
+    // to see/scroll everything at once rather than page through it. Export
+    // CSV/Excel/GPX are unaffected either way - they already read from
+    // caveDataStore directly, not from what's currently on screen.
     const CAVE_DB_PAGE_SIZE = 100;
     let caveDbFilteredData = [];
     let caveDbCurrentPage = 1;
+    let caveDbShowAll = false;
 
     function displayFilteredData(filteredData) {
       caveDbFilteredData = filteredData;
+      caveDbCurrentPage = 1;
+      renderCaveDatabasePage();
+    }
+
+    function toggleCaveDatabaseShowAll() {
+      caveDbShowAll = !caveDbShowAll;
       caveDbCurrentPage = 1;
       renderCaveDatabasePage();
     }
@@ -7696,10 +7705,11 @@ window.addEventListener('error', function(e) {
       wrapper.innerHTML = "";
 
       const totalRows = caveDbFilteredData.length;
-      const totalPages = Math.max(1, Math.ceil(totalRows / CAVE_DB_PAGE_SIZE));
+      const pageSize = caveDbShowAll ? Math.max(totalRows, 1) : CAVE_DB_PAGE_SIZE;
+      const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
       if (caveDbCurrentPage > totalPages) caveDbCurrentPage = totalPages;
-      const startIdx = (caveDbCurrentPage - 1) * CAVE_DB_PAGE_SIZE;
-      const pageData = caveDbFilteredData.slice(startIdx, startIdx + CAVE_DB_PAGE_SIZE);
+      const startIdx = (caveDbCurrentPage - 1) * pageSize;
+      const pageData = caveDbFilteredData.slice(startIdx, startIdx + pageSize);
       renderCaveDatabasePaginationControls(totalRows, totalPages, startIdx, pageData.length);
 
       const table = document.createElement("table");
@@ -7822,6 +7832,18 @@ window.addEventListener('error', function(e) {
         ? "No caves match the current search/filters."
         : `Showing ${startIdx + 1}-${startIdx + pageRowCount} of ${totalRows}`;
       container.appendChild(info);
+
+      // Only worth offering the toggle when there's more than one page's
+      // worth of rows to begin with, or we're already showing all of them
+      // (so there's a way back to the faster paginated view).
+      if (totalRows > CAVE_DB_PAGE_SIZE || caveDbShowAll) {
+        const toggleBtn = document.createElement("button");
+        toggleBtn.textContent = caveDbShowAll
+          ? `Show ${CAVE_DB_PAGE_SIZE} per page`
+          : `Show All (${totalRows})`;
+        toggleBtn.onclick = toggleCaveDatabaseShowAll;
+        container.appendChild(toggleBtn);
+      }
 
       if (totalPages <= 1) return;
 
@@ -8564,6 +8586,7 @@ window.addEventListener('error', function(e) {
           document.getElementById('database-filter-type').value = 'all';
           document.getElementById('database-filter-status').value = 'all';
           document.getElementById('database-filter-entrance-type').value = 'all';
+          caveDbShowAll = false;
 
           // Show all data
           filterDatabase();
