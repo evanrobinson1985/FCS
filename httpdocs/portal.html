@@ -11066,6 +11066,31 @@ function addLinkPreviews(container) {
   });
 }
 
+// Looks up a YouTube video's real title via YouTube's public oEmbed
+// endpoint - no API key required, works for any public video. Cached per
+// page load since the same video link sometimes appears in more than one
+// narrative. Returns null (not a thrown error) on any failure - a private/
+// deleted video, a network error, etc. - so callers can just fall back to
+// the generic "YouTube Video" label already shown.
+const youTubeTitleCache = new Map();
+async function fetchYouTubeTitle(url) {
+  if (youTubeTitleCache.has(url)) return youTubeTitleCache.get(url);
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+    if (!response.ok) {
+      youTubeTitleCache.set(url, null);
+      return null;
+    }
+    const data = await response.json();
+    youTubeTitleCache.set(url, data.title || null);
+    return data.title || null;
+  } catch (error) {
+    console.log('Could not fetch YouTube title for', url, error);
+    youTubeTitleCache.set(url, null);
+    return null;
+  }
+}
+
 // Function to create a link preview based on URL
 function createLinkPreview(url) {
   try {
@@ -11104,7 +11129,16 @@ function createLinkPreview(url) {
     const title = document.createElement('div');
     title.style.cssText = 'font-weight: bold; color: #2a4d69; margin-bottom: 2px;';
     title.textContent = getUrlTitle(url, domain);
-    
+
+    // For YouTube links, swap the generic "YouTube Video" label for the
+    // real video title once it loads - fire-and-forget so the preview
+    // renders immediately rather than waiting on the network.
+    if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
+      fetchYouTubeTitle(url).then(realTitle => {
+        if (realTitle) title.textContent = `🎥 ${realTitle}`;
+      });
+    }
+
     // Create URL display
     const urlDisplay = document.createElement('div');
     urlDisplay.style.cssText = 'color: #666; font-size: 12px;';
