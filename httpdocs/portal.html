@@ -853,6 +853,20 @@
 <option value="R">R - Permission required</option>
 <option value="W">W - Waiver required</option>
 </select>
+<select id="database-filter-entrance-type" onchange="filterDatabase()" style="padding: 8px;">
+<option value="all">All Entrance Types</option>
+<option value="E">E - Large Horizontal (20'+)</option>
+<option value="K">K - Crawl</option>
+<option value="L">L - Large walk-in</option>
+<option value="H">H - Stoop or Duck Walk</option>
+<option value="T">T - Artificial tunnel</option>
+<option value="A">A - Artificial shaft</option>
+<option value="B">B - Bottleneck/small but bells out</option>
+<option value="C">C - Chimney or Climb</option>
+<option value="O">O - Very wide pit (20'+)</option>
+<option value="P">P - Pit</option>
+<option value="S">S - Tight pit</option>
+</select>
 </div>
 </div>
 <button class="btn-view-map view-all-caves-on-map">View All Caves on Map</button>
@@ -7605,6 +7619,7 @@ window.addEventListener('error', function(e) {
       populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
       document.getElementById('database-filter-type').value = 'all';
       document.getElementById('database-filter-status').value = 'all';
+      document.getElementById('database-filter-entrance-type').value = 'all';
       filterDatabase();
     }
 
@@ -7613,6 +7628,7 @@ window.addEventListener('error', function(e) {
       const county = document.getElementById('database-filter-county').value;
       const type = document.getElementById('database-filter-type').value;
       const status = document.getElementById('database-filter-status').value;
+      const entranceType = document.getElementById('database-filter-entrance-type')?.value || 'all';
 
       let filteredData = [...caveDataStore];
 
@@ -7647,7 +7663,12 @@ window.addEventListener('error', function(e) {
       if (status !== 'all') {
         filteredData = filteredData.filter(cave => cave.entryStatus === status);
       }
-      
+
+      // Apply entrance type filter
+      if (entranceType !== 'all') {
+        filteredData = filteredData.filter(cave => cave.entranceType === entranceType);
+      }
+
       // Update table with filtered data
       displayFilteredData(filteredData);
     }
@@ -8542,7 +8563,8 @@ window.addEventListener('error', function(e) {
           populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
           document.getElementById('database-filter-type').value = 'all';
           document.getElementById('database-filter-status').value = 'all';
-          
+          document.getElementById('database-filter-entrance-type').value = 'all';
+
           // Show all data
           filterDatabase();
         }
