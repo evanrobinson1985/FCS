@@ -5483,6 +5483,8 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
 // data-card-id attributes and card.dataset.cardId assignments) - the
 // allowlist a saved layout's hidden/order arrays are validated against
 // below, so a user's own record can never end up holding arbitrary strings.
+// "recent-activity" is a retired card (removed from the page) - kept here
+// only so layouts saved while it existed still validate.
 const KNOWN_STATS_CARD_IDS = new Set([
   "summary", "nationwide", "access-status", "cave-types", "states", "counties",
   "entry-status", "equipment", "recent-activity", "dimensions",
