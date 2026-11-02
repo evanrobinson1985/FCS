@@ -150,7 +150,11 @@
           <b>3D Terrain View</b> <span data-info style="color:#94a3b8;"></span>
           <div data-status style="margin-top:4px;">Preparing…</div>
           <div data-controls style="display:none;">
-            <div style="color:#cbd5e1;">Drag to look &middot; W/A/S/D or arrows to fly &middot; Q/E down/up &middot; Shift = fast &middot; wheel = forward/back &middot; Esc to close</div>
+            <details data-help style="color:#cbd5e1;margin-top:2px;" open><summary style="cursor:pointer;color:#e2e8f0;">How to move around</summary>
+              <div><b>Mouse:</b> drag to move &middot; right-drag (or Ctrl+drag) to rotate and tilt &middot; scroll to zoom &middot; double-click to zoom in there</div>
+              <div><b>Touch:</b> one finger to move &middot; pinch to zoom &middot; twist two fingers to rotate &middot; slide two fingers up/down to tilt &middot; double-tap to zoom in</div>
+              <div><b>Keys:</b> arrows or W/A/S/D move &middot; Q/E rotate &middot; R/F tilt &middot; +/&minus; zoom &middot; Esc closes</div>
+            </details>
             <label style="display:block;margin-top:6px;">Vertical exaggeration
               <input data-exag type="range" min="1" max="20" step="0.5" value="3" style="vertical-align:middle;width:130px;">
               <span data-exag-val>3x</span></label>
@@ -162,11 +166,39 @@
         </div>
         <button data-close style="margin-left:auto;pointer-events:auto;padding:8px 14px;border:none;border-radius:6px;background:#f1f5f9;color:#0f172a;cursor:pointer;font-weight:600;">Close 3D view</button>
       </div>
-      <div data-pad style="position:absolute;bottom:16px;right:16px;display:none;grid-template-columns:repeat(2,60px);gap:6px;">
-        <button data-hold="fwd">Fwd</button><button data-hold="up">Up</button>
-        <button data-hold="back">Back</button><button data-hold="down">Down</button>
-      </div>`;
-    overlay.querySelectorAll('[data-hold]').forEach(b => { b.style.cssText = 'margin:0;padding:10px 0;border:none;border-radius:6px;background:rgba(241,245,249,0.9);color:#0f172a;font-weight:600;touch-action:none;'; });
+      <div data-pad class="t3d-pad" style="display:none;">
+        <button type="button" class="t3d-compass" data-compass title="Turn to face north" aria-label="Turn to face north">
+          <span data-needle class="t3d-needle"><b>N</b><i></i></span>
+        </button>
+        <div class="t3d-grid">
+          <button type="button" class="t3d-btn" data-hold="zin" title="Zoom in" aria-label="Zoom in">+</button>
+          <button type="button" class="t3d-btn" data-hold="zout" title="Zoom out" aria-label="Zoom out">&minus;</button>
+          <button type="button" class="t3d-btn" data-hold="rotl" title="Rotate left" aria-label="Rotate left">&#10226;</button>
+          <button type="button" class="t3d-btn" data-hold="rotr" title="Rotate right" aria-label="Rotate right">&#10227;</button>
+          <button type="button" class="t3d-btn t3d-small" data-hold="tup" title="Tilt toward the horizon">Tilt &#9650;</button>
+          <button type="button" class="t3d-btn t3d-small" data-hold="tdn" title="Tilt to look straight down">Tilt &#9660;</button>
+          <button type="button" class="t3d-btn t3d-small t3d-wide" data-reset title="Back to the starting view">Reset view</button>
+        </div>
+      </div>
+      <style>
+        .terrain3d-overlay .t3d-pad { position:absolute; right:14px; bottom:14px; display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+        .terrain3d-overlay .t3d-grid { display:grid; grid-template-columns:repeat(2, 56px); gap:6px; }
+        .terrain3d-overlay .t3d-btn { margin:0; padding:0; height:48px; border:none; border-radius:8px; background:rgba(248,250,252,0.94);
+          color:#0f172a; font:700 22px system-ui, sans-serif; cursor:pointer; touch-action:none; user-select:none; -webkit-user-select:none;
+          box-shadow:0 1px 4px rgba(0,0,0,0.35); }
+        .terrain3d-overlay .t3d-btn.t3d-small { font-size:13px; }
+        .terrain3d-overlay .t3d-btn.t3d-wide { grid-column:span 2; height:38px; }
+        .terrain3d-overlay .t3d-btn:hover { background:#ffffff; }
+        .terrain3d-overlay .t3d-btn:active { background:#1e3a5f; color:#ffffff; }
+        .terrain3d-overlay .t3d-compass { margin:0; padding:0; width:56px; height:56px; border-radius:50%; border:none; cursor:pointer;
+          background:rgba(248,250,252,0.94); box-shadow:0 1px 4px rgba(0,0,0,0.35); position:relative; }
+        .terrain3d-overlay .t3d-needle { position:absolute; inset:0; display:block; pointer-events:none; }
+        .terrain3d-overlay .t3d-needle b { position:absolute; top:4px; left:0; right:0; text-align:center; font:700 12px system-ui, sans-serif; color:#b91c1c; }
+        .terrain3d-overlay .t3d-needle i { position:absolute; left:50%; top:19px; margin-left:-6px; border-left:6px solid transparent;
+          border-right:6px solid transparent; border-bottom:22px solid #b91c1c; }
+        .terrain3d-overlay details[data-help] summary { outline:none; }
+        @media (max-width: 600px) { .terrain3d-overlay [data-panel] { font-size:12px; } }
+      </style>`;
     const q = (s) => overlay.querySelector(s);
     return { overlay, q };
   }
@@ -411,57 +443,256 @@
 
     // ---- Controls ----
     q('[data-controls]').style.display = 'block';
-    q('[data-pad]').style.display = 'grid';
+    q('[data-pad]').style.display = 'flex';
+    // Fold the help away on small screens so it doesn't cover the view
+    if (window.innerWidth < 700 || window.innerHeight < 750) q('[data-help]').open = false;
     const exagEl = q('[data-exag]'), sunEl = q('[data-sun]');
     exagEl.value = zScale; q('[data-exag-val]').textContent = zScale + 'x';
-    exagEl.addEventListener('input', () => { zScale = parseFloat(exagEl.value); q('[data-exag-val]').textContent = zScale + 'x'; });
     let sunAz = 315;
     sunEl.addEventListener('input', () => { sunAz = parseFloat(sunEl.value); q('[data-sun-val]').textContent = sunAz + '°'; });
 
-    // Start south of the box, looking north and down over it
-    const cam = { x: 0, y: relief * zScale * 1.5 + extent * 0.35, z: cz * 1.3, yaw: 0, pitch: -0.55 };
+    // ---- Camera: orbits a point on the ground, like a web map tilted into 3D ----
+    // heading 0 = looking north; tilt 0 = looking straight down.
+    const FOV = Math.PI / 3, MAX_TILT = 85 * Math.PI / 180;
+    const MIN_DIST = Math.max(5, res * 5), MAX_DIST = extent * 4;
+    function groundAt(x, z) { // terrain height (unexaggerated, above minZ) at mesh coordinates
+      const fx = (x + cx) / sizeX * (gw - 1), fz = (z + cz) / sizeZ * (gh - 1);
+      if (!(fx >= 0 && fz >= 0 && fx <= gw - 1 && fz <= gh - 1)) return null;
+      const x0 = Math.min(gw - 2, Math.floor(fx)), z0 = Math.min(gh - 2, Math.floor(fz)), tx = fx - x0, tz = fz - z0;
+      const h = (r, c) => { const v = meshZ[r * gw + c]; return v >= ND ? v - minZ : 0; };
+      return (h(z0, x0) * (1 - tx) + h(z0, x0 + 1) * tx) * (1 - tz) + (h(z0 + 1, x0) * (1 - tx) + h(z0 + 1, x0 + 1) * tx) * tz;
+    }
+    const groundY = (x, z) => { const h = groundAt(x, z); return h == null ? null : h * zScale; };
+    const homeView = () => ({ tx: 0, ty: groundY(0, 0) || 0, tz: 0, dist: extent * 0.7, heading: 0, tilt: 45 * Math.PI / 180 });
+    const cam = homeView();
+    let anim = null;
+
+    function basis() {
+      const sh = Math.sin(cam.heading), chd = Math.cos(cam.heading), st = Math.sin(cam.tilt), ct = Math.cos(cam.tilt);
+      const fwd = [sh * st, -ct, -chd * st];
+      const right = [chd, 0, sh];
+      const up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+      const eye = [cam.tx - fwd[0] * cam.dist, cam.ty - fwd[1] * cam.dist, cam.tz - fwd[2] * cam.dist];
+      return { eye, fwd, right, up };
+    }
+    function rayAt(px, py) {
+      const b = basis(), w = canvas.clientWidth, h = canvas.clientHeight, t = Math.tan(FOV / 2);
+      const nx = (px / w * 2 - 1) * t * (w / Math.max(1, h)), ny = (1 - py / h * 2) * t;
+      const d = [0, 1, 2].map(i => b.fwd[i] + b.right[i] * nx + b.up[i] * ny);
+      const l = Math.hypot(d[0], d[1], d[2]);
+      return { o: b.eye, d: d.map(v => v / l) };
+    }
+    function planeHit(o, d, y) {
+      if (Math.abs(d[1]) < 1e-6) return null;
+      const t = (y - o[1]) / d[1];
+      return t > 0 ? [o[0] + d[0] * t, y, o[2] + d[2] * t] : null;
+    }
+    // The point on the terrain under a screen position (ray-marched through
+    // the height field); falls back to the level of the current pivot.
+    function pickGround(px, py) {
+      const { o, d } = rayAt(px, py);
+      const topY = relief * zScale + 1;
+      let t = 0;
+      if (o[1] > topY) { if (d[1] >= 0) return planeHit(o, d, cam.ty); t = (o[1] - topY) / -d[1]; }
+      const step = Math.max(res * 0.75, extent / 2000), maxT = t + extent * 3;
+      let prev = t;
+      for (; t < maxT; t += step) {
+        const x = o[0] + d[0] * t, y = o[1] + d[1] * t, z = o[2] + d[2] * t;
+        if (y > topY && d[1] >= 0) break;
+        const g = groundY(x, z);
+        if (g != null && y <= g) {
+          let a = prev, b2 = t;
+          for (let i = 0; i < 14; i++) {
+            const m = (a + b2) / 2, gm = groundY(o[0] + d[0] * m, o[2] + d[2] * m);
+            if (gm != null && o[1] + d[1] * m <= gm) b2 = m; else a = m;
+          }
+          return [o[0] + d[0] * b2, o[1] + d[1] * b2, o[2] + d[2] * b2];
+        }
+        prev = t;
+      }
+      return planeHit(o, d, cam.ty);
+    }
+    // Move the pivot to the ground at the centre of the screen without
+    // changing the view, so rotating and tilting turn around what you see.
+    function reanchor() {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      const hit = pickGround(w / 2, h / 2);
+      if (!hit) return;
+      const eye = basis().eye, d = Math.hypot(hit[0] - eye[0], hit[1] - eye[1], hit[2] - eye[2]);
+      if (d < 1) return;
+      cam.tx = hit[0]; cam.ty = hit[1]; cam.tz = hit[2]; cam.dist = d;
+    }
+    function clampCam() {
+      cam.dist = Math.min(MAX_DIST, Math.max(MIN_DIST, cam.dist));
+      cam.tilt = Math.min(MAX_TILT, Math.max(0, cam.tilt));
+      cam.tx = Math.min(sizeX, Math.max(-sizeX, cam.tx));
+      cam.tz = Math.min(sizeZ, Math.max(-sizeZ, cam.tz));
+      // Never let the camera end up inside a hill: look down more instead
+      for (let i = 0; i < 40 && cam.tilt > 0; i++) {
+        const e = basis().eye, g = groundY(e[0], e[2]);
+        if (g == null || e[1] >= g + Math.max(2, cam.dist * 0.03)) break;
+        cam.tilt = Math.max(0, cam.tilt - 0.03);
+      }
+    }
+    function zoomAbout(P, f) {
+      const nd = Math.min(MAX_DIST, Math.max(MIN_DIST, cam.dist * f));
+      f = nd / cam.dist;
+      if (P) { cam.tx = P[0] + (cam.tx - P[0]) * f; cam.ty = P[1] + (cam.ty - P[1]) * f; cam.tz = P[2] + (cam.tz - P[2]) * f; }
+      cam.dist = nd;
+      clampCam();
+    }
+    function animateTo(to, ms) {
+      const from = { ...cam };
+      let dh = (to.heading ?? cam.heading) - cam.heading;
+      dh = Math.atan2(Math.sin(dh), Math.cos(dh)); // turn the short way round
+      anim = { from, to: { ...cam, ...to, heading: cam.heading + dh }, t0: performance.now(), ms: ms || 450 };
+    }
+
+    exagEl.addEventListener('input', () => {
+      const old = zScale;
+      zScale = parseFloat(exagEl.value);
+      q('[data-exag-val]').textContent = zScale + 'x';
+      cam.ty = cam.ty / old * zScale; // keep the pivot on the (re-stretched) ground
+      clampCam();
+    });
+
+    // ---- Mouse / touch ----
+    const pointers = new Map();
+    let mode = null, grab = null, last2 = null, lastTap = null, moved = 0;
+    const local = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    function startPan(p) { const hit = pickGround(p.x, p.y); grab = hit ? { P: hit } : null; mode = 'pan'; }
+    function twoState() {
+      const [a, b2] = [...pointers.values()];
+      return { mx: (a.x + b2.x) / 2, my: (a.y + b2.y) / 2, span: Math.max(1, Math.hypot(a.x - b2.x, a.y - b2.y)), ang: Math.atan2(b2.y - a.y, b2.x - a.x) };
+    }
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('pointerdown', (e) => {
+      anim = null;
+      canvas.setPointerCapture(e.pointerId);
+      const p = local(e);
+      pointers.set(e.pointerId, p);
+      moved = 0;
+      if (pointers.size === 1) {
+        if (e.button === 2 || e.ctrlKey || e.metaKey || e.shiftKey) { reanchor(); mode = 'rotate'; last2 = p; }
+        else startPan(p);
+      } else if (pointers.size === 2) {
+        reanchor(); mode = 'touch2'; last2 = twoState();
+      }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      const prevP = pointers.get(e.pointerId), p = local(e);
+      pointers.set(e.pointerId, p);
+      moved += Math.hypot(p.x - prevP.x, p.y - prevP.y);
+      if (mode === 'pan' && grab) {
+        // Keep the grabbed point of ground under the pointer
+        const { o, d } = rayAt(p.x, p.y);
+        const hit = planeHit(o, d, grab.P[1]);
+        if (hit) {
+          let dx = grab.P[0] - hit[0], dz = grab.P[2] - hit[2];
+          const lim = cam.dist * 2, len = Math.hypot(dx, dz); // ray near the horizon: don't fling
+          if (len > lim) { dx *= lim / len; dz *= lim / len; }
+          cam.tx += dx; cam.tz += dz;
+          clampCam();
+        }
+      } else if (mode === 'rotate') {
+        cam.heading -= (p.x - last2.x) * 0.006;
+        cam.tilt -= (p.y - last2.y) * 0.006;
+        last2 = p;
+        clampCam();
+      } else if (mode === 'touch2' && pointers.size === 2) {
+        const now = twoState();
+        const P = pickGround(now.mx, now.my);
+        zoomAbout(P, last2.span / now.span);              // pinch
+        const da = now.ang - last2.ang;
+        cam.heading -= Math.atan2(Math.sin(da), Math.cos(da)); // twist
+        cam.tilt -= (now.my - last2.my) * 0.006;           // slide up/down together
+        clampCam();
+        last2 = now;
+      }
+    });
+    function endPointer(e) {
+      if (!pointers.has(e.pointerId)) return;
+      const p = pointers.get(e.pointerId);
+      pointers.delete(e.pointerId);
+      if (pointers.size === 1) { startPan([...pointers.values()][0]); return; } // lifted one of two fingers
+      if (pointers.size) return;
+      if (mode === 'pan') reanchor();
+      mode = null; grab = null;
+      // Double-click / double-tap: zoom in on that spot
+      if (e.type === 'pointerup' && moved < 6) {
+        const now = performance.now();
+        if (lastTap && now - lastTap.t < 350 && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30) {
+          const P = pickGround(p.x, p.y);
+          if (P) animateTo({ tx: P[0], ty: P[1], tz: P[2], dist: Math.max(MIN_DIST, cam.dist * 0.45) });
+          lastTap = null;
+        } else lastTap = { t: now, x: p.x, y: p.y };
+      }
+    }
+    canvas.addEventListener('pointerup', endPointer);
+    canvas.addEventListener('pointercancel', endPointer);
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      anim = null;
+      const p = local(e);
+      const dy = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+      zoomAbout(pickGround(p.x, p.y), Math.exp(Math.max(-300, Math.min(300, dy)) * 0.0015));
+    }, { passive: false });
+
+    // ---- On-screen buttons (hold to keep going) and keys ----
     const held = new Set();
-    let last = performance.now(), raf = 0, dragging = null;
-    const keys = ['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'];
+    overlay.querySelectorAll('[data-hold]').forEach(btn => {
+      const k2 = 'btn-' + btn.dataset.hold;
+      btn.addEventListener('pointerdown', (e) => { e.preventDefault(); anim = null; reanchor(); held.add(k2); });
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, () => held.delete(k2)));
+    });
+    q('[data-reset]').addEventListener('click', () => animateTo(homeView(), 600));
+    q('[data-compass]').addEventListener('click', () => { reanchor(); animateTo({ heading: 0 }); });
+    const needle = q('[data-needle]');
+    const keyMap = { arrowup: 'fwd', w: 'fwd', arrowdown: 'back', s: 'back', arrowleft: 'left', a: 'left', arrowright: 'right', d: 'right',
+      q: 'rotl', e: 'rotr', r: 'tup', f: 'tdn', '+': 'zin', '=': 'zin', '-': 'zout', '_': 'zout', shift: 'fast' };
     const onKey = (e, down) => {
       if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range' && e.target.type !== 'checkbox') return;
-      const key = e.key.toLowerCase();
-      if (keys.includes(key)) { if (down) held.add(key); else held.delete(key); e.preventDefault(); }
+      const k3 = keyMap[e.key.toLowerCase()];
+      if (!k3) return;
+      e.preventDefault();
+      if (down) { if (!held.has('key-' + k3) && k3 !== 'fast') { anim = null; reanchor(); } held.add('key-' + k3); }
+      else held.delete('key-' + k3);
     };
     const kd = (e) => onKey(e, true), ku = (e) => onKey(e, false);
     window.addEventListener('keydown', kd); window.addEventListener('keyup', ku);
-    canvas.addEventListener('pointerdown', (e) => { dragging = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
-    canvas.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      cam.yaw += (e.clientX - dragging.x) * 0.005;
-      cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - (e.clientY - dragging.y) * 0.005));
-      dragging = { x: e.clientX, y: e.clientY };
-    });
-    const endDrag = () => { dragging = null; };
-    canvas.addEventListener('pointerup', endDrag); canvas.addEventListener('pointercancel', endDrag);
-    canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const d = -Math.sign(e.deltaY) * extent * 0.03;
-      cam.x += Math.cos(cam.pitch) * Math.sin(cam.yaw) * d; cam.y += Math.sin(cam.pitch) * d; cam.z -= Math.cos(cam.pitch) * Math.cos(cam.yaw) * d;
-    }, { passive: false });
-    overlay.querySelectorAll('[data-hold]').forEach(btn => {
-      const k2 = 'btn-' + btn.dataset.hold;
-      btn.addEventListener('pointerdown', (e) => { e.preventDefault(); held.add(k2); });
-      ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, () => held.delete(k2)));
-    });
+    const on = (n) => held.has('btn-' + n) || held.has('key-' + n);
+    let last = performance.now(), raf = 0;
 
     function frame(now) {
       const dt = Math.min(0.1, (now - last) / 1000); last = now;
-      const speed = extent * 0.12 * (held.has('shift') ? 4 : 1) * dt;
-      const fx = Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
-      if (held.has('w') || held.has('arrowup') || held.has('btn-fwd')) { cam.x += fx * speed; cam.z += fz * speed; cam.y += Math.sin(cam.pitch) * speed; }
-      if (held.has('s') || held.has('arrowdown') || held.has('btn-back')) { cam.x -= fx * speed; cam.z -= fz * speed; cam.y -= Math.sin(cam.pitch) * speed; }
-      if (held.has('a')) { cam.x += fz * speed; cam.z -= fx * speed; }
-      if (held.has('d')) { cam.x -= fz * speed; cam.z += fx * speed; }
-      if (held.has('arrowleft')) cam.yaw -= 1.2 * dt;
-      if (held.has('arrowright')) cam.yaw += 1.2 * dt;
-      if (held.has('q') || held.has('btn-down')) cam.y -= speed;
-      if (held.has('e') || held.has('btn-up')) cam.y += speed;
+      if (anim) {
+        const t = Math.min(1, (now - anim.t0) / anim.ms), k4 = t * t * (3 - 2 * t);
+        for (const key of ['tx', 'ty', 'tz', 'heading', 'tilt']) cam[key] = anim.from[key] + (anim.to[key] - anim.from[key]) * k4;
+        cam.dist = Math.exp(Math.log(anim.from.dist) + (Math.log(anim.to.dist) - Math.log(anim.from.dist)) * k4);
+        if (t >= 1) anim = null;
+        clampCam();
+      }
+      if (held.size) {
+        const fast = on('fast') ? 3 : 1, mv = cam.dist * 0.9 * dt * fast;
+        const fx = Math.sin(cam.heading), fz = -Math.cos(cam.heading);
+        if (on('fwd')) { cam.tx += fx * mv; cam.tz += fz * mv; }
+        if (on('back')) { cam.tx -= fx * mv; cam.tz -= fz * mv; }
+        if (on('left')) { cam.tx += fz * mv; cam.tz -= fx * mv; }
+        if (on('right')) { cam.tx -= fz * mv; cam.tz += fx * mv; }
+        if (on('fwd') || on('back') || on('left') || on('right')) {
+          const g = groundY(cam.tx, cam.tz); // keep the pivot near the ground as it moves
+          if (g != null) cam.ty += (g - cam.ty) * Math.min(1, dt * 4);
+        }
+        if (on('rotl')) cam.heading += 1.1 * dt * fast;
+        if (on('rotr')) cam.heading -= 1.1 * dt * fast;
+        if (on('tup')) cam.tilt += 0.8 * dt * fast;
+        if (on('tdn')) cam.tilt -= 0.8 * dt * fast;
+        if (on('zin')) cam.dist *= Math.exp(-1.4 * dt * fast);
+        if (on('zout')) cam.dist *= Math.exp(1.4 * dt * fast);
+        clampCam();
+      }
+      needle.style.transform = `rotate(${-cam.heading}rad)`;
 
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
@@ -470,13 +701,13 @@
       gl.viewport(0, 0, cw, ch);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      const eye = [cam.x, cam.y, cam.z];
-      const dir = [Math.cos(cam.pitch) * Math.sin(cam.yaw), Math.sin(cam.pitch), -Math.cos(cam.pitch) * Math.cos(cam.yaw)];
-      const view = mat4LookAt(eye, [eye[0] + dir[0], eye[1] + dir[1], eye[2] + dir[2]], [0, 1, 0]);
-      const proj = mat4Perspective(Math.PI / 3, cw / Math.max(1, ch), Math.max(0.5, extent / 5000), extent * 6);
+      const bs = basis(), eye = bs.eye;
+      const view = mat4LookAt(eye, [cam.tx, cam.ty, cam.tz], bs.up);
+      const near = Math.max(0.5, Math.min(cam.dist * 0.01, extent / 500));
+      const proj = mat4Perspective(FOV, cw / Math.max(1, ch), near, cam.dist * 3 + extent * 4);
       const mvp = mat4Mul(proj, view);
       gl.uniformMatrix4fv(uMvp, false, mvp);
-      gl.uniform1f(uZ, zScale); gl.uniform1f(uNScale, zScale); gl.uniform3fv(uEye, eye); gl.uniform1f(uFog, extent * 2.5);
+      gl.uniform1f(uZ, zScale); gl.uniform1f(uNScale, zScale); gl.uniform3fv(uEye, eye); gl.uniform1f(uFog, Math.max(extent * 2.5, cam.dist * 3));
       const az = sunAz * Math.PI / 180, alt = 45 * Math.PI / 180;
       gl.uniform3f(uSun, Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt));
 
@@ -513,7 +744,7 @@
         const cyp = mvp[1] * vx + mvp[5] * vy + mvp[9] * vz + mvp[13];
         const cwp = mvp[3] * vx + mvp[7] * vy + mvp[11] * vz + mvp[15];
         const dist = Math.hypot(vx - eye[0], vy - eye[1], vz - eye[2]);
-        if (!showNames || cwp <= 0 || dist > extent * 1.2) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
+        if (!showNames || cwp <= 0 || dist > Math.max(extent * 1.2, cam.dist * 2.5)) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
         const sx = (cxp / cwp * 0.5 + 0.5) * cssW, sy = (1 - (cyp / cwp * 0.5 + 0.5)) * cssH;
         if (sx < -200 || sx > cssW + 50 || sy < -20 || sy > cssH + 20) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
         if (!p.shown) { p.el.style.display = 'block'; p.shown = true; }
