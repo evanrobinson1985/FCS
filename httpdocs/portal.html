@@ -1471,7 +1471,7 @@
 <script src="https://unpkg.com/georaster-layer-for-leaflet@3.7.0/dist/georaster-layer-for-leaflet.min.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
 <!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
-<script src="js/terrain3d.js?v=3"></script>
+<script src="js/terrain3d.js?v=4"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -2233,6 +2233,14 @@
                 out.push({ lat: ll.lat, lng: ll.lng, color: layer.options.fillColor, label: layer.caveName || '' });
               });
               return out;
+            },
+            // Basemaps that can be draped over the 3D terrain
+            getBasemaps: function() {
+              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer]]
+                .filter(function(pair) { return pair[1] && pair[1]._url; })
+                .map(function(pair) {
+                  return { label: pair[0], url: pair[1]._url, options: pair[1].options, active: map.hasLayer(pair[1]) };
+                });
             }
           });
         }

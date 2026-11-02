@@ -13,7 +13,9 @@
  *
  * Usage:
  *   Terrain3D.attachControl(map, {
- *     getMarkers: () => [{ lat, lng, color: '#rrggbb', label: 'Name' }, ...]
+ *     getMarkers: () => [{ lat, lng, color: '#rrggbb', label: 'Name' }, ...],
+ *     // optional: map layers the user can drape over the terrain
+ *     getBasemaps: () => [{ label, url: 'https://…/{z}/{y}/{x}', options: { maxNativeZoom }, active }]
  *   });
  *   // or directly:
  *   Terrain3D.open({ bounds: { n, s, e, w }, markers: [...] });
@@ -131,6 +133,73 @@
     return { data: out, w: plan.W, h: plan.H, bounds: plan.bounds, res: plan.res };
   }
 
+  // ---------- basemap imagery draped over the terrain ----------
+  // Loads the basemap's web-map tiles covering the box and draws them into
+  // an iw x ih canvas on the same lat/lon grid as the elevation. Each tile
+  // is stretched to its own lat/lon rectangle, which matches Web Mercator
+  // closely at the zoom levels used here.
+  function tileUrl(bm, x, y, z) {
+    const o = bm.options || {};
+    let subs = o.subdomains || 'abc';
+    if (typeof subs === 'string') subs = subs.split('');
+    const data = Object.assign({}, o, { s: subs[Math.abs(x + y) % subs.length] || '', x, y: o.tms ? (1 << z) - 1 - y : y, z, r: '' });
+    return bm.url.replace(/\{ *([\w_ -]+) *\}/g, (m, key) => (data[key] != null ? data[key] : ''));
+  }
+  async function loadImagery(bm, b, iw, ih, signal, onProgress) {
+    const midLat = (b.n + b.s) / 2;
+    const mppWanted = (b.e - b.w) * 111320 * Math.cos(midLat * Math.PI / 180) / iw;
+    const o = bm.options || {};
+    const zMax = Math.min(o.maxNativeZoom != null ? o.maxNativeZoom : (o.maxZoom != null ? o.maxZoom : 19), 19);
+    const lon2x = (lon, z) => (lon + 180) / 360 * (1 << z);
+    const lat2y = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z); };
+    const y2lat = (y, z) => { const n = Math.PI - 2 * Math.PI * y / (1 << z); return Math.atan(Math.sinh(n)) * 180 / Math.PI; };
+    let z = Math.max(1, Math.min(zMax, Math.round(Math.log2(156543.03 * Math.cos(midLat * Math.PI / 180) / Math.max(0.1, mppWanted)))));
+    let x0, x1, y0, y1;
+    for (;;) {
+      x0 = Math.floor(lon2x(b.w, z)); x1 = Math.floor(lon2x(b.e, z));
+      y0 = Math.floor(lat2y(b.n, z)); y1 = Math.floor(lat2y(b.s, z));
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 400 || z <= 1) break;
+      z--;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = iw; canvas.height = ih;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#5b5f55'; ctx.fillRect(0, 0, iw, ih);
+    const jobs = [];
+    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) jobs.push([tx, ty]);
+    let next = 0, done = 0, ok = 0;
+    const one = (tx, ty) => new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      const finish = (good) => { signal.removeEventListener('abort', onAbort); resolve(good ? img : null); };
+      const onAbort = () => { img.src = ''; finish(false); };
+      signal.addEventListener('abort', onAbort);
+      img.onload = () => finish(true);
+      img.onerror = () => finish(false);
+      img.src = tileUrl(bm, tx, ty, z);
+    });
+    const worker = async () => {
+      while (next < jobs.length && !signal.aborted) {
+        const [tx, ty] = jobs[next++];
+        const img = await one(tx, ty);
+        if (img && img.naturalWidth) {
+          const lonW = tx / (1 << z) * 360 - 180, lonE = (tx + 1) / (1 << z) * 360 - 180;
+          const latN = y2lat(ty, z), latS = y2lat(ty + 1, z);
+          const dx = (lonW - b.w) / (b.e - b.w) * iw, dy = (b.n - latN) / (b.n - b.s) * ih;
+          const dw = (lonE - lonW) / (b.e - b.w) * iw, dh = (latN - latS) / (b.n - b.s) * ih;
+          ctx.drawImage(img, dx, dy, dw + 0.5, dh + 0.5); // +0.5 hides hairline seams
+          ok++;
+        }
+        onProgress(++done, jobs.length);
+      }
+    };
+    onProgress(0, jobs.length);
+    await Promise.all(Array.from({ length: Math.min(8, jobs.length) }, worker));
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (!ok) throw new Error('none of its map tiles could be loaded');
+    return canvas;
+  }
+
   // ---------- the viewer ----------
   function el(tag, css, text) {
     const e = document.createElement(tag);
@@ -161,6 +230,10 @@
             <label style="display:block;">Sun direction
               <input data-sun type="range" min="0" max="360" step="5" value="315" style="vertical-align:middle;width:130px;">
               <span data-sun-val>315&deg;</span></label>
+            <label data-surface-row style="display:block;">Surface
+              <select data-surface style="vertical-align:middle;max-width:240px;padding:2px 4px;border-radius:4px;color:#0f172a;background:#f8fafc;border:1px solid #94a3b8;">
+                <option value="terrain">Natural terrain colours</option>
+              </select></label>
             <label data-names-row style="display:block;"><input data-names type="checkbox" checked> Show cave names</label>
           </div>
         </div>
@@ -244,7 +317,7 @@
         setTimeout(() => {
           if (closed) return;
           try {
-            renderer = startRenderer(overlay, q, grid, markers);
+            renderer = startRenderer(overlay, q, grid, markers, opts.basemaps || [], abort.signal);
             status.textContent = plan.res > 10
               ? `Showing ${markers.length} cave(s). This is a large area, so detail is coarse. Zoom in or draw a smaller box for up to 1 m detail.`
               : `Showing ${markers.length} cave(s).`;
@@ -263,7 +336,7 @@
   }
 
   // Builds the mesh, textures and markers and runs the render loop.
-  function startRenderer(overlay, q, g, markers) {
+  function startRenderer(overlay, q, g, markers, basemaps, signal) {
     const canvas = q('canvas');
     const gl = canvas.getContext('webgl', { antialias: true });
     if (!gl) throw new Error('WebGL is not available in this browser (or too many 3D views are open)');
@@ -356,7 +429,8 @@
     const mkTex = (px) => {
       const t = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      if (px instanceof Uint8Array) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, px); // a canvas (draped imagery)
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -413,7 +487,7 @@
     const fs = `precision mediump float;
       varying vec2 v_uv; varying float v_dist;
       uniform sampler2D u_nrm; uniform sampler2D u_alb;
-      uniform vec3 u_sun; uniform float u_nScale; uniform float u_flat; uniform vec3 u_flatColor; uniform float u_fogFar;
+      uniform vec3 u_sun; uniform float u_nScale; uniform float u_flat; uniform vec3 u_flatColor; uniform float u_fogFar; uniform float u_img;
       void main() {
         if (u_flat > 0.5) { gl_FragColor = vec4(u_flatColor, 1.0); return; }
         vec3 n = texture2D(u_nrm, v_uv).xyz * 2.0 - 1.0;
@@ -421,7 +495,10 @@
         vec3 alb = texture2D(u_alb, v_uv).rgb;
         float d = max(dot(n, u_sun), 0.0);
         float sky = 0.25 + 0.15 * n.y;
-        vec3 c = alb * (sky + 0.75 * d);
+        float light = sky + 0.75 * d;
+        // Draped map imagery already has its own colours (and, for aerial
+        // photos, shadows), so the relief shading is applied more gently.
+        vec3 c = u_img > 0.5 ? alb * mix(1.0, light / 0.9, 0.6) : alb * light;
         float fog = clamp(v_dist / u_fogFar, 0.0, 1.0) * 0.5;
         gl_FragColor = vec4(mix(c, vec3(0.55, 0.62, 0.72), fog), 1.0);
       }`;
@@ -436,7 +513,7 @@
     const mkBuf = (data, target) => { const bf = gl.createBuffer(); gl.bindBuffer(target || gl.ARRAY_BUFFER, bf); gl.bufferData(target || gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return bf; };
     const bPos = mkBuf(pos), bUv = mkBuf(uv), bIdx = mkBuf(idx, gl.ELEMENT_ARRAY_BUFFER), bMk = mkBuf(markerPos);
     const uMvp = uni('u_mvp'), uZ = uni('u_zScale'), uNScale = uni('u_nScale'), uEye = uni('u_eye'), uSun = uni('u_sun'),
-      uFlat = uni('u_flat'), uFlatColor = uni('u_flatColor'), uFog = uni('u_fogFar'), uPt = uni('u_pointSize');
+      uFlat = uni('u_flat'), uFlatColor = uni('u_flatColor'), uFog = uni('u_fogFar'), uPt = uni('u_pointSize'), uImg = uni('u_img');
     gl.uniform1i(uni('u_nrm'), 0); gl.uniform1i(uni('u_alb'), 1);
     gl.enable(gl.DEPTH_TEST);
     gl.clearColor(0.55, 0.62, 0.72, 1); // hazy sky, matching the fog
@@ -448,6 +525,43 @@
     if (window.innerWidth < 700 || window.innerHeight < 750) q('[data-help]').open = false;
     const exagEl = q('[data-exag]'), sunEl = q('[data-sun]');
     exagEl.value = zScale; q('[data-exag-val]').textContent = zScale + 'x';
+    // Surface: natural colours, or one of the map's basemaps draped on top
+    let texImg = null, useImg = false;
+    const imgCache = new Map();
+    const surfaceEl = q('[data-surface]'), statusEl = q('[data-status]'), statusText = () => statusEl.textContent;
+    basemaps.forEach((bm, i) => {
+      const op = document.createElement('option');
+      op.value = String(i); op.textContent = bm.label + (bm.active ? ' (shown on the map now)' : '');
+      surfaceEl.appendChild(op);
+    });
+    if (!basemaps.length) q('[data-surface-row]').style.display = 'none';
+    const maxImgTex = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+    let iw = Math.min(maxImgTex, Math.max(256, tw)), ih = Math.min(maxImgTex, Math.max(256, th));
+    while (iw * ih > 8e6) { if (iw >= ih) iw /= 2; else ih /= 2; } // keep the canvas phone-friendly
+    let surfaceReq = 0, baseStatus = '';
+    surfaceEl.addEventListener('change', async () => {
+      const req = ++surfaceReq, v = surfaceEl.value;
+      if (!baseStatus) baseStatus = statusText();
+      if (v === 'terrain') { useImg = false; statusEl.textContent = baseStatus; return; }
+      const bm = basemaps[+v];
+      if (imgCache.has(v)) { texImg = imgCache.get(v); useImg = true; statusEl.textContent = baseStatus; return; }
+      try {
+        const cv = await loadImagery(bm, rb, iw, ih, signal, (d, n) => {
+          if (req === surfaceReq) statusEl.textContent = `Loading ${bm.label}… ${d} of ${n} tiles`;
+        });
+        let t;
+        try { t = mkTex(cv); } catch (err) { throw new Error('its server does not allow its tiles to be used in 3D'); }
+        imgCache.set(v, t);
+        if (req !== surfaceReq) return;
+        texImg = t; useImg = true; statusEl.textContent = baseStatus;
+      } catch (err) {
+        if (err.name === 'AbortError' || req !== surfaceReq) return;
+        console.error(err);
+        surfaceEl.value = 'terrain'; useImg = false;
+        statusEl.textContent = `Couldn't show ${bm.label} in 3D: ${err.message}.`;
+      }
+    });
+
     let sunAz = 315;
     sunEl.addEventListener('input', () => { sunAz = parseFloat(sunEl.value); q('[data-sun-val]').textContent = sunAz + '°'; });
 
@@ -714,7 +828,8 @@
       // Terrain
       gl.uniform1f(uFlat, 0); gl.uniform1f(uPt, 1);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texNrm);
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texAlb);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, useImg && texImg ? texImg : texAlb);
+      gl.uniform1f(uImg, useImg && texImg ? 1 : 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, bPos); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, bUv); gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
@@ -768,6 +883,7 @@
   function attachControl(map, options) {
     if (typeof L === 'undefined' || !map) return null;
     const getMarkers = (options && options.getMarkers) || (() => []);
+    const getBasemaps = (options && options.getBasemaps) || (() => []);
     let menu = null, drawing = null, boxLayer = null;
 
     function boundsOf(llb) {
@@ -776,7 +892,7 @@
     function clearBox() { if (boxLayer) { map.removeLayer(boxLayer); boxLayer = null; } }
     function launch(llb) {
       hideMenu();
-      open({ bounds: boundsOf(llb), markers: getMarkers(), onClose: clearBox });
+      open({ bounds: boundsOf(llb), markers: getMarkers(), basemaps: getBasemaps(), onClose: clearBox });
     }
 
     // The site stylesheet styles every <button> (white text etc.), so the
