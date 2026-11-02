@@ -1,5 +1,13 @@
 [
   {
+    "id": "2026-11-02-donate-button",
+    "date": "2026-11-02",
+    "title": "Donate to the Florida Cave Survey",
+    "changes": [
+      "New Donate button at the top of every page. It opens PayPal's secure donation page for the Florida Cave Survey in a new tab."
+    ]
+  },
+  {
     "id": "2026-11-02-feedback-buttons",
     "date": "2026-11-02",
     "title": "Request features and report bugs",
