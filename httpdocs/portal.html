@@ -1470,6 +1470,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
 <script src="https://unpkg.com/georaster-layer-for-leaflet@3.7.0/dist/georaster-layer-for-leaflet.min.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
+<!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
+<script src="js/terrain3d.js?v=1"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -2217,6 +2219,24 @@
         // Add scale bar (bottom-left corner)
         L.control.scale({ imperial: true, metric: true, position: 'bottomleft' }).addTo(map);
 
+        // 3D terrain view: "3D" button under the zoom control. Shows the
+        // whole map view or a box the user drags, with the caves currently
+        // shown on the map (after filters) as coloured pins.
+        if (window.Terrain3D) {
+          Terrain3D.attachControl(map, {
+            getMarkers: function() {
+              const out = [];
+              if (!cavesLayer) return out;
+              cavesLayer.eachLayer(function(layer) {
+                if (!layer.getLatLng) return;
+                const ll = layer.getLatLng();
+                out.push({ lat: ll.lat, lng: ll.lng, color: layer.options.fillColor, label: layer.caveName || '' });
+              });
+              return out;
+            }
+          });
+        }
+
         // Create a custom location control
         const locationControl = L.Control.extend({
           options: {
@@ -2675,6 +2695,8 @@
           opacity: 1,
           fillOpacity: 0.6
         });
+        // Read by the 3D terrain view to label this cave's pin
+        marker.caveName = cave.name || cave.id || '';
 
         
         // Add popup with cave info
@@ -7288,6 +7310,8 @@ window.addEventListener('error', function(e) {
           opacity: 1,
           fillOpacity: 0.6
         });
+        // Read by the 3D terrain view to label this cave's pin
+        marker.caveName = cave.name || cave.id || '';
 
         
         // Add popup with cave info
