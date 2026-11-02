@@ -548,6 +548,23 @@
       open({ bounds: boundsOf(llb), markers: getMarkers(), onClose: clearBox });
     }
 
+    // The site stylesheet styles every <button> (white text etc.), so the
+    // menu's buttons get their own, more specific rules.
+    if (!document.getElementById('terrain3d-style')) {
+      const st = document.createElement('style');
+      st.id = 'terrain3d-style';
+      st.textContent = `
+        .terrain3d-control .t3d-opt {
+          display: block; width: 100%; margin: 0 0 6px; padding: 8px 10px;
+          border: 1px solid #94a3b8; border-radius: 4px; background: #f1f5f9;
+          color: #0f172a; font: 600 13px system-ui, sans-serif; text-align: left; cursor: pointer;
+        }
+        .terrain3d-control .t3d-opt:hover, .terrain3d-control .t3d-opt:focus-visible {
+          background: #1e3a5f; border-color: #1e3a5f; color: #ffffff;
+        }`;
+      document.head.appendChild(st);
+    }
+
     const Control = L.Control.extend({
       options: { position: 'topleft' },
       onAdd: function () {
@@ -561,8 +578,8 @@
         menu.style.cssText = 'display:none;position:absolute;left:40px;top:0;background:#fff;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.3);padding:8px;width:210px;font:13px system-ui,sans-serif;color:#1f2937;';
         menu.innerHTML = `
           <div style="font-weight:700;margin-bottom:6px;">3D terrain view</div>
-          <button type="button" data-act="view" style="display:block;width:100%;margin:0 0 6px;padding:7px;border:1px solid #cbd5e1;border-radius:4px;background:#f8fafc;cursor:pointer;text-align:left;">Entire map view</button>
-          <button type="button" data-act="box" style="display:block;width:100%;margin:0 0 6px;padding:7px;border:1px solid #cbd5e1;border-radius:4px;background:#f8fafc;cursor:pointer;text-align:left;">Select a bounding box</button>
+          <button type="button" data-act="view" class="t3d-opt">Entire map view</button>
+          <button type="button" data-act="box" class="t3d-opt">Select a bounding box</button>
           <div style="font-size:11px;color:#64748b;line-height:1.35;">Uses USGS 3DEP bare-earth elevation (US only). Areas up to about 2 × 2 km load at full 1 m detail; larger areas are shown coarser.</div>`;
         L.DomEvent.disableClickPropagation(wrap);
         L.DomEvent.disableScrollPropagation(wrap);
