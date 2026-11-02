@@ -37,6 +37,8 @@ const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
 const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 // Feature requests and bug reports sent from the Site Updates tab
 const FEEDBACK_FILE = path.join(DATA_DIR, "feedback.json");
+// How many distinct login addresses to remember per account
+const MAX_LOGIN_IPS = 50;
 
 // State/county reference data (see scripts/generate-states-config.js). This
 // is public geographic reference data, not survey data, so unlike the files
@@ -1092,10 +1094,13 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
 
     // Track login IP
     const clientIP = req.ip || req.connection.remoteAddress || "unknown";
-    if (!user.loginIPs) user.loginIPs = [];
-    if (!user.loginIPs.includes(clientIP)) {
-      user.loginIPs.push(clientIP);
-    }
+    // Kept in order of most recent use (this login's address moves to the
+    // end), and capped so it can't grow forever - phones on mobile data get
+    // a new IPv6 address often.
+    if (!Array.isArray(user.loginIPs)) user.loginIPs = [];
+    user.loginIPs = user.loginIPs.filter((ip) => ip !== clientIP);
+    user.loginIPs.push(clientIP);
+    if (user.loginIPs.length > MAX_LOGIN_IPS) user.loginIPs = user.loginIPs.slice(-MAX_LOGIN_IPS);
 
     // The password is correct, but if this account has 2FA enabled that's
     // not enough to log in yet - email a code and hand back a short-lived

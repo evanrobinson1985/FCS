@@ -2325,3 +2325,26 @@ describe("feature requests and bug reports", () => {
     assert.equal((await request(app).get("/api/feedback").set(member)).body.items.length, 0);
   });
 });
+
+describe("login IP history", () => {
+  test("moves this login's address to the end (most recent) and keeps at most 50", async () => {
+    await seedUser({ username: "ip-history", password: MEMBER_PASSWORD, role: "member" });
+    // What supertest's requests arrive as
+    const res0 = await request(app).post("/api/login").send({ username: "ip-history", password: MEMBER_PASSWORD });
+    assert.equal(res0.status, 200);
+    let users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const myIP = users.find((u) => u.username === "ip-history").loginIPs.slice(-1)[0];
+
+    // Pretend there's a long history with this address near the start
+    const old = Array.from({ length: 60 }, (_, i) => `2600:387:f:d1a::${i.toString(16)}`);
+    users.find((u) => u.username === "ip-history").loginIPs = [old[0], myIP, ...old.slice(1)];
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    await login("ip-history", MEMBER_PASSWORD);
+    users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const ips = users.find((u) => u.username === "ip-history").loginIPs;
+    assert.equal(ips.length, 50);
+    assert.equal(ips[ips.length - 1], myIP);
+    assert.equal(ips.filter((ip) => ip === myIP).length, 1);
+  });
+});

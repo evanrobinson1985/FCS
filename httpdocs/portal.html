@@ -11722,8 +11722,14 @@ function displayUsers(users, allStates) {
     const lastLogin = user.lastLogin ? 
       new Date(user.lastLogin).toLocaleDateString() + ' ' + new Date(user.lastLogin).toLocaleTimeString() : 'Never';
     
-    const ips = user.loginIPs && user.loginIPs.length > 0 ? 
-      user.loginIPs.slice(-3).join(', ') : 'None';
+    // Newest first: the 5 most recent addresses, the rest behind "Show all".
+    // The server keeps the list ordered oldest -> most recently used.
+    const allIPs = Array.isArray(user.loginIPs) ? user.loginIPs.slice().reverse() : [];
+    const ipLines = (list) => list.map(ip => `<div style="white-space: nowrap;">${escapeStatsHtml(ip)}</div>`).join('');
+    const ips = !allIPs.length ? 'None'
+      : ipLines(allIPs.slice(0, 5)) + (allIPs.length > 5
+        ? `<details style="margin-top: 2px;"><summary style="cursor: pointer; color: var(--secondary-color); font-size: 0.85em;">Show all (${allIPs.length})</summary>${ipLines(allIPs.slice(5))}</details>`
+        : '');
     
     const twoFactorBadge = user.twoFactorEnabled ?
       '<span style="color: green;">🔒 On</span>' :
@@ -11789,7 +11795,7 @@ function displayUsers(users, allStates) {
       <td>${statesCell}</td>
       <td>${twoFactorBadge}</td>
       <td>${lastLogin}</td>
-      <td title="${user.loginIPs ? user.loginIPs.join(', ') : 'None'}">${ips}</td>
+      <td style="font-size: 0.9em;">${ips}</td>
       <td>
         ${user.role === 'webmaster' ? '<em>Protected - no actions available</em>' : `
         <select onchange="changeUserRole(${jsUsername}, this.value)">
