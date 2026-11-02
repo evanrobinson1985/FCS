@@ -66,8 +66,9 @@ Account Management, where they can:
 - record and delete payments, and send dues emails;
 - set member accounts **Active** or **Inactive**, for example to approve a
   new sign-up once they've paid.
+- change the yearly dues price.
 
-They can't change roles, states or dues settings, create or delete accounts,
+They can't change roles, states, the reminder timing or the blocking switch, create or delete accounts,
 or see Security Logs. They also can't change admin, webmaster or their own
 accounts. Unticking the box removes the access immediately.
 

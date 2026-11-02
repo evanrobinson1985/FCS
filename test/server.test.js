@@ -2505,6 +2505,17 @@ describe("treasurer", () => {
     assert.equal(settings.body.reminderUrl, null); // the scheduled-task link stays webmaster-only
   });
 
+  test("a Treasurer can change the dues price, but not the other dues settings", async () => {
+    const t = await auth("treasurer1");
+    const res = await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 17.5 });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 17.5);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesReminderDays: 10 })).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 20, duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/settings").set(wm)).body.duesAmount, 17.5);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
   test("a Treasurer can't do webmaster-only things", async () => {
     const t = await auth("treasurer1");
     assert.equal((await request(app).get("/api/users").set(t)).status, 403);

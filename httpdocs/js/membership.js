@@ -93,6 +93,10 @@
       #treasurer-view .tv-status.inactive { color: #b91c1c; }
       #treasurer-view td button.tv-act { padding: 3px 8px; font-size: 0.8em; margin-top: 4px; white-space: nowrap; width: auto; }
       #treasurer-view td button.tv-act.deactivate { background: #fff; color: #b91c1c; border: 1px solid #b91c1c; }
+      #treasurer-view .tv-price { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; padding: 10px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+      #treasurer-view .tv-price label { font-weight: 600; }
+      #treasurer-view .tv-price input { width: 100px; padding: 5px 7px; border: 1px solid #94a3b8; border-radius: 4px; }
+      #treasurer-view .tv-price button { padding: 5px 12px; width: auto; }
       #treasurer-view .tv-summary { color: #475569; margin: 0 0 6px; }
       #membership-block { max-width: 640px; margin: 40px auto; padding: 28px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; text-align: center; }
       #membership-block a.ms-pay-big { display: inline-block; margin-top: 10px; padding: 9px 20px; border-radius: 18px; background: #2a4d69; color: #fff; text-decoration: none; font-weight: 700; }
@@ -433,6 +437,30 @@
     root.appendChild(el('p', 'tv-summary',
       `${plural(all.length, 'member')}: ${count('paid')} paid, ${count('due-soon')} due soon, ${count('expired')} expired, ` +
       `${count('none')} with no payment recorded, ${all.filter(m => m.status === 'pending').length} waiting for approval.`));
+
+    // The Treasurer can change the dues price
+    const price = el('div', 'tv-price');
+    price.appendChild(el('label', null, 'Yearly dues ($)'));
+    const amt = el('input'); amt.type = 'number'; amt.min = '0'; amt.step = '0.01';
+    amt.value = settingsCache ? settingsCache.duesAmount : '';
+    const saveAmt = el('button', null, 'Save price'); saveAmt.type = 'button';
+    const amtNote = el('span', 'dues-sub', 'Used for new payments, emails and the Pay dues button. Past payments keep the amount actually paid.');
+    price.appendChild(amt); price.appendChild(saveAmt); price.appendChild(amtNote);
+    saveAmt.addEventListener('click', async () => {
+      const v = parseFloat(amt.value);
+      if (!(v >= 0)) { amtNote.textContent = 'Enter an amount.'; return; }
+      if (settingsCache && v === settingsCache.duesAmount) { amtNote.textContent = 'That is already the price.'; return; }
+      if (!confirm(`Change the yearly dues to ${money(v)}?`)) return;
+      saveAmt.disabled = true;
+      try {
+        const r = await api('POST', '/api/dues/settings', { duesAmount: v });
+        settingsCache = Object.assign(settingsCache || {}, r);
+        amt.value = r.duesAmount;
+        amtNote.textContent = `Saved. Yearly dues are now ${money(r.duesAmount)}.`;
+      } catch (err) { amtNote.textContent = 'Could not save: ' + err.message; }
+      saveAmt.disabled = false;
+    });
+    root.appendChild(price);
 
     const bar = el('div', 'tv-bar');
     const search = el('input'); search.type = 'text'; search.placeholder = 'Search by username, name or email…'; search.value = tvState.q;

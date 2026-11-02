@@ -1075,8 +1075,14 @@ app.get("/api/dues/settings", authenticateToken, requireDuesManager, (req, res) 
   });
 });
 
-app.post("/api/dues/settings", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+// Webmasters can change everything here; the Treasurer can change the
+// price only (the reminder timing and the blocking switch stay
+// webmaster-only).
+app.post("/api/dues/settings", authenticateToken, requireDuesManager, express.json(), (req, res) => {
   const { duesAmount, duesReminderDays, duesEnforcement } = req.body || {};
+  if (req.user.role !== "webmaster" && (duesReminderDays !== undefined || duesEnforcement !== undefined)) {
+    return res.status(403).json({ error: "Only a webmaster can change the reminder timing or the blocking switch." });
+  }
   if (duesAmount !== undefined && (typeof duesAmount !== "number" || !isFinite(duesAmount) || duesAmount < 0 || duesAmount > 10000)) {
     return res.status(400).json({ error: "The dues amount must be a number from 0 to 10000." });
   }
@@ -1086,12 +1092,16 @@ app.post("/api/dues/settings", authenticateToken, requireRole("webmaster"), expr
   if (duesEnforcement !== undefined && typeof duesEnforcement !== "boolean") {
     return res.status(400).json({ error: "duesEnforcement must be true or false." });
   }
+  const previousAmount = siteConfig.duesAmount;
   const updated = { ...siteConfig };
   if (duesAmount !== undefined) updated.duesAmount = Math.round(duesAmount * 100) / 100;
   if (duesReminderDays !== undefined) updated.duesReminderDays = duesReminderDays;
   if (duesEnforcement !== undefined) updated.duesEnforcement = duesEnforcement;
   siteConfig = updated;
   saveSiteConfig(siteConfig);
+  if (duesAmount !== undefined && previousAmount !== siteConfig.duesAmount) {
+    console.log(`Dues price changed from $${previousAmount} to $${siteConfig.duesAmount} by ${req.user.username}`);
+  }
   console.log(`Dues settings updated by ${req.user.username}: amount=${siteConfig.duesAmount}, reminderDays=${siteConfig.duesReminderDays}, enforcement=${siteConfig.duesEnforcement}`);
   res.json({ duesAmount: siteConfig.duesAmount, duesReminderDays: siteConfig.duesReminderDays, duesEnforcement: siteConfig.duesEnforcement });
 });
