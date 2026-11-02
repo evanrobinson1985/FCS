@@ -36,9 +36,9 @@ webmaster. Webmasters manage them on the same tab.
 
 ## Membership dues
 
-Webmasters track yearly dues in **Account Management** (the **Dues**
-column) and set the price in **Website Management** (the **Membership
-Dues** card). Rules:
+Webmasters track yearly dues in **Account Management**: the **Dues**
+column, plus the **Membership Dues** card above the user list for the
+price, reminder timing and blocking switch. Rules:
 
 - A payment makes membership good for one year. Paying early adds the year
   onto the current expiry date.

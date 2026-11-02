@@ -2,10 +2,10 @@
  * Membership dues, in the browser:
  * - each member's own status line by "Logged in as" (+ Pay dues button);
  * - the expired-membership screen, only when the webmaster has turned the
- *   dues access switch on (Website Management; off by default);
+ *   dues access switch on (Account Management; off by default);
  * - the Dues column in Account Management (record a payment, payment
  *   history, "Send dues email" for expired members);
- * - the Membership Dues card in Website Management;
+ * - the Membership Dues card in Account Management (webmasters);
  * - the Treasurer's view of Account Management (members, dues, and
  *   setting member accounts active/inactive), and the webmaster's
  *   Treasurer checkbox in the user table.
@@ -325,7 +325,7 @@
     else if (b.dataset.duesAction === 'notice') sendNotice(u, b);
   });
 
-  // ---------- Website Management: Membership Dues card ----------
+  // ---------- Account Management: Membership Dues card (webmasters) ----------
   let settingsCache = null;
 
   async function renderSettings() {
@@ -390,10 +390,12 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    const wm = document.querySelector('.tab[data-tab="website-management"]');
-    if (wm) wm.addEventListener('click', renderSettings);
+    // Webmasters get the Membership Dues card at the top of Account
+    // Management (the Treasurer view has its own price box)
     const am = document.querySelector('.tab[data-tab="account-management"]');
-    if (am) am.addEventListener('click', loadSettingsQuietly);
+    if (am) am.addEventListener('click', () => {
+      if (sessionStorage.getItem('role') === 'webmaster') renderSettings();
+    });
   });
 
   // ---------- Treasurer view of Account Management ----------

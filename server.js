@@ -1342,7 +1342,7 @@ function authenticateToken(req, res, next) {
       return res.status(401).json({ error: "Two-factor verification required." });
     }
     req.user = decoded;
-    // Dues access switch (Website Management, off by default): a member
+    // Dues access switch (Account Management, off by default): a member
     // whose recorded membership has expired can only reach the few routes
     // needed to see their status, pay, and get back in. Never applies to
     // admins/webmasters, or to members with no payment recorded.
