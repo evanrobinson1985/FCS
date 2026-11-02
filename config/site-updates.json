@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-11-03-membership-dues",
+    "date": "2026-11-03",
+    "title": "Membership dues tracking",
+    "changes": [
+      "Next to your name at the top of the page you can now see how long your membership has left before yearly dues are due again.",
+      "You'll get a reminder email 30 days before your membership expires, with a link to pay your dues through PayPal.",
+      "Paying early adds a full year on top of the time you have left."
+    ]
+  },
+  {
     "id": "2026-11-02-donate-button",
     "date": "2026-11-02",
     "title": "Donate to the Florida Cave Survey",

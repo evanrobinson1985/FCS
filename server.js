@@ -21,6 +21,7 @@ const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
+const dues = require("./lib/dues");
 
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
@@ -260,6 +261,17 @@ async function sendAdminNotification(recipients, subject, text) {
   );
 }
 
+// Email to one member (dues reminders/notices). Same dev fallback as the
+// other emails: without SMTP it's logged instead. Throws on a send failure
+// so callers can tell the webmaster, or retry later.
+async function sendUserEmail(user, { subject, text }) {
+  if (!mailTransporter) {
+    console.log(`[DEV] Email "${subject}" would be sent to ${user.email}:\n${text}`);
+    return;
+  }
+  await mailTransporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: user.email, subject, text });
+}
+
 // New member submission (cave proposal or edit) waiting for review -
 // notified to everyone who can actually approve one (admin + webmaster,
 // matching PATCH /api/pending-submissions/:id's own requireRole). Errors
@@ -494,6 +506,12 @@ const DEFAULT_SITE_CONFIG = {
   // including admin/webmaster; see HIDEABLE_TABS below for why Account
   // Management and Website Management can never be in this list.
   hiddenTabs: [],
+  // Membership dues (see lib/dues.js). The access switch is OFF by
+  // default: with it off, dues are only tracked and emailed about, and
+  // nobody is ever blocked.
+  duesAmount: 15,
+  duesReminderDays: 30,
+  duesEnforcement: false,
 };
 
 // The only tabs a webmaster is allowed to hide via hiddenTabs above.
@@ -742,6 +760,8 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
   "/api/forgot-password",
   "/api/reset-password",
   "/api/site-status",
+  // The daily scheduled task that sends dues reminders (key-protected)
+  "/api/dues/run-reminders",
 ]);
 
 app.use((req, res, next) => {
@@ -938,6 +958,236 @@ app.delete("/api/feedback/:id", authenticateToken, requireRole("webmaster"), (re
   res.json({ success: true });
 });
 
+// ---- Membership dues --------------------------------------------------------
+// Logic lives in lib/dues.js. Per member account this stores:
+//   duesPayments: [{ id, paidOn, amount, method, note, recordedBy, recordedAt }]
+//   duesExpires: cached expiry date (recomputed from duesPayments on change)
+//   duesReminderSentFor / duesReminderSentAt: the automatic reminder, once
+//     per membership year (keyed to the expiry date it was sent for)
+//   duesNoticeSentAt: the last "dues are due" email a webmaster sent
+//   duesLog: [{ at, action, by, details }] - shown in Security Logs
+const DUES_METHODS = ["paypal", "cash", "check", "other"];
+const MAX_DUES_LOG = 200;
+
+function duesOptions() {
+  return { reminderDays: siteConfig.duesReminderDays };
+}
+
+function duesView(user) {
+  const status = dues.duesStatus(user, duesOptions());
+  if (status.state === "exempt") return { ...status };
+  return {
+    ...status,
+    payments: (user.duesPayments || []).slice().sort((a, b) => (a.paidOn < b.paidOn ? 1 : -1)),
+    reminderSentAt: user.duesReminderSentAt || null,
+    noticeSentAt: user.duesNoticeSentAt || null,
+  };
+}
+
+function addDuesLog(user, action, by, details) {
+  user.duesLog = (user.duesLog || []).concat({ at: new Date().toISOString(), action, by: by || null, details });
+  if (user.duesLog.length > MAX_DUES_LOG) user.duesLog = user.duesLog.slice(-MAX_DUES_LOG);
+}
+
+// Key for the scheduled-task URL, derived from the app's secret so there's
+// nothing extra to configure. Only ever lets someone trigger the reminder
+// check early, which is harmless (each reminder still goes out once).
+function duesReminderKey() {
+  return crypto.createHmac("sha256", String(JWT_SECRET)).update("dues-reminders").digest("hex").slice(0, 32);
+}
+
+app.get("/api/dues/settings", authenticateToken, requireRole("webmaster"), (req, res) => {
+  res.json({
+    duesAmount: siteConfig.duesAmount,
+    duesReminderDays: siteConfig.duesReminderDays,
+    duesEnforcement: siteConfig.duesEnforcement,
+    reminderUrl: `${siteOrigin(req)}/api/dues/run-reminders?key=${duesReminderKey()}`,
+  });
+});
+
+app.post("/api/dues/settings", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { duesAmount, duesReminderDays, duesEnforcement } = req.body || {};
+  if (duesAmount !== undefined && (typeof duesAmount !== "number" || !isFinite(duesAmount) || duesAmount < 0 || duesAmount > 10000)) {
+    return res.status(400).json({ error: "The dues amount must be a number from 0 to 10000." });
+  }
+  if (duesReminderDays !== undefined && (!Number.isInteger(duesReminderDays) || duesReminderDays < 1 || duesReminderDays > 180)) {
+    return res.status(400).json({ error: "Reminder days must be a whole number from 1 to 180." });
+  }
+  if (duesEnforcement !== undefined && typeof duesEnforcement !== "boolean") {
+    return res.status(400).json({ error: "duesEnforcement must be true or false." });
+  }
+  const updated = { ...siteConfig };
+  if (duesAmount !== undefined) updated.duesAmount = Math.round(duesAmount * 100) / 100;
+  if (duesReminderDays !== undefined) updated.duesReminderDays = duesReminderDays;
+  if (duesEnforcement !== undefined) updated.duesEnforcement = duesEnforcement;
+  siteConfig = updated;
+  saveSiteConfig(siteConfig);
+  console.log(`Dues settings updated by ${req.user.username}: amount=${siteConfig.duesAmount}, reminderDays=${siteConfig.duesReminderDays}, enforcement=${siteConfig.duesEnforcement}`);
+  res.json({ duesAmount: siteConfig.duesAmount, duesReminderDays: siteConfig.duesReminderDays, duesEnforcement: siteConfig.duesEnforcement });
+});
+
+// The logged-in account's own membership status
+app.get("/api/my-membership", authenticateToken, (req, res) => {
+  const user = loadUsers().find((u) => u.username === req.user.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  const status = dues.duesStatus(user, duesOptions());
+  res.json({
+    ...status,
+    duesAmount: siteConfig.duesAmount,
+    enforcement: siteConfig.duesEnforcement,
+    payLink: status.state === "exempt" ? null : dues.paypalDuesLink(siteConfig.duesAmount, user.username),
+  });
+});
+
+function findMember(req, res) {
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) { res.status(404).json({ error: "Account not found." }); return null; }
+  if (dues.isExempt(user)) { res.status(400).json({ error: "Admins and webmasters don't pay dues." }); return null; }
+  return { users, user };
+}
+
+app.post("/api/users/:username/dues/payments", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { users, user } = found;
+  const { paidOn, amount, method, note } = req.body || {};
+  const today = dues.todayISO();
+  if (!dues.isValidDate(paidOn) || paidOn < "2000-01-01" || dues.daysBetween(today, paidOn) > 1) {
+    return res.status(400).json({ error: "Enter the date it was paid (not in the future)." });
+  }
+  const amt = amount === undefined || amount === "" ? siteConfig.duesAmount : Number(amount);
+  if (!isFinite(amt) || amt < 0 || amt > 10000) {
+    return res.status(400).json({ error: "The amount must be a number from 0 to 10000." });
+  }
+  if (method !== undefined && !DUES_METHODS.includes(method)) {
+    return res.status(400).json({ error: `Method must be one of: ${DUES_METHODS.join(", ")}.` });
+  }
+  if (note !== undefined && (typeof note !== "string" || note.length > 300)) {
+    return res.status(400).json({ error: "The note can be up to 300 characters." });
+  }
+  const payment = {
+    id: crypto.randomUUID(),
+    paidOn,
+    amount: Math.round(amt * 100) / 100,
+    method: method || "paypal",
+    note: (note || "").trim(),
+    recordedBy: req.user.username,
+    recordedAt: new Date().toISOString(),
+  };
+  user.duesPayments = (user.duesPayments || []).concat(payment);
+  user.duesExpires = dues.computeExpiry(user.duesPayments);
+  addDuesLog(user, "Dues Payment Recorded", req.user.username,
+    `$${payment.amount.toFixed(2)} paid ${payment.paidOn} by ${payment.method}; membership now expires ${user.duesExpires}`);
+  saveUsers(users);
+  res.status(201).json({ success: true, dues: duesView(user) });
+});
+
+app.delete("/api/users/:username/dues/payments/:paymentId", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { users, user } = found;
+  const payment = (user.duesPayments || []).find((p) => p.id === req.params.paymentId);
+  if (!payment) return res.status(404).json({ error: "Payment not found." });
+  user.duesPayments = user.duesPayments.filter((p) => p.id !== payment.id);
+  user.duesExpires = dues.computeExpiry(user.duesPayments);
+  addDuesLog(user, "Dues Payment Deleted", req.user.username,
+    `Removed $${Number(payment.amount).toFixed(2)} paid ${payment.paidOn}; membership now ${user.duesExpires ? "expires " + user.duesExpires : "has no payment recorded"}`);
+  saveUsers(users);
+  res.json({ success: true, dues: duesView(user) });
+});
+
+// "Send dues email": only for a member whose recorded membership has
+// expired, so nobody gets an overdue notice by mistake.
+app.post("/api/users/:username/dues/notice", authenticateToken, requireRole("webmaster"), async (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { user } = found;
+  const status = dues.duesStatus(user, duesOptions());
+  if (status.state !== "expired") {
+    return res.status(409).json({ error: "This member's dues aren't overdue, so no email was sent." });
+  }
+  if (!user.email) return res.status(400).json({ error: "This account has no email address." });
+  try {
+    await sendUserEmail(user, dues.overdueEmail(user, status, siteConfig.duesAmount, siteOrigin(req)));
+  } catch (err) {
+    console.error(`Failed to send dues notice to ${user.email}:`, err.message);
+    return res.status(502).json({ error: "The email could not be sent: " + err.message });
+  }
+  // Reload before saving so a login or other change made while the email
+  // was sending isn't overwritten
+  const users = loadUsers();
+  const fresh = users.find((u) => u.username === user.username);
+  if (fresh) {
+    fresh.duesNoticeSentAt = new Date().toISOString();
+    addDuesLog(fresh, "Dues Email Sent", req.user.username, `Dues-overdue email sent to ${fresh.email}`);
+    saveUsers(users);
+  }
+  res.json({ success: true, dues: duesView(fresh || user) });
+});
+
+// Sends the automatic "your membership expires in N days" reminders that
+// are due. Safe to run as often as you like: each member gets it once per
+// membership year. A failed send isn't marked, so it's retried next run.
+let duesReminderRunning = false;
+async function runDuesReminders(siteUrl) {
+  if (duesReminderRunning) return { sent: 0, failed: 0, skipped: true };
+  duesReminderRunning = true;
+  let sent = 0, failed = 0;
+  try {
+    const opts = duesOptions();
+    const due = loadUsers().filter((u) => dues.needsReminder(u, opts));
+    for (const user of due) {
+      const status = dues.duesStatus(user, opts);
+      try {
+        await sendUserEmail(user, dues.reminderEmail(user, status, siteConfig.duesAmount, siteUrl));
+      } catch (err) {
+        failed++;
+        console.error(`Failed to send dues reminder to ${user.email}:`, err.message);
+        continue;
+      }
+      const users = loadUsers();
+      const fresh = users.find((u) => u.username === user.username);
+      if (fresh) {
+        fresh.duesReminderSentFor = status.expires;
+        fresh.duesReminderSentAt = new Date().toISOString();
+        addDuesLog(fresh, "Dues Reminder Sent", null, `Automatic reminder: membership expires ${status.expires} (${status.daysLeft} days)`);
+        saveUsers(users);
+        sent++;
+      }
+    }
+  } catch (err) {
+    console.error("Error running dues reminders:", err);
+  } finally {
+    duesReminderRunning = false;
+  }
+  if (sent || failed) console.log(`Dues reminders: ${sent} sent, ${failed} failed`);
+  return { sent, failed };
+}
+
+function defaultSiteUrl() {
+  return (process.env.ALLOWED_ORIGINS || "https://fcs.caves.org").split(",")[0].trim();
+}
+
+// For a Plesk Scheduled Task ("Fetch a URL", once a day) - see README
+app.get("/api/dues/run-reminders", async (req, res) => {
+  const key = typeof req.query.key === "string" ? req.query.key : "";
+  const expected = duesReminderKey();
+  if (key.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected))) {
+    return res.status(403).json({ error: "Invalid key." });
+  }
+  const result = await runDuesReminders(siteOrigin(req));
+  res.json({ success: true, ...result });
+});
+
+// Also checked hourly while the app is running (and shortly after it
+// starts), in case the scheduled task isn't set up. Not in tests.
+if (process.env.NODE_ENV !== "test") {
+  setTimeout(() => runDuesReminders(defaultSiteUrl()), 60 * 1000).unref();
+  setInterval(() => runDuesReminders(defaultSiteUrl()), 60 * 60 * 1000).unref();
+}
+app.runDuesReminders = runDuesReminders; // for the test suite
+
 // Called when the account closes the "What's new" card: records the newest
 // update it has now seen, so the card stays away until there's a newer one.
 app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
@@ -1011,9 +1261,34 @@ function authenticateToken(req, res, next) {
       return res.status(401).json({ error: "Two-factor verification required." });
     }
     req.user = decoded;
+    // Dues access switch (Website Management, off by default): a member
+    // whose recorded membership has expired can only reach the few routes
+    // needed to see their status, pay, and get back in. Never applies to
+    // admins/webmasters, or to members with no payment recorded.
+    if (siteConfig.duesEnforcement && decoded.role === "member") {
+      const p = (req.originalUrl || "").split("?")[0];
+      if (!DUES_EXPIRED_ALLOWED_PATHS.has(p)) {
+        const user = loadUsers().find((u) => u.username === decoded.username);
+        if (user && dues.duesStatus(user, { reminderDays: siteConfig.duesReminderDays }).state === "expired") {
+          return res.status(403).json({
+            error: "Your membership has expired. Please pay your yearly dues to regain access.",
+            duesExpired: true,
+          });
+        }
+      }
+    }
     next();
   });
 }
+
+// What an expired member can still use while the dues access switch is on
+const DUES_EXPIRED_ALLOWED_PATHS = new Set([
+  "/api/my-membership",
+  "/api/site-updates",
+  "/api/site-updates/seen",
+  "/api/feedback",
+  "/api/change-password",
+]);
 
 // Restricts a route to one of the given roles. Must run after authenticateToken.
 function requireRole(...roles) {
@@ -4371,7 +4646,8 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
-      isActive: user.status === "active"
+      isActive: user.status === "active",
+      dues: duesView(user),
     }));
     
     res.json(safeUsers);
@@ -4612,8 +4888,18 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
           details: `Account created with role: ${user.role}`
         });
       }
+
+      (user.duesLog || []).forEach((entry) => {
+        logs.push({
+          timestamp: entry.at,
+          action: entry.action,
+          username: user.username,
+          ipAddress: "system",
+          details: entry.by ? `${entry.details} (by ${entry.by})` : entry.details,
+        });
+      });
     });
-    
+
     // Sort by timestamp (newest first)
     logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     

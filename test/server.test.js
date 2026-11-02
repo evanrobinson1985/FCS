@@ -2348,3 +2348,119 @@ describe("login IP history", () => {
     assert.equal(ips.filter((ip) => ip === myIP).length, 1);
   });
 });
+
+describe("membership dues", () => {
+  const dues = require("../lib/dues");
+  // A date N days before today (Eastern), as YYYY-MM-DD
+  const daysAgo = (n) => {
+    const [y, m, d] = dues.todayISO().split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
+  };
+  let wm, auth;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (const u of ["dues-current", "dues-expired", "dues-soon", "dues-none"]) {
+      await seedUser({ username: u, password: MEMBER_PASSWORD, role: "member" });
+    }
+    auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  });
+
+  test("settings default to $15, a 30-day reminder and blocking off; webmaster only", async () => {
+    const res = await request(app).get("/api/dues/settings").set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 15);
+    assert.equal(res.body.duesReminderDays, 30);
+    assert.equal(res.body.duesEnforcement, false);
+    assert.match(res.body.reminderUrl, /\/api\/dues\/run-reminders\?key=[0-9a-f]{32}$/);
+    assert.equal((await request(app).get("/api/dues/settings").set(await auth("dues-none"))).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: -1 })).status, 400);
+    const changed = await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 20 });
+    assert.equal(changed.body.duesAmount, 20);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
+  test("recording a payment makes the membership good for a year", async () => {
+    const today = dues.todayISO();
+    const res = await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: today, method: "paypal" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.dues.state, "paid");
+    assert.equal(res.body.dues.expires, dues.addOneYear(today));
+    assert.equal(res.body.dues.payments[0].amount, 15); // defaults to the current price
+    const mine = await request(app).get("/api/my-membership").set(await auth("dues-current"));
+    assert.equal(mine.body.state, "paid");
+    assert.ok(mine.body.payLink.startsWith("https://www.paypal.com/"));
+  });
+
+  test("rejects bad payments, and payments for admins/webmasters", async () => {
+    const future = dues.addOneYear(dues.todayISO());
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: future })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: "2026-02-30" })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: daysAgo(1), method: "bitcoin" })).status, 400);
+    assert.equal((await request(app).post("/api/users/webmaster1/dues/payments").set(wm).send({ paidOn: daysAgo(1) })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(await auth("dues-none")).send({ paidOn: daysAgo(1) })).status, 403);
+    const mine = await request(app).get("/api/my-membership").set(wm);
+    assert.equal(mine.body.state, "exempt");
+  });
+
+  test("the dues email only goes to members whose membership has expired", async () => {
+    assert.equal((await request(app).post("/api/users/dues-current/dues/notice").set(wm)).status, 409);
+    assert.equal((await request(app).post("/api/users/dues-none/dues/notice").set(wm)).status, 409);
+    const rec = await request(app).post("/api/users/dues-expired/dues/payments").set(wm).send({ paidOn: daysAgo(400) });
+    assert.equal(rec.body.dues.state, "expired");
+    const sent = await request(app).post("/api/users/dues-expired/dues/notice").set(wm);
+    assert.equal(sent.status, 200);
+    assert.ok(sent.body.dues.noticeSentAt);
+  });
+
+  test("automatic reminders go out once per membership year", async () => {
+    await request(app).post("/api/users/dues-soon/dues/payments").set(wm).send({ paidOn: daysAgo(355) });
+    const first = await app.runDuesReminders("http://localhost");
+    assert.equal(first.sent, 1);
+    const again = await app.runDuesReminders("http://localhost");
+    assert.equal(again.sent, 0);
+    const users = await request(app).get("/api/users").set(wm);
+    const soon = users.body.find((u) => u.username === "dues-soon");
+    assert.equal(soon.dues.state, "due-soon");
+    assert.ok(soon.dues.reminderSentAt);
+    assert.equal(users.body.find((u) => u.username === "webmaster1").dues.state, "exempt");
+  });
+
+  test("the scheduled-task URL needs the right key", async () => {
+    assert.equal((await request(app).get("/api/dues/run-reminders?key=wrong")).status, 403);
+    const { body } = await request(app).get("/api/dues/settings").set(wm);
+    const key = new URL(body.reminderUrl).searchParams.get("key");
+    const res = await request(app).get(`/api/dues/run-reminders?key=${key}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sent, 0);
+  });
+
+  test("blocking (off by default) only affects expired members, and only when switched on", async () => {
+    const expired = await auth("dues-expired");
+    const none = await auth("dues-none");
+    assert.equal((await request(app).get("/api/cave-database").set(expired)).status, 200);
+
+    await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: true });
+    try {
+      const blocked = await request(app).get("/api/cave-database").set(expired);
+      assert.equal(blocked.status, 403);
+      assert.equal(blocked.body.duesExpired, true);
+      assert.equal((await request(app).get("/api/my-membership").set(expired)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(none)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(await auth("dues-current"))).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(wm)).status, 200);
+    } finally {
+      await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: false });
+    }
+  });
+
+  test("deleting a mistaken payment recalculates the expiry", async () => {
+    const users = await request(app).get("/api/users").set(wm);
+    const cur = users.body.find((u) => u.username === "dues-current");
+    const id = cur.dues.payments[0].id;
+    const res = await request(app).delete(`/api/users/dues-current/dues/payments/${id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.dues.state, "none");
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Dues Payment Deleted" && l.username === "dues-current"));
+  });
+});

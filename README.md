@@ -33,3 +33,43 @@ Requests and bug reports sent with the **Request a feature** and **Report a
 bug** buttons on the Site Updates tab are saved in `data/feedback.json`
 (private, backed up like the other data files) and emailed to every active
 webmaster. Webmasters manage them on the same tab.
+
+## Membership dues
+
+Webmasters track yearly dues in **Account Management** (the **Dues**
+column) and set the price in **Website Management** (the **Membership
+Dues** card). Rules:
+
+- A payment makes membership good for one year. Paying early adds the year
+  onto the current expiry date.
+- Admins and webmasters are exempt.
+- Members with no payment recorded show as "No payment recorded". They are
+  never treated as overdue, emailed or blocked.
+- Each member sees their own status next to "Logged in as" on the
+  dashboard.
+- **Send dues email** appears only for members whose membership has
+  expired.
+- The automatic reminder email goes out once per membership year, 30 days
+  before expiry (adjustable).
+- Blocking expired members is a switch in the Membership Dues card. It is
+  **off** by default. When on, an expired member can log in but only sees
+  a "pay your dues" page.
+
+Payments are recorded by hand (**Record payment**). PayPal payments are not
+picked up automatically.
+
+**Daily reminder task (recommended).** The app checks for reminders every
+hour while it's running, but Plesk can put it to sleep on quiet days. To
+make sure reminders still go out, add a Plesk Scheduled Task:
+
+1. In Plesk, go to **Websites & Domains**, then **Scheduled Tasks**, then
+   **Add Task**.
+2. Choose **Fetch a URL** and run it **Daily**.
+3. Use the URL shown under "Automatic reminders" in the Membership Dues
+   card. Keep it private.
+
+Running it more than once a day is harmless, because each reminder is only
+ever sent once.
+
+The rules live in `lib/dues.js`; the routes are in `server.js` under
+"Membership dues".
