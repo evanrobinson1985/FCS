@@ -229,7 +229,7 @@ describe("webmaster accounts are protected from other webmasters", () => {
 
 describe("password hashing", () => {
   test("stores a bcrypt hash, never the plaintext password, on self-registration", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "newmember",
       email: "newmember@example.com",
       password: "SomeStrongPass123!",
@@ -246,7 +246,7 @@ describe("password hashing", () => {
   });
 
   test("rejects a password shorter than the minimum length", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "shortpw",
       email: "shortpw@example.com",
       password: "short1",
@@ -255,7 +255,7 @@ describe("password hashing", () => {
   });
 
   test("rejects self-registration with no state selected", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "nostateuser",
       email: "nostateuser@example.com",
       password: "SomeStrongPass123!",
@@ -265,7 +265,7 @@ describe("password hashing", () => {
   });
 
   test("rejects self-registration with an unrecognized state code", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "badstateuser",
       email: "badstateuser@example.com",
       password: "SomeStrongPass123!",
@@ -280,7 +280,7 @@ describe("password hashing", () => {
   // be accepted in the first place (defense-in-depth alongside escaping it
   // on render).
   test("rejects a username containing HTML/script syntax", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: '<img src=x onerror=alert(1)>',
       email: "xssattempt@example.com",
       password: "SomeStrongPass123!",
@@ -293,7 +293,7 @@ describe("password hashing", () => {
   });
 
   test("rejects an email address containing HTML/script syntax", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "emailxssattempt",
       email: '"><script>alert(1)</script>@example.com',
       password: "SomeStrongPass123!",
@@ -303,7 +303,7 @@ describe("password hashing", () => {
   });
 
   test("stores the selected states as allowedStates on the new account", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "twostateuser",
       email: "twostateuser@example.com",
       password: "SomeStrongPass123!",
@@ -317,7 +317,7 @@ describe("password hashing", () => {
   });
 
   test("a freshly hashed password actually verifies on login", async () => {
-    await request(app).post("/api/create-account").send({
+    await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "roundtrip",
       email: "roundtrip@example.com",
       password: "RoundTripPass123!",
@@ -367,7 +367,7 @@ describe("admin notification emails", () => {
 
   test("a new self-registration notifies active webmasters, not admins or inactive webmasters", async () => {
     const line = await captureNotificationLog(async () => {
-      const res = await request(app).post("/api/create-account").send({
+      const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
         username: "notifytestaccount",
         email: "notifytestaccount@example.com",
         password: "SomeStrongPass123!",
@@ -416,7 +416,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
     assert.equal(res.status, 200);
 
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
@@ -432,15 +432,23 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     assert.ok(loginToken);
   });
 
-  test("defaults fullName to username when not provided", async () => {
+  test("requires a first and last name, and builds the full name from them", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const missing = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", wm)
+      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
+    assert.equal(missing.status, 400);
+
     await request(app)
       .post("/api/create-user")
-      .set("Authorization", `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`)
-      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
-
+      .set("Authorization", wm)
+      .send({ firstName: "Dana", lastName: "Rivers", username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
     const created = users.find((u) => u.username === "nofullname");
-    assert.equal(created.fullName, "nofullname");
+    assert.equal(created.firstName, "Dana");
+    assert.equal(created.lastName, "Rivers");
+    assert.equal(created.fullName, "Dana Rivers");
   });
 
   test("a member cannot create a user account", async () => {
@@ -448,7 +456,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
     assert.equal(res.status, 403);
   });
 
@@ -464,7 +472,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "member1", email: "different@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "member1", email: "different@example.com", password: "SomePass123!" });
     assert.equal(res.status, 400);
   });
 
@@ -473,7 +481,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
+      .send({ firstName: "Test", lastName: "Member", username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
     assert.equal(res.status, 400);
   });
 
@@ -484,7 +492,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
     assert.equal(res.status, 400);
 
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
@@ -2617,5 +2625,40 @@ describe("Cave Jump leaderboard", () => {
     } finally {
       await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
     }
+  });
+});
+
+describe("legal first and last names", () => {
+  test("sign-up requires a first and last name and stores them", async () => {
+    const base = { username: "named-signup", email: "named-signup@example.com", password: "SomeStrongPass123!", states: ["FL"] };
+    assert.equal((await request(app).post("/api/create-account").send(base)).status, 400);
+    assert.equal((await request(app).post("/api/create-account").send({ ...base, firstName: "Ann", lastName: "<b>x</b>" })).status, 400);
+    const ok = await request(app).post("/api/create-account").send({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
+    assert.equal(ok.status, 200);
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const u = users.find((x) => x.username === "named-signup");
+    assert.equal(u.firstName, "Mary-Jane");
+    assert.equal(u.lastName, "O'Neil");
+    assert.equal(u.fullName, "Mary-Jane O'Neil");
+  });
+
+  test("accepts names with accents and spaces", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "named-accent", email: "named-accent@example.com", password: "SomeStrongPass123!", states: ["FL"],
+      firstName: "José", lastName: "St. John",
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("webmasters see names and can set them on existing accounts", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const list = await request(app).get("/api/users").set(wm);
+    assert.equal(list.body.find((u) => u.username === "named-signup").lastName, "O'Neil");
+    const res = await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Pat", lastName: "Caver" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.fullName, "Pat Caver");
+    assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "", lastName: "Caver" })).status, 400);
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).post("/api/users/member1/name").set(member).send({ firstName: "Me", lastName: "Me" })).status, 403);
   });
 });

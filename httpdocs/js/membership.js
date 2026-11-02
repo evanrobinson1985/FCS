@@ -61,6 +61,8 @@
       #membership-status.none { background: #f1f5f9; color: #475569; }
       #membership-status a.ms-pay { margin-left: 6px; font-weight: 700; color: inherit; }
       .dues-cell { min-width: 200px; font-size: 0.9em; }
+      .name-cell { min-width: 120px; }
+      .name-cell button.name-edit { padding: 2px 8px; font-size: 0.8em; margin-top: 3px; width: auto; background: #fff; color: #2a4d69; border: 1px solid #2a4d69; }
       .dues-state { font-weight: 700; }
       .dues-state.paid { color: #166534; } .dues-state.due-soon { color: #b45309; }
       .dues-state.expired { color: #b91c1c; } .dues-state.none { color: #64748b; font-weight: 400; font-style: italic; }
@@ -535,6 +537,59 @@
     baseRefresh(username, d);
   };
 
+  // ---------- Account Management: legal name column (webmasters) ----------
+  function nameCellHtml(user) {
+    injectStyles();
+    const u = esc(user.username);
+    const has = user.firstName && user.lastName;
+    return `<div class="name-cell" data-name-user="${u}">
+      ${has ? `<div>${esc(user.firstName)} ${esc(user.lastName)}</div>` : '<div class="dues-state none">Not given</div>'}
+      <button type="button" class="dues-plain name-edit" data-name-edit data-username="${u}"
+        data-first="${esc(user.firstName || '')}" data-last="${esc(user.lastName || '')}">${has ? 'Edit' : 'Add name'}</button>
+    </div>`;
+  }
+
+  function editName(username, first, last) {
+    const { box, close } = modal('Legal name');
+    box.appendChild(el('div', 'dm-hint', `For ${username}. Used to identify the member; only webmasters can see it.`));
+    const form = el('form');
+    const f = el('input'); f.type = 'text'; f.maxLength = 50; f.required = true; f.value = first || '';
+    const l = el('input'); l.type = 'text'; l.maxLength = 50; l.required = true; l.value = last || '';
+    form.appendChild(el('label', null, 'First name')); form.appendChild(f);
+    form.appendChild(el('label', null, 'Last name')); form.appendChild(l);
+    const err = el('div', 'dm-err');
+    form.appendChild(err);
+    const actions = el('div', 'dm-actions');
+    const cancel = el('button', 'dm-cancel', 'Cancel'); cancel.type = 'button';
+    const save = el('button', null, 'Save'); save.type = 'submit';
+    actions.appendChild(cancel); actions.appendChild(save);
+    form.appendChild(actions);
+    box.appendChild(form);
+    f.focus();
+    cancel.addEventListener('click', close);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      save.disabled = true; err.textContent = '';
+      try {
+        const r = await api('POST', `/api/users/${encodeURIComponent(username)}/name`, { firstName: f.value, lastName: l.value });
+        const cell = [...document.querySelectorAll('[data-name-user]')].find(c => c.dataset.nameUser === username);
+        if (cell) cell.outerHTML = nameCellHtml({ username, firstName: r.firstName, lastName: r.lastName });
+        // Keep the page's cached user list (used by the search box) in step;
+        // it's a top-level "let" in portal.html, visible here by name
+        if (typeof lastLoadedUsers !== 'undefined' && Array.isArray(lastLoadedUsers)) {
+          const u = lastLoadedUsers.find(x => x.username === username);
+          if (u) Object.assign(u, { firstName: r.firstName, lastName: r.lastName, fullName: r.fullName });
+        }
+        close();
+      } catch (ex) { err.textContent = ex.message; save.disabled = false; }
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-name-edit]');
+    if (b) editName(b.dataset.username, b.dataset.first, b.dataset.last);
+  });
+
   // Webmaster: the Treasurer checkbox in the user table
   document.addEventListener('change', async (e) => {
     const box = e.target;
@@ -550,5 +605,5 @@
     box.disabled = false;
   });
 
-  window.Membership = { afterLogin, hide, duesCellHtml, renderSettings, showTreasurerView, showWebmasterView };
+  window.Membership = { afterLogin, hide, duesCellHtml, nameCellHtml, renderSettings, showTreasurerView, showWebmasterView };
 })();

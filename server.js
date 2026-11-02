@@ -300,12 +300,34 @@ async function notifyNewSubmission(submission, req) {
 // webmasters only, matching POST /api/toggle-user-status's own
 // requireRole("webmaster") (admin can't activate an account). Same
 // error-swallowing contract as notifyNewSubmission above.
+// Legal first/last names (sign-up, webmaster-created accounts, and the
+// webmaster's Edit name). Letters in any language plus spaces, hyphens,
+// apostrophes and periods - e.g. "Mary-Jane", "O'Neil", "St. John",
+// "José". Returns the cleaned name, or null if it isn't acceptable.
+function cleanPersonName(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim().replace(/\s+/g, " ");
+  if (v.length < 1 || v.length > 50) return null;
+  return /^\p{L}[\p{L}\p{M}' .\-]*$/u.test(v) ? v : null;
+}
+
+function nameFields(req, res) {
+  const firstName = cleanPersonName(req.body && req.body.firstName);
+  const lastName = cleanPersonName(req.body && req.body.lastName);
+  if (!firstName || !lastName) {
+    res.status(400).json({ error: "Please enter a first and last name (letters, spaces, hyphens, apostrophes and periods; up to 50 characters each)." });
+    return null;
+  }
+  return { firstName, lastName, fullName: `${firstName} ${lastName}` };
+}
+
 async function notifyNewAccount(user, req) {
   try {
     const recipients = getNotificationRecipients(["webmaster"]);
     const subject = "Florida Cave Survey - New Account Awaiting Approval";
     const text =
       "A new account has signed up and is waiting for approval.\n\n" +
+      `Name: ${user.firstName || ""} ${user.lastName || ""}\n` +
       `Username: ${user.username}\n` +
       `Email: ${user.email}\n` +
       `Requested states: ${(user.allowedStates || []).join(", ") || "(none)"}\n\n` +
@@ -1019,6 +1041,21 @@ function requireDuesManager(req, res, next) {
   return res.status(403).json({ error: "Only webmasters and the Treasurer can do this." });
 }
 
+// Set an account's legal first/last name (webmaster) - e.g. for accounts
+// created before names were asked for at sign-up
+app.post("/api/users/:username/name", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const names = nameFields(req, res);
+  if (!names) return;
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  const before = user.firstName || user.lastName ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "(none)";
+  Object.assign(user, names);
+  addDuesLog(user, "Name Changed", req.user.username, `Legal name changed from ${before} to ${names.fullName}`);
+  saveUsers(users);
+  res.json({ success: true, firstName: user.firstName, lastName: user.lastName, fullName: user.fullName });
+});
+
 app.post("/api/users/:username/treasurer", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
   const { isTreasurer } = req.body || {};
   if (typeof isTreasurer !== "boolean") return res.status(400).json({ error: "isTreasurer must be true or false." });
@@ -1040,7 +1077,9 @@ app.get("/api/dues/members", authenticateToken, requireDuesManager, (req, res) =
     .filter((u) => u.role === "member")
     .map((u) => ({
       username: u.username,
-      fullName: u.fullName || "",
+      fullName: u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : "",
+      firstName: u.firstName || "",
+      lastName: u.lastName || "",
       email: u.email || "",
       status: u.status,
       created: u.created || null,
@@ -4843,6 +4882,8 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       username: user.username,
       email: user.email,
       fullName: user.fullName,
+      firstName: user.firstName || "",
+      lastName: user.lastName || "",
       nssNumber: user.nssNumber,
       role: user.role,
       status: user.status,
@@ -4873,11 +4914,13 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
 // always "member"; use /api/change-user-role afterward to promote it.
 app.post("/api/create-user", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
   try {
-    const { username, email, password, fullName } = req.body;
+    const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required" });
     }
+    const names = nameFields(req, res);
+    if (!names) return;
     // Same charset restriction as public self-registration - this username/
     // email is rendered in the Account Management table too (escapeStatsHtml()
     // on render is the other half of this defense-in-depth pair).
@@ -4910,7 +4953,9 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
       username,
       email,
       passwordHash,
-      fullName: fullName || username,
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName,
       nssNumber: "",
       role: "member",
       status: "active",
@@ -5147,6 +5192,8 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
       });
     }
+    const names = nameFields(req, res);
+    if (!names) return;
     if (!Array.isArray(states) || states.length === 0) {
       return res.status(400).json({ error: "Please select at least one state." });
     }
@@ -5176,7 +5223,9 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       username,
       email,
       passwordHash,
-      fullName: username, // Default to username
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName,
       nssNumber: "",
       role: "member",
       status: "pending",

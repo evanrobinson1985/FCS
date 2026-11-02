@@ -192,6 +192,15 @@
     <div id="create-account-form" class="auth-form" style="display: none;">
       <h2>Create New Account</h2>
       <div class="form-group">
+        <label for="new-first-name">First name:</label>
+        <input id="new-first-name" placeholder="Your legal first name" type="text" maxlength="50" autocomplete="given-name" required/>
+      </div>
+      <div class="form-group">
+        <label for="new-last-name">Last name:</label>
+        <input id="new-last-name" placeholder="Your legal last name" type="text" maxlength="50" autocomplete="family-name" required/>
+        <small>Your legal name, so the Florida Cave Survey can identify its members. Only webmasters can see it.</small>
+      </div>
+      <div class="form-group">
         <label for="new-username">Username:</label>
         <input id="new-username" placeholder="Choose a username" type="text" required/>
       </div>
@@ -399,8 +408,11 @@
         <label>Email<br>
           <input type="email" id="new-user-email" style="padding: 6px; width: 200px;">
         </label>
-        <label>Full Name (optional)<br>
-          <input type="text" id="new-user-fullname" style="padding: 6px; width: 160px;">
+        <label>First Name<br>
+          <input type="text" id="new-user-firstname" maxlength="50" style="padding: 6px; width: 140px;">
+        </label>
+        <label>Last Name<br>
+          <input type="text" id="new-user-lastname" maxlength="50" style="padding: 6px; width: 140px;">
         </label>
         <label>Password<br>
           <input type="text" id="new-user-password" style="padding: 6px; width: 160px;">
@@ -425,6 +437,7 @@
           <thead>
             <tr>
               <th>Username</th>
+              <th>Name</th>
               <th>Email</th>
               <th>Role</th>
               <th>Status</th>
@@ -1497,7 +1510,7 @@
 <!-- "What's new" card after login + the Site Updates tab -->
 <script src="js/site-updates.js?v=2"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
-<script src="js/membership.js?v=4"></script>
+<script src="js/membership.js?v=5"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -11526,14 +11539,16 @@ async function handleResetPassword() {
 
 // Handle account creation
 async function handleCreateAccount() {
+  const firstName = document.getElementById('new-first-name').value.trim();
+  const lastName = document.getElementById('new-last-name').value.trim();
   const username = document.getElementById('new-username').value.trim();
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
   const confirmPassword = document.getElementById('confirm-password').value;
   const states = Array.from(document.getElementById('new-account-states').selectedOptions).map(o => o.value);
 
-  if (!username || !email || !password || !confirmPassword) {
-    alert('Please fill in all fields.');
+  if (!firstName || !lastName || !username || !email || !password || !confirmPassword) {
+    alert('Please fill in all fields, including your first and last name.');
     return;
   }
 
@@ -11563,6 +11578,8 @@ async function handleCreateAccount() {
         'X-CSRF-Token': getCSRFToken()
       },
       body: JSON.stringify({
+        firstName: firstName,
+        lastName: lastName,
         username: username,
         email: email,
         password: password,
@@ -11576,6 +11593,8 @@ async function handleCreateAccount() {
       alert('Account created successfully! Please check your email for verification.');
       showLogin();
       // Clear form fields
+      document.getElementById('new-first-name').value = '';
+      document.getElementById('new-last-name').value = '';
       document.getElementById('new-username').value = '';
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
@@ -11632,12 +11651,13 @@ async function handleForgotPassword() {
 async function createUserAccount() {
   const username = document.getElementById('new-user-username').value.trim();
   const email = document.getElementById('new-user-email').value.trim();
-  const fullName = document.getElementById('new-user-fullname').value.trim();
+  const firstName = document.getElementById('new-user-firstname').value.trim();
+  const lastName = document.getElementById('new-user-lastname').value.trim();
   const password = document.getElementById('new-user-password').value;
   const statusEl = document.getElementById('create-user-status');
 
-  if (!username || !email || !password) {
-    statusEl.textContent = 'Username, email, and password are required.';
+  if (!username || !email || !password || !firstName || !lastName) {
+    statusEl.textContent = 'Username, email, first name, last name and password are required.';
     statusEl.style.color = 'red';
     return;
   }
@@ -11650,7 +11670,7 @@ async function createUserAccount() {
         'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
         'X-CSRF-Token': getCSRFToken()
       },
-      body: JSON.stringify({ username, email, password, fullName })
+      body: JSON.stringify({ username, email, password, firstName, lastName })
     });
 
     const result = await response.json();
@@ -11659,7 +11679,8 @@ async function createUserAccount() {
       statusEl.style.color = 'green';
       document.getElementById('new-user-username').value = '';
       document.getElementById('new-user-email').value = '';
-      document.getElementById('new-user-fullname').value = '';
+      document.getElementById('new-user-firstname').value = '';
+      document.getElementById('new-user-lastname').value = '';
       document.getElementById('new-user-password').value = '';
       loadAccountManagement(); // Refresh the list
     } else {
@@ -11709,7 +11730,9 @@ function searchUserAccounts() {
   const filtered = lastLoadedUsers.filter(u =>
     (u.username && u.username.toLowerCase().includes(term)) ||
     (u.email && u.email.toLowerCase().includes(term)) ||
-    (u.fullName && u.fullName.toLowerCase().includes(term))
+    (u.fullName && u.fullName.toLowerCase().includes(term)) ||
+    (u.firstName && u.firstName.toLowerCase().includes(term)) ||
+    (u.lastName && u.lastName.toLowerCase().includes(term))
   );
   displayUsers(filtered, lastLoadedAllStates);
 }
@@ -11807,6 +11830,7 @@ function displayUsers(users, allStates) {
 
     row.innerHTML = `
       <td>${safeUsername}</td>
+      <td>${window.Membership ? Membership.nameCellHtml(user) : escapeStatsHtml(user.fullName || '')}</td>
       <td>${safeEmail}</td>
       <td><span class="role-badge role-${user.role}">${user.role}</span>${user.role === 'webmaster' ? '' : `
         <label style="display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 0.8em; white-space: nowrap;" title="Can manage dues and set member accounts active or inactive">
