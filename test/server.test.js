@@ -22,6 +22,16 @@ process.env.SUBMISSIONS_FILE = path.join(TEST_ROOT, "pending-submissions.json");
 process.env.NARRATIVE_DIR = path.join(TEST_ROOT, "narratives");
 process.env.CAVE_MAPS_DIR = path.join(TEST_ROOT, "cave-maps");
 process.env.CAVE_PICTURES_DIR = path.join(TEST_ROOT, "cave-pictures");
+process.env.SITE_UPDATES_FILE = path.join(TEST_ROOT, "site-updates.json");
+fs.writeFileSync(
+  process.env.SITE_UPDATES_FILE,
+  JSON.stringify([
+    { id: "older", date: "2026-01-01", title: "Older update", changes: ["a"] },
+    { id: "newest", date: "2026-03-01", title: "Newest update", changes: ["b", "c"] },
+    { id: "bad-date", date: "March", title: "Malformed", changes: [] },
+    { id: "middle", date: "2026-02-01", title: "Middle update", changes: [] },
+  ])
+);
 process.env.NODE_ENV = "test";
 process.env.ALLOWED_ORIGINS = "http://localhost:3000";
 
@@ -2210,3 +2220,50 @@ describe("website management: site status, banner, and maintenance mode", () => 
   });
 });
 
+describe("site updates", () => {
+  test("require a login", async () => {
+    const res = await request(app).get("/api/site-updates");
+    assert.equal(res.status, 401);
+  });
+
+  test("lists valid updates newest first, with nothing seen yet for a new account", async () => {
+    await seedUser({ username: "updates-reader", password: MEMBER_PASSWORD, role: "member" });
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.updates.map((u) => u.id), ["newest", "middle", "older"]);
+    assert.equal(res.body.lastSeenUpdateId, null);
+  });
+
+  test("closing the card records the newest seen update, and never moves backwards", async () => {
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const bad = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "no-such-update" });
+    assert.equal(bad.status, 400);
+
+    const seen = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "newest" });
+    assert.equal(seen.status, 200);
+    let res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+    assert.equal(res.body.lastSeenUpdateDate, "2026-03-01");
+
+    await request(app).post("/api/site-updates/seen").set(auth).send({ id: "older" });
+    res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+  });
+
+  test("the shipped config/site-updates.json is valid", () => {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
+    assert.ok(Array.isArray(list) && list.length > 0);
+    const ids = new Set();
+    for (const u of list) {
+      assert.equal(typeof u.id, "string");
+      assert.ok(!ids.has(u.id), `duplicate update id ${u.id}`);
+      ids.add(u.id);
+      assert.match(u.date, /^\d{4}-\d{2}-\d{2}$/, `bad date on ${u.id}`);
+      assert.equal(typeof u.title, "string");
+      assert.ok(Array.isArray(u.changes) && u.changes.every((c) => typeof c === "string"), `bad changes on ${u.id}`);
+    }
+  });
+});

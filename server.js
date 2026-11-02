@@ -41,6 +41,12 @@ const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 // above it lives in config/ and IS tracked in git.
 const STATES_CONFIG_FILE = path.join(__dirname, "config", "states.json");
 
+// The site's update history ("What's new" card and the Site Updates tab).
+// Shipped with the code like states.json, so each deploy can bring its own
+// entry: add one to the top of this file whenever a change goes live.
+// Overridable so the test suite can point it at its own file.
+const SITE_UPDATES_FILE = process.env.SITE_UPDATES_FILE || path.join(__dirname, "config", "site-updates.json");
+
 // Timestamped backups of the two data files, taken right before every write.
 // These are the only copies of the cave database and the user list - a bad
 // write, a bug in a future change, or an admin approving the wrong thing
@@ -596,6 +602,63 @@ app.get("/api/site-status", (req, res) => {
     readOnlyMessage: siteConfig.readOnlyMessage,
     hiddenTabs: siteConfig.hiddenTabs,
   });
+});
+
+// ---- Site updates ("What's new") ------------------------------------------
+// Read on every request (the file is small) so a deploy that changes it is
+// picked up without a restart. Entries are returned newest first; anything
+// malformed is skipped rather than breaking the list.
+function loadSiteUpdates() {
+  try {
+    const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (u) =>
+          u &&
+          typeof u.id === "string" && u.id &&
+          typeof u.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(u.date) &&
+          typeof u.title === "string" &&
+          Array.isArray(u.changes)
+      )
+      .map((u) => ({ id: u.id, date: u.date, title: u.title, changes: u.changes.filter((c) => typeof c === "string") }))
+      .map((u, i) => ({ u, i }))
+      .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
+      .map(({ u }) => u);
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
+    return [];
+  }
+}
+
+// Every update, plus which one this account last dismissed, so the page can
+// show the "What's new" card only for updates it hasn't seen yet.
+app.get("/api/site-updates", authenticateToken, (req, res) => {
+  const user = loadUsers().find((u) => u.username === req.user.username);
+  res.json({
+    updates: loadSiteUpdates(),
+    lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
+    lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
+  });
+});
+
+// Called when the account closes the "What's new" card: records the newest
+// update it has now seen, so the card stays away until there's a newer one.
+app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
+  const id = req.body && req.body.id;
+  const update = loadSiteUpdates().find((u) => u.id === id);
+  if (!update) return res.status(400).json({ error: "Unknown update id." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  // Never move backwards (e.g. an old tab closing the card after a newer
+  // update was already dismissed elsewhere)
+  if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
+    user.lastSeenUpdateId = update.id;
+    user.lastSeenUpdateDate = update.date;
+    saveUsers(users);
+  }
+  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
 });
 
 // Webmaster-only full view of the config, including the login lockout

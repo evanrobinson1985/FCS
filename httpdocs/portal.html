@@ -329,6 +329,7 @@
 <div class="tab" data-tab="edit-cave-tab">Edit Cave Data</div>
 <div class="tab" data-tab="cave-maps-section">Cave Maps</div>
 <div class="tab" data-tab="narrative-tab">Narrative</div>
+<div class="tab" data-tab="site-updates">Site Updates</div>
 <div class="tab" id="account-management-tab" data-tab="account-management" style="display: none;">Account Management</div>
 <div class="tab" id="website-management-tab" data-tab="website-management" style="display: none;">Website Management</div>
 </div>
@@ -650,6 +651,14 @@
       <p>Select a cave map from the dropdown above to view and download.</p>
     </div>
   </div>
+</div>
+
+<!-- Site Updates Tab Content: timeline of every change to the site,
+     filled by js/site-updates.js from config/site-updates.json -->
+<div class="tab-content" id="site-updates">
+<h3>Site Updates</h3>
+<p style="color: #555; margin-top: 0;">Every change to the site, newest first.</p>
+<div id="site-updates-list">Loading&hellip;</div>
 </div>
 
 <!-- Interactive Map Tab Content -->
@@ -1472,6 +1481,8 @@
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
 <!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
 <script src="js/terrain3d.js?v=4"></script>
+<!-- "What's new" card after login + the Site Updates tab -->
+<script src="js/site-updates.js?v=1"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -8139,6 +8150,10 @@ window.addEventListener('error', function(e) {
     const defaultTab = document.querySelector('.tab[data-tab="map-tab"]');
     if (defaultTab) defaultTab.click();
 
+    // "What's new" card: lists site updates this account hasn't seen yet
+    // (nothing shows if there are none). See js/site-updates.js.
+    if (window.SiteUpdates) SiteUpdates.checkAfterLogin();
+
     // One status fetch, two uses: applyHiddenTabs() runs for every role
     // (unlike the maintenance block below, hidden tabs apply to
     // admin/webmaster too), and a member who reached the app (via /portal)
@@ -8553,6 +8568,7 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('role');
         sessionStorage.removeItem('sessionToken');
         sessionStorage.removeItem('twoFactorEnabled');
+        if (window.SiteUpdates) SiteUpdates.hide();
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;
         document.title = 'Florida Cave Survey';
