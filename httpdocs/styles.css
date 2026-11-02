@@ -89,7 +89,8 @@ input[type="file"] {
     }
 
     input[type="text"],
-    input[type="password"] {
+    input[type="password"],
+    .form-group input[type="email"] {
       width: 100%;
       padding: 10px;
       border: 1px solid #ddd;
@@ -1350,3 +1351,20 @@ input[type="file"] {
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
+
+/* Create New Account: required fields */
+.required-mark {
+  color: #b91c1c;
+  font-weight: bold;
+}
+
+.required-note {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.field-missing {
+  border: 2px solid #b91c1c !important;
+  background-color: #fff5f5 !important;
+}

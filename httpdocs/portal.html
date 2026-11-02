@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=8">
+ <link rel="stylesheet" href="styles.css?v=9">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -191,33 +191,34 @@
     <!-- Create Account Form -->
     <div id="create-account-form" class="auth-form" style="display: none;">
       <h2>Create New Account</h2>
+      <p class="required-note">All fields are required <span class="required-mark" aria-hidden="true">*</span></p>
       <div class="form-group">
-        <label for="new-first-name">First name:</label>
+        <label for="new-first-name">First name: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-first-name" placeholder="Your legal first name" type="text" maxlength="50" autocomplete="given-name" required/>
       </div>
       <div class="form-group">
-        <label for="new-last-name">Last name:</label>
+        <label for="new-last-name">Last name: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-last-name" placeholder="Your legal last name" type="text" maxlength="50" autocomplete="family-name" required/>
         <small>Your legal name, so the Florida Cave Survey can identify its members. Only webmasters can see it.</small>
       </div>
       <div class="form-group">
-        <label for="new-username">Username:</label>
+        <label for="new-username">Username: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-username" placeholder="Choose a username" type="text" required/>
       </div>
       <div class="form-group">
-        <label for="new-email">Email:</label>
+        <label for="new-email">Email: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-email" placeholder="Enter your email" type="email" required/>
       </div>
       <div class="form-group">
-        <label for="new-password">Password:</label>
+        <label for="new-password">Password: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-password" placeholder="Choose a password" type="password" required/>
       </div>
       <div class="form-group">
-        <label for="confirm-password">Confirm Password:</label>
+        <label for="confirm-password">Confirm Password: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="confirm-password" placeholder="Confirm your password" type="password" required/>
       </div>
       <div class="form-group">
-        <label for="new-account-states">State(s) you're a member for:</label>
+        <label for="new-account-states">State(s) you're a member for: <span class="required-mark" aria-hidden="true">*</span></label>
         <select id="new-account-states" multiple size="6" required></select>
         <small>Hold Ctrl/Cmd to select more than one. A webmaster can grant you access to additional states later.</small>
       </div>
@@ -11547,8 +11548,28 @@ async function handleCreateAccount() {
   const confirmPassword = document.getElementById('confirm-password').value;
   const states = Array.from(document.getElementById('new-account-states').selectedOptions).map(o => o.value);
 
-  if (!firstName || !lastName || !username || !email || !password || !confirmPassword) {
-    alert('Please fill in all fields, including your first and last name.');
+  // Every field is required: outline any that are empty, focus the first,
+  // and say which ones are missing
+  const required = [
+    ['new-first-name', 'First name'], ['new-last-name', 'Last name'], ['new-username', 'Username'],
+    ['new-email', 'Email'], ['new-password', 'Password'], ['confirm-password', 'Confirm Password'],
+    ['new-account-states', 'State(s)'],
+  ];
+  const missing = [];
+  required.forEach(([id, label]) => {
+    const el = document.getElementById(id);
+    const empty = el.tagName === 'SELECT' ? el.selectedOptions.length === 0 : !el.value.trim();
+    el.classList.toggle('field-missing', empty);
+    if (empty) {
+      missing.push(label);
+      const clear = () => { el.classList.remove('field-missing'); el.removeEventListener('input', clear); el.removeEventListener('change', clear); };
+      el.addEventListener('input', clear);
+      el.addEventListener('change', clear);
+    }
+  });
+  if (missing.length) {
+    document.getElementById(required.find(([, label]) => label === missing[0])[0]).focus();
+    alert('Please fill in every field. Missing: ' + missing.join(', ') + '.');
     return;
   }
 
