@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-11-02-feedback-buttons",
+    "date": "2026-11-02",
+    "title": "Request features and report bugs",
+    "changes": [
+      "The Site Updates tab now has \"Request a feature\" and \"Report a bug\" buttons. What you send goes straight to the webmasters.",
+      "See your own requests and reports on the same tab, with their status (New, Planned, In progress, Done or Won't do) and any reply from the webmasters."
+    ]
+  },
+  {
     "id": "2026-11-02-hillshade-default",
     "date": "2026-11-02",
     "title": "Multi-Angle Hillshade starts at 25% transparency",

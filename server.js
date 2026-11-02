@@ -35,6 +35,8 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
 const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
+// Feature requests and bug reports sent from the Site Updates tab
+const FEEDBACK_FILE = path.join(DATA_DIR, "feedback.json");
 
 // State/county reference data (see scripts/generate-states-config.js). This
 // is public geographic reference data, not survey data, so unlike the files
@@ -604,63 +606,6 @@ app.get("/api/site-status", (req, res) => {
   });
 });
 
-// ---- Site updates ("What's new") ------------------------------------------
-// Read on every request (the file is small) so a deploy that changes it is
-// picked up without a restart. Entries are returned newest first; anything
-// malformed is skipped rather than breaking the list.
-function loadSiteUpdates() {
-  try {
-    const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter(
-        (u) =>
-          u &&
-          typeof u.id === "string" && u.id &&
-          typeof u.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(u.date) &&
-          typeof u.title === "string" &&
-          Array.isArray(u.changes)
-      )
-      .map((u) => ({ id: u.id, date: u.date, title: u.title, changes: u.changes.filter((c) => typeof c === "string") }))
-      .map((u, i) => ({ u, i }))
-      .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
-      .map(({ u }) => u);
-  } catch (err) {
-    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
-    return [];
-  }
-}
-
-// Every update, plus which one this account last dismissed, so the page can
-// show the "What's new" card only for updates it hasn't seen yet.
-app.get("/api/site-updates", authenticateToken, (req, res) => {
-  const user = loadUsers().find((u) => u.username === req.user.username);
-  res.json({
-    updates: loadSiteUpdates(),
-    lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
-    lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
-  });
-});
-
-// Called when the account closes the "What's new" card: records the newest
-// update it has now seen, so the card stays away until there's a newer one.
-app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
-  const id = req.body && req.body.id;
-  const update = loadSiteUpdates().find((u) => u.id === id);
-  if (!update) return res.status(400).json({ error: "Unknown update id." });
-  const users = loadUsers();
-  const user = users.find((u) => u.username === req.user.username);
-  if (!user) return res.status(404).json({ error: "Account not found." });
-  // Never move backwards (e.g. an old tab closing the card after a newer
-  // update was already dismissed elsewhere)
-  if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
-    user.lastSeenUpdateId = update.id;
-    user.lastSeenUpdateDate = update.date;
-    saveUsers(users);
-  }
-  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
-});
-
 // Webmaster-only full view of the config, including the login lockout
 // policy - used to populate the Website Management tab itself.
 app.get("/api/site-config", authenticateToken, requireRole("webmaster"), (req, res) => {
@@ -828,6 +773,186 @@ app.use((req, res, next) => {
     error: siteConfig.maintenanceMessage || "The site is currently down for maintenance. Please check back soon.",
     maintenance: true,
   });
+});
+
+// ---- Site updates ("What's new") ------------------------------------------
+// Read on every request (the file is small) so a deploy that changes it is
+// picked up without a restart. Entries are returned newest first; anything
+// malformed is skipped rather than breaking the list.
+function loadSiteUpdates() {
+  try {
+    const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (u) =>
+          u &&
+          typeof u.id === "string" && u.id &&
+          typeof u.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(u.date) &&
+          typeof u.title === "string" &&
+          Array.isArray(u.changes)
+      )
+      .map((u) => ({ id: u.id, date: u.date, title: u.title, changes: u.changes.filter((c) => typeof c === "string") }))
+      .map((u, i) => ({ u, i }))
+      .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
+      .map(({ u }) => u);
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
+    return [];
+  }
+}
+
+// Every update, plus which one this account last dismissed, so the page can
+// show the "What's new" card only for updates it hasn't seen yet.
+app.get("/api/site-updates", authenticateToken, (req, res) => {
+  const user = loadUsers().find((u) => u.username === req.user.username);
+  res.json({
+    updates: loadSiteUpdates(),
+    lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
+    lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
+  });
+});
+
+// ---- Feature requests and bug reports --------------------------------------
+// Any logged-in account can send one (Site Updates tab). Webmasters are
+// emailed, see every item, and can set its status, reply, or delete it;
+// everyone else sees only their own items and the webmaster's status/reply.
+const FEEDBACK_TYPES = ["feature", "bug"];
+const FEEDBACK_STATUSES = ["new", "planned", "in-progress", "done", "declined"];
+
+function loadFeedback() {
+  try {
+    if (fs.existsSync(FEEDBACK_FILE)) {
+      const list = JSON.parse(fs.readFileSync(FEEDBACK_FILE, "utf-8"));
+      return Array.isArray(list) ? list : [];
+    }
+  } catch (err) {
+    console.error("Error loading feedback:", err);
+  }
+  return [];
+}
+
+function saveFeedback(list) {
+  backupDataFile(FEEDBACK_FILE);
+  fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(list, null, 2));
+}
+
+async function notifyNewFeedback(item, req) {
+  try {
+    const recipients = getNotificationRecipients(["webmaster"]);
+    const kind = item.type === "bug" ? "Bug Report" : "Feature Request";
+    const text =
+      `A new ${kind.toLowerCase()} was sent from the Site Updates tab.\n\n` +
+      `Title: ${item.title}\n` +
+      `From: ${item.submittedBy}\n\n` +
+      `${item.description}\n\n` +
+      (item.userAgent ? `Browser: ${item.userAgent}\n\n` : "") +
+      `See and manage it on the Site Updates tab: ${siteOrigin(req)}/portal`;
+    await sendAdminNotification(recipients, `Florida Cave Survey - New ${kind}: ${item.title}`, text);
+  } catch (err) {
+    console.error("Error sending feedback notification:", err);
+  }
+}
+
+// Keeps one account from flooding the list (or the webmasters' inboxes)
+const feedbackLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "You've sent a lot of requests in the last hour. Please try again later." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/feedback", authenticateToken, feedbackLimiter, express.json(), async (req, res) => {
+  const { type, title, description } = req.body || {};
+  if (!FEEDBACK_TYPES.includes(type)) {
+    return res.status(400).json({ error: "type must be 'feature' or 'bug'." });
+  }
+  const cleanTitle = typeof title === "string" ? title.trim() : "";
+  const cleanDescription = typeof description === "string" ? description.trim() : "";
+  if (!cleanTitle || cleanTitle.length > 150) {
+    return res.status(400).json({ error: "Please give a short title (up to 150 characters)." });
+  }
+  if (!cleanDescription || cleanDescription.length > 5000) {
+    return res.status(400).json({ error: "Please add a description (up to 5000 characters)." });
+  }
+  const item = {
+    id: crypto.randomUUID(),
+    type,
+    title: cleanTitle,
+    description: cleanDescription,
+    submittedBy: req.user.username,
+    created: new Date().toISOString(),
+    status: "new",
+    response: "",
+    updated: null,
+    userAgent: String(req.get("user-agent") || "").slice(0, 300),
+  };
+  try {
+    const list = loadFeedback();
+    list.unshift(item);
+    saveFeedback(list);
+  } catch (err) {
+    console.error("Error saving feedback:", err);
+    return res.status(500).json({ error: "Could not save your request. Please try again." });
+  }
+  await notifyNewFeedback(item, req);
+  res.status(201).json({ success: true, item });
+});
+
+app.get("/api/feedback", authenticateToken, (req, res) => {
+  const all = req.user.role === "webmaster";
+  const list = loadFeedback().filter((f) => all || f.submittedBy === req.user.username);
+  // Only webmasters see the sender's browser details
+  res.json({ items: all ? list : list.map(({ userAgent, ...rest }) => rest), canManage: all });
+});
+
+app.patch("/api/feedback/:id", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { status, response } = req.body || {};
+  if (status !== undefined && !FEEDBACK_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}.` });
+  }
+  if (response !== undefined && (typeof response !== "string" || response.length > 2000)) {
+    return res.status(400).json({ error: "The reply must be text of up to 2000 characters." });
+  }
+  const list = loadFeedback();
+  const item = list.find((f) => f.id === req.params.id);
+  if (!item) return res.status(404).json({ error: "Not found." });
+  if (status !== undefined) item.status = status;
+  if (response !== undefined) item.response = response.trim();
+  item.updated = new Date().toISOString();
+  item.updatedBy = req.user.username;
+  saveFeedback(list);
+  res.json({ success: true, item });
+});
+
+app.delete("/api/feedback/:id", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const list = loadFeedback();
+  const i = list.findIndex((f) => f.id === req.params.id);
+  if (i < 0) return res.status(404).json({ error: "Not found." });
+  list.splice(i, 1);
+  saveFeedback(list);
+  res.json({ success: true });
+});
+
+// Called when the account closes the "What's new" card: records the newest
+// update it has now seen, so the card stays away until there's a newer one.
+app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
+  const id = req.body && req.body.id;
+  const update = loadSiteUpdates().find((u) => u.id === id);
+  if (!update) return res.status(400).json({ error: "Unknown update id." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  // Never move backwards (e.g. an old tab closing the card after a newer
+  // update was already dismissed elsewhere)
+  if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
+    user.lastSeenUpdateId = update.id;
+    user.lastSeenUpdateDate = update.date;
+    saveUsers(users);
+  }
+  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
 });
 
 // Rate limiting on authentication-adjacent endpoints to blunt brute-force

@@ -28,3 +28,8 @@ To announce a change, add an entry to the top of that file:
 
 `id` must be unique, and `date` must be `YYYY-MM-DD`; `npm test` checks
 both.
+
+Requests and bug reports sent with the **Request a feature** and **Report a
+bug** buttons on the Site Updates tab are saved in `data/feedback.json`
+(private, backed up like the other data files) and emailed to every active
+webmaster. Webmasters manage them on the same tab.

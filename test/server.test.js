@@ -2267,3 +2267,61 @@ describe("site updates", () => {
     }
   });
 });
+
+describe("feature requests and bug reports", () => {
+  test("require a login", async () => {
+    const res = await request(app).post("/api/feedback").send({ type: "bug", title: "x", description: "y" });
+    assert.equal(res.status, 401);
+  });
+
+  test("validate the type, title and description", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+    for (const body of [
+      { type: "complaint", title: "t", description: "d" },
+      { type: "bug", title: "   ", description: "d" },
+      { type: "bug", title: "t".repeat(151), description: "d" },
+      { type: "feature", title: "t", description: "" },
+    ]) {
+      const res = await request(app).post("/api/feedback").set(auth).send(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  });
+
+  test("members see only their own items; webmasters see all and can manage them", async () => {
+    await seedUser({ username: "feedback-other", password: MEMBER_PASSWORD, role: "member" });
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    const other = { Authorization: `Bearer ${await login("feedback-other", MEMBER_PASSWORD)}` };
+    const webmaster = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+
+    const sent = await request(app).post("/api/feedback").set(member)
+      .send({ type: "bug", title: "  Markers vanish  ", description: "After filtering by county." });
+    assert.equal(sent.status, 201);
+    assert.equal(sent.body.item.title, "Markers vanish");
+    assert.equal(sent.body.item.status, "new");
+    await request(app).post("/api/feedback").set(other).send({ type: "feature", title: "PDF export", description: "Please." });
+
+    const mine = await request(app).get("/api/feedback").set(member);
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.canManage, false);
+    assert.deepEqual(mine.body.items.map((f) => f.title), ["Markers vanish"]);
+    assert.equal(mine.body.items[0].userAgent, undefined);
+
+    const all = await request(app).get("/api/feedback").set(webmaster);
+    assert.equal(all.body.canManage, true);
+    assert.equal(all.body.items.length, 2);
+
+    const id = sent.body.item.id;
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(member).send({ status: "done" })).status, 403);
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "nope" })).status, 400);
+    const patched = await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "planned", response: "Thanks, on the list." });
+    assert.equal(patched.status, 200);
+    const mineAfter = await request(app).get("/api/feedback").set(member);
+    assert.equal(mineAfter.body.items[0].status, "planned");
+    assert.equal(mineAfter.body.items[0].response, "Thanks, on the list.");
+
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(member)).status, 403);
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(webmaster)).status, 200);
+    assert.equal((await request(app).get("/api/feedback").set(member)).body.items.length, 0);
+  });
+});
