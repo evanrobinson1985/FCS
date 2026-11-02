@@ -2535,3 +2535,21 @@ describe("treasurer", () => {
     assert.ok(logs.body.some((l) => l.action === "Treasurer Access Removed" && l.username === "treasurer1"));
   });
 });
+
+describe("Cave Jump page", () => {
+  test("is always available, even in maintenance mode", async () => {
+    const res = await request(app).get("/cave-jump");
+    assert.equal(res.status, 200);
+    assert.match(res.text, /<title>Cave Jump/);
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      const during = await request(app).get("/cave-jump");
+      assert.equal(during.status, 200);
+      assert.match(during.text, /<title>Cave Jump/);
+      assert.equal((await request(app).get("/js/game.js")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});

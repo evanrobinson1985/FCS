@@ -1772,6 +1772,12 @@ app.get("/portal", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
 });
 
+// The Cave Jump game on its own page - always available, maintenance mode
+// or not (it's a static page that needs no login and no API).
+app.get("/cave-jump", (req, res) => {
+  res.sendFile(path.join(__dirname, "httpdocs", "cave-jump.html"));
+});
+
 // Narrative photos are member content - require login to view them, same as
 // the narratives themselves. This MUST be registered before the general
 // httpdocs static mount below: httpdocs/cave-pictures is a subdirectory of

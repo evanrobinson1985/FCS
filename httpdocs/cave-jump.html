@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Cave Jump &mdash; Florida Cave Survey</title>
+<meta name="description" content="Cave Jump: help our caver dodge bats, spiders and falling rocks.">
+<link rel="icon" href="/fcs-logo.png">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- Cave Jump on its own page, so it can be played any time, whether or not
+     the site is down for maintenance (the maintenance page has it too).
+     Same game, same js/game.js and assets/. -->
+<div id="gameView" class="wrap">
+
+  <header class="site-header">
+    <a href="/" class="back-link">&larr; Back to the Florida Cave Survey</a>
+    <h1>Cave Jump</h1>
+    <p class="tagline">
+      Help our caver dodge bats, spiders and falling rocks.
+    </p>
+  </header>
+
+  <div class="game-shell">
+    <canvas id="game" width="960" height="480" tabindex="0" aria-label="Cave Jump game canvas"></canvas>
+
+    <div id="hud" class="hud">
+      <div class="hud-left">
+        <span class="hud-label">Score</span>
+        <span id="score" class="hud-value">0</span>
+      </div>
+      <div id="lives" class="hud-lives" aria-label="Lives remaining"></div>
+      <div class="hud-right">
+        <span class="hud-label">Best</span>
+        <span id="highscore" class="hud-value">0</span>
+      </div>
+      <button id="muteBtn" class="icon-btn" aria-label="Toggle sound" title="Toggle sound">🔊</button>
+    </div>
+
+    <div id="startOverlay" class="overlay">
+      <div class="overlay-panel">
+        <h2>Cave Jump</h2>
+        <p class="overlay-copy">Run, crawl, jump and climb your way through the cave.</p>
+        <div class="controls-grid">
+          <div><kbd>&uarr;</kbd> / <kbd>W</kbd> / <kbd>Space</kbd><span>Jump &amp; hold to climb</span></div>
+          <div><kbd>&darr;</kbd> / <kbd>S</kbd><span>Duck / crawl</span></div>
+          <div><kbd>P</kbd><span>Pause</span></div>
+        </div>
+        <p class="overlay-copy small">On mobile: tap to jump, hold the DUCK button to crawl.</p>
+        <button id="startBtn" class="play-btn" disabled>Loading&hellip;</button>
+      </div>
+    </div>
+
+    <div id="pauseOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Paused</h2>
+        <button id="resumeBtn" class="play-btn">Resume</button>
+      </div>
+    </div>
+
+    <div id="gameOverOverlay" class="overlay hidden">
+      <div class="overlay-panel">
+        <h2>Cave-In!</h2>
+        <p class="overlay-copy" id="gameOverMsg">You made it partway through.</p>
+        <div class="final-stats">
+          <div><span class="hud-label">Score</span><strong id="finalScore">0</strong></div>
+          <div><span class="hud-label">Best</span><strong id="finalHigh">0</strong></div>
+        </div>
+        <button id="restartBtn" class="play-btn">Try Again</button>
+      </div>
+    </div>
+
+    <div id="touchControls" class="touch-controls">
+      <button id="touchDuck" class="touch-btn" aria-label="Duck">DUCK</button>
+      <button id="touchJump" class="touch-btn touch-jump" aria-label="Jump">JUMP</button>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>A little something from the Florida Cave Survey. Happy caving!</p>
+  </footer>
+
+</div>
+
+<script src="/js/game.js" defer></script>
+</body>
+</html>

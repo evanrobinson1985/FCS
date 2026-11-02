@@ -12047,8 +12047,21 @@ function getCSRFToken() {
 </script>
 
 
-  <footer style="text-align: center; font-size: 10px; color: #888; margin-top: 20px;">
+  <footer id="site-footer" style="text-align: center; font-size: 10px; color: #888; margin: 20px 0;">
     Developed by Evan Robinson | NSS #63985 | © 2025
+    <!-- A small, visible-but-tucked-away link to the Cave Jump game -->
+    <div style="margin-top: 6px;">
+      <a href="/cave-jump" title="Take a break: play Cave Jump" style="color: #888; text-decoration: none; font-size: 11px;">&#129415; Cave Jump</a>
+    </div>
   </footer>
+  <script>
+    // An unclosed <div> earlier in this page leaves the footer nested inside
+    // the Edit Cave Data tab, so it only showed on that tab. Move it to the
+    // end of <body> so it shows on every page, including the login page.
+    (function () {
+      var f = document.getElementById('site-footer');
+      if (f) document.body.appendChild(f);
+    })();
+  </script>
 </body>
 </html>
