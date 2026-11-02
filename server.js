@@ -22,6 +22,10 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
 const dues = require("./lib/dues");
+const { checkEmail } = require("./lib/email-check");
+// DNS check of email domains at sign-up (see lib/email-check.js). Off in
+// the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
+const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
 
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
@@ -4932,6 +4936,12 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
+    // Real-looking address whose domain can actually receive email, not a
+    // disposable inbox or a typo like gmial.com (lib/email-check.js)
+    const emailCheck = await checkEmail(email, { dns: EMAIL_DNS_CHECK });
+    if (!emailCheck.ok) {
+      return res.status(400).json({ error: emailCheck.reason, suggestion: emailCheck.suggestion });
+    }
     if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
@@ -5187,6 +5197,12 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
+    // Real-looking address whose domain can actually receive email, not a
+    // disposable inbox or a typo like gmial.com (lib/email-check.js)
+    const emailCheck = await checkEmail(email, { dns: EMAIL_DNS_CHECK });
+    if (!emailCheck.ok) {
+      return res.status(400).json({ error: emailCheck.reason, suggestion: emailCheck.suggestion });
+    }
     if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
@@ -5251,6 +5267,23 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     console.error("Error creating account:", error);
     res.status(500).json({ error: "Failed to create account" });
   }
+});
+
+// Instant email check for the sign-up form (when the email box loses
+// focus). Only looks at the address/domain - never says whether an account
+// with that email already exists, so it can't be used to find members.
+const emailCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many checks. Please try again in a few minutes." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/check-email", emailCheckLimiter, express.json(), async (req, res) => {
+  const result = await checkEmail(req.body && req.body.email, { dns: EMAIL_DNS_CHECK });
+  res.json(result.ok ? { ok: true } : { ok: false, reason: result.reason, suggestion: result.suggestion || null });
 });
 
 // Forgot password endpoint

@@ -1368,3 +1368,26 @@ input[type="file"] {
   border: 2px solid #b91c1c !important;
   background-color: #fff5f5 !important;
 }
+
+/* Sign-up email check message under the email box */
+.email-check {
+  display: block;
+  min-height: 1em;
+  margin-top: 4px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.email-check.ok {
+  color: #166534;
+}
+
+.email-check.bad {
+  color: #b91c1c;
+}
+
+.email-check .email-fix {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  margin-left: 4px;
+}

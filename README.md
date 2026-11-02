@@ -87,3 +87,23 @@ ever sent once.
 
 The rules live in `lib/dues.js`; the routes are in `server.js` under
 "Membership dues".
+
+## Email checks at sign-up
+
+Sign-up (and the webmaster's Create New Account form) rejects email
+addresses that are:
+
+- badly formed;
+- at a domain that can't receive email (checked in DNS);
+- at a disposable or throwaway inbox service;
+- a common typo of a big provider, such as `gmial.com`. The form offers
+  the fix.
+
+The sign-up form checks as soon as the email box loses focus.
+
+No verification email is sent, so a made-up name at a real provider
+(`nobody123@gmail.com`) can't be detected. Providers don't reveal that.
+
+If the server's own DNS isn't working, addresses are let through rather
+than blocking everyone. Set `EMAIL_DNS_CHECK=off` to skip the DNS part
+entirely. The code is in `lib/email-check.js`.

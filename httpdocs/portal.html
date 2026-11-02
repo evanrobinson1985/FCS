@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=9">
+ <link rel="stylesheet" href="styles.css?v=10">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -207,7 +207,8 @@
       </div>
       <div class="form-group">
         <label for="new-email">Email: <span class="required-mark" aria-hidden="true">*</span></label>
-        <input id="new-email" placeholder="Enter your email" type="email" required/>
+        <input id="new-email" placeholder="Enter your email" type="email" autocomplete="email" required/>
+        <small id="new-email-check" class="email-check" aria-live="polite"></small>
       </div>
       <div class="form-group">
         <label for="new-password">Password: <span class="required-mark" aria-hidden="true">*</span></label>
@@ -11539,6 +11540,54 @@ async function handleResetPassword() {
 }
 
 // Handle account creation
+// Checks the sign-up email as soon as the box loses focus (POST
+// /api/check-email: format, a domain that can receive email, no
+// disposable inboxes, common typos like gmial.com). The server repeats the
+// same check when the form is submitted.
+(function setUpSignupEmailCheck() {
+  const input = document.getElementById('new-email');
+  const out = document.getElementById('new-email-check');
+  if (!input || !out) return;
+  let lastChecked = '';
+  async function run() {
+    const value = input.value.trim();
+    if (!value || value === lastChecked) return;
+    lastChecked = value;
+    out.className = 'email-check';
+    out.textContent = 'Checking…';
+    try {
+      const r = await fetch('/api/check-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: value }) });
+      const data = await r.json();
+      if (input.value.trim() !== value) return; // changed while checking
+      out.textContent = '';
+      if (data.ok) {
+        out.className = 'email-check ok';
+        out.textContent = '✓ Looks good';
+        input.classList.remove('field-missing');
+      } else {
+        out.className = 'email-check bad';
+        out.textContent = data.reason || 'Please check this email address.';
+        input.classList.add('field-missing');
+        if (data.suggestion) {
+          const use = document.createElement('button');
+          use.type = 'button';
+          use.className = 'email-fix';
+          use.textContent = 'Use ' + data.suggestion;
+          use.addEventListener('click', () => { input.value = data.suggestion; lastChecked = ''; run(); });
+          out.appendChild(document.createTextNode(' '));
+          out.appendChild(use);
+        }
+      }
+    } catch (_) {
+      out.className = 'email-check';
+      out.textContent = '';
+      lastChecked = '';
+    }
+  }
+  input.addEventListener('blur', run);
+  input.addEventListener('input', () => { if (out.classList.contains('ok') || out.classList.contains('bad')) { out.className = 'email-check'; out.textContent = ''; } });
+})();
+
 async function handleCreateAccount() {
   const firstName = document.getElementById('new-first-name').value.trim();
   const lastName = document.getElementById('new-last-name').value.trim();

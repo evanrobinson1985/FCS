@@ -2662,3 +2662,29 @@ describe("legal first and last names", () => {
     assert.equal((await request(app).post("/api/users/member1/name").set(member).send({ firstName: "Me", lastName: "Me" })).status, 403);
   });
 });
+
+describe("email checks at sign-up", () => {
+  const base = { firstName: "Em", lastName: "Check", password: "SomeStrongPass123!", states: ["FL"] };
+  test("sign-up rejects disposable inboxes and typo domains", async () => {
+    const d = await request(app).post("/api/create-account").send({ ...base, username: "disp1", email: "disp1@mailinator.com" });
+    assert.equal(d.status, 400);
+    const t = await request(app).post("/api/create-account").send({ ...base, username: "typo1", email: "typo1@gmial.com" });
+    assert.equal(t.status, 400);
+    assert.equal(t.body.suggestion, "typo1@gmail.com");
+  });
+
+  test("the instant check route reports problems without revealing accounts", async () => {
+    const bad = await request(app).post("/api/check-email").send({ email: "x@yopmail.com" });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    const good = await request(app).post("/api/check-email").send({ email: "member1@example.com" });
+    assert.deepEqual(good.body, { ok: true }); // an existing member's email looks the same as any other
+  });
+
+  test("webmaster-created accounts are checked too", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const res = await request(app).post("/api/create-user").set("Authorization", wm)
+      .send({ firstName: "A", lastName: "B", username: "wmdisp", email: "wmdisp@guerrillamail.com", password: "SomeStrongPass123!" });
+    assert.equal(res.status, 400);
+  });
+});
