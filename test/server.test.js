@@ -2464,3 +2464,63 @@ describe("membership dues", () => {
     assert.ok(logs.body.some((l) => l.action === "Dues Payment Deleted" && l.username === "dues-current"));
   });
 });
+
+describe("treasurer", () => {
+  let wm;
+  const auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await seedUser({ username: "treasurer1", password: MEMBER_PASSWORD, role: "member" });
+    await seedUser({ username: "new-signup", password: MEMBER_PASSWORD, role: "member", status: "pending" });
+    await seedUser({ username: "an-admin", password: MEMBER_PASSWORD, role: "admin" });
+  });
+
+  test("only a webmaster can grant Treasurer access", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).post("/api/users/treasurer1/treasurer").set(t).send({ isTreasurer: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/users/webmaster1/treasurer").set(wm).send({ isTreasurer: true })).status, 400);
+    const res = await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: true });
+    assert.equal(res.status, 200);
+    const loginRes = await request(app).post("/api/login").send({ username: "treasurer1", password: MEMBER_PASSWORD });
+    assert.equal(loginRes.body.isTreasurer, true);
+  });
+
+  test("a Treasurer can list members, record payments and approve accounts", async () => {
+    const t = await auth("treasurer1");
+    const list = await request(app).get("/api/dues/members").set(t);
+    assert.equal(list.status, 200);
+    assert.ok(list.body.members.every((m) => m.username !== "webmaster1" && m.username !== "an-admin"));
+    assert.ok(list.body.members.some((m) => m.username === "new-signup" && m.status === "pending"));
+
+    const pay = await request(app).post("/api/users/new-signup/dues/payments").set(t).send({ paidOn: require("../lib/dues").todayISO() });
+    assert.equal(pay.status, 201);
+    const act = await request(app).post("/api/dues/members/new-signup/status").set(t).send({ active: true });
+    assert.equal(act.status, 200);
+    assert.equal(act.body.status, "active");
+    assert.equal((await request(app).post("/api/login").send({ username: "new-signup", password: MEMBER_PASSWORD })).status, 200);
+
+    const settings = await request(app).get("/api/dues/settings").set(t);
+    assert.equal(settings.status, 200);
+    assert.equal(settings.body.reminderUrl, null); // the scheduled-task link stays webmaster-only
+  });
+
+  test("a Treasurer can't do webmaster-only things", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).get("/api/users").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/an-admin/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/webmaster1/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/treasurer1/status").set(t).send({ active: false })).status, 400);
+    assert.equal((await request(app).get("/api/security-logs").set(t)).status, 403);
+  });
+
+  test("removing Treasurer access takes effect straight away", async () => {
+    const t = await auth("treasurer1");
+    await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: false });
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Account Activated" && l.username === "new-signup"));
+    assert.ok(logs.body.some((l) => l.action === "Treasurer Access Removed" && l.username === "treasurer1"));
+  });
+});

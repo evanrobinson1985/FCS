@@ -380,7 +380,9 @@
 <!-- Account Management Tab Content -->
 <div class="tab-content" id="account-management">
   <h3>Account Management</h3>
-  <p>Manage user accounts, permissions, and security settings.</p>
+  <p id="account-management-intro">Manage user accounts, permissions, and security settings.</p>
+  <!-- The Treasurer's dues-only view, filled by js/membership.js -->
+  <div id="treasurer-view" style="display: none;"></div>
   
   <div class="account-management-controls">
     <div class="control-section">
@@ -1494,7 +1496,7 @@
 <!-- "What's new" card after login + the Site Updates tab -->
 <script src="js/site-updates.js?v=2"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
-<script src="js/membership.js?v=1"></script>
+<script src="js/membership.js?v=2"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -8139,10 +8141,13 @@ window.addEventListener('error', function(e) {
     document.getElementById('logged-in-user').textContent =
       `Logged in as: ${result.username} (${result.role})`;
 
-    // Show/hide account management tab based on role
+    // Show/hide account management tab based on role. The Treasurer (any
+    // member/admin a webmaster has given that permission) gets it too, with
+    // a dues-only view - see js/membership.js.
+    sessionStorage.setItem('isTreasurer', result.isTreasurer ? '1' : '0');
     const accountTab = document.getElementById('account-management-tab');
     if (accountTab) {
-      if (result.role === 'webmaster') {
+      if (result.role === 'webmaster' || result.isTreasurer) {
         accountTab.style.display = 'block';
       } else {
         accountTab.style.display = 'none';
@@ -8582,6 +8587,7 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('role');
         sessionStorage.removeItem('sessionToken');
         sessionStorage.removeItem('twoFactorEnabled');
+        sessionStorage.removeItem('isTreasurer');
         if (window.SiteUpdates) SiteUpdates.hide();
         if (window.Membership) Membership.hide();
         window.caveDatabase = undefined;
@@ -8677,11 +8683,15 @@ window.addEventListener('error', function(e) {
         // Add this to your existing tab click handler
         if (tabContentId === 'account-management') {
           const currentRole = sessionStorage.getItem('role');
-          if (currentRole !== 'webmaster') {
-            alert('Access denied. Only webmasters can access account management.');
+          if (currentRole === 'webmaster') {
+            if (window.Membership) Membership.showWebmasterView();
+            loadAccountManagement();
+          } else if (sessionStorage.getItem('isTreasurer') === '1' && window.Membership) {
+            Membership.showTreasurerView();
+          } else {
+            alert('Access denied. Only webmasters and the Treasurer can access account management.');
             return;
           }
-          loadAccountManagement();
         }
 
         if (tabContentId === 'website-management') {
@@ -11797,7 +11807,10 @@ function displayUsers(users, allStates) {
     row.innerHTML = `
       <td>${safeUsername}</td>
       <td>${safeEmail}</td>
-      <td><span class="role-badge role-${user.role}">${user.role}</span></td>
+      <td><span class="role-badge role-${user.role}">${user.role}</span>${user.role === 'webmaster' ? '' : `
+        <label style="display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 0.8em; white-space: nowrap;" title="Can manage dues and set member accounts active or inactive">
+          <input type="checkbox" data-treasurer-toggle data-username="${safeUsername}" ${user.isTreasurer ? 'checked' : ''}> Treasurer
+        </label>`}</td>
       <td>${statusBadge}</td>
       <td>${window.Membership ? Membership.duesCellHtml(user) : ''}</td>
       <td>${statesCell}</td>

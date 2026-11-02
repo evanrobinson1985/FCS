@@ -996,12 +996,82 @@ function duesReminderKey() {
   return crypto.createHmac("sha256", String(JWT_SECRET)).update("dues-reminders").digest("hex").slice(0, 32);
 }
 
-app.get("/api/dues/settings", authenticateToken, requireRole("webmaster"), (req, res) => {
+// ---- Treasurer -------------------------------------------------------------
+// A webmaster can give any member or admin account the Treasurer
+// permission (user.isTreasurer). A Treasurer can see the members-and-dues
+// list, record/delete payments, send dues emails, and set member accounts
+// active or inactive - nothing else in Account Management. Checked against
+// the live account record on every request, so removing the permission
+// (or disabling the account) takes effect immediately.
+function isTreasurerAccount(user) {
+  return !!user && !!user.isTreasurer && user.role !== "webmaster";
+}
+
+function requireDuesManager(req, res, next) {
+  if (req.user && req.user.role === "webmaster") return next();
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  if (me && me.status === "active" && isTreasurerAccount(me)) return next();
+  return res.status(403).json({ error: "Only webmasters and the Treasurer can do this." });
+}
+
+app.post("/api/users/:username/treasurer", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { isTreasurer } = req.body || {};
+  if (typeof isTreasurer !== "boolean") return res.status(400).json({ error: "isTreasurer must be true or false." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  if (user.role === "webmaster") return res.status(400).json({ error: "Webmasters can already manage dues." });
+  user.isTreasurer = isTreasurer;
+  addDuesLog(user, isTreasurer ? "Treasurer Access Granted" : "Treasurer Access Removed", req.user.username,
+    isTreasurer ? "Can now manage dues and member account status" : "Can no longer manage dues");
+  saveUsers(users);
+  res.json({ success: true, isTreasurer: isTreasurerAccount(user) });
+});
+
+// The members-and-dues list for the Treasurer view (members only - admins
+// and webmasters don't pay dues)
+app.get("/api/dues/members", authenticateToken, requireDuesManager, (req, res) => {
+  const list = loadUsers()
+    .filter((u) => u.role === "member")
+    .map((u) => ({
+      username: u.username,
+      fullName: u.fullName || "",
+      email: u.email || "",
+      status: u.status,
+      created: u.created || null,
+      lastLogin: u.lastLogin || null,
+      dues: duesView(u),
+    }))
+    .sort((a, b) => a.username.localeCompare(b.username));
+  res.json({ members: list });
+});
+
+// Set a member's account active (e.g. approve a new sign-up once they've
+// paid) or inactive. Members only, and never your own account.
+app.post("/api/dues/members/:username/status", authenticateToken, requireDuesManager, express.json(), (req, res) => {
+  const { active } = req.body || {};
+  if (typeof active !== "boolean") return res.status(400).json({ error: "active must be true or false." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  if (user.role !== "member") return res.status(403).json({ error: "Only member accounts can be changed here." });
+  if (user.username === req.user.username) return res.status(400).json({ error: "You can't change your own account's status." });
+  const before = user.status;
+  user.status = active ? "active" : "inactive";
+  if (before !== user.status) {
+    addDuesLog(user, active ? "Account Activated" : "Account Deactivated", req.user.username, `Status changed from ${before} to ${user.status}`);
+  }
+  saveUsers(users);
+  res.json({ success: true, status: user.status });
+});
+
+app.get("/api/dues/settings", authenticateToken, requireDuesManager, (req, res) => {
   res.json({
     duesAmount: siteConfig.duesAmount,
     duesReminderDays: siteConfig.duesReminderDays,
     duesEnforcement: siteConfig.duesEnforcement,
-    reminderUrl: `${siteOrigin(req)}/api/dues/run-reminders?key=${duesReminderKey()}`,
+    // Only webmasters see the scheduled-task link
+    reminderUrl: req.user.role === "webmaster" ? `${siteOrigin(req)}/api/dues/run-reminders?key=${duesReminderKey()}` : null,
   });
 });
 
@@ -1035,6 +1105,7 @@ app.get("/api/my-membership", authenticateToken, (req, res) => {
     ...status,
     duesAmount: siteConfig.duesAmount,
     enforcement: siteConfig.duesEnforcement,
+    isTreasurer: isTreasurerAccount(user),
     payLink: status.state === "exempt" ? null : dues.paypalDuesLink(siteConfig.duesAmount, user.username),
   });
 });
@@ -1047,7 +1118,7 @@ function findMember(req, res) {
   return { users, user };
 }
 
-app.post("/api/users/:username/dues/payments", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+app.post("/api/users/:username/dues/payments", authenticateToken, requireDuesManager, express.json(), (req, res) => {
   const found = findMember(req, res);
   if (!found) return;
   const { users, user } = found;
@@ -1083,7 +1154,7 @@ app.post("/api/users/:username/dues/payments", authenticateToken, requireRole("w
   res.status(201).json({ success: true, dues: duesView(user) });
 });
 
-app.delete("/api/users/:username/dues/payments/:paymentId", authenticateToken, requireRole("webmaster"), (req, res) => {
+app.delete("/api/users/:username/dues/payments/:paymentId", authenticateToken, requireDuesManager, (req, res) => {
   const found = findMember(req, res);
   if (!found) return;
   const { users, user } = found;
@@ -1099,7 +1170,7 @@ app.delete("/api/users/:username/dues/payments/:paymentId", authenticateToken, r
 
 // "Send dues email": only for a member whose recorded membership has
 // expired, so nobody gets an overdue notice by mistake.
-app.post("/api/users/:username/dues/notice", authenticateToken, requireRole("webmaster"), async (req, res) => {
+app.post("/api/users/:username/dues/notice", authenticateToken, requireDuesManager, async (req, res) => {
   const found = findMember(req, res);
   if (!found) return;
   const { user } = found;
@@ -1430,6 +1501,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user),
+      isTreasurer: isTreasurerAccount(user),
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -1507,6 +1579,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user),
+      isTreasurer: isTreasurerAccount(user),
     });
   } catch (error) {
     console.error("2FA verification error:", error);
@@ -4647,6 +4720,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
       isActive: user.status === "active",
+      isTreasurer: isTreasurerAccount(user),
       dues: duesView(user),
     }));
     

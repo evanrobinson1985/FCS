@@ -5,7 +5,10 @@
  *   dues access switch on (Website Management; off by default);
  * - the Dues column in Account Management (record a payment, payment
  *   history, "Send dues email" for expired members);
- * - the Membership Dues card in Website Management.
+ * - the Membership Dues card in Website Management;
+ * - the Treasurer's view of Account Management (members, dues, and
+ *   setting member accounts active/inactive), and the webmaster's
+ *   Treasurer checkbox in the user table.
  *
  * Server side: lib/dues.js and the /api/dues, /api/my-membership and
  * /api/users/:username/dues routes in server.js. Text is inserted with
@@ -78,6 +81,19 @@
       .dues-modal table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin-top: 8px; }
       .dues-modal td, .dues-modal th { text-align: left; padding: 5px 4px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
       .dues-modal td button { padding: 2px 8px; font-size: 0.8em; background: #b91c1c; }
+      #treasurer-view .tv-bar { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+      #treasurer-view .tv-bar input { flex: 1 1 220px; padding: 7px 8px; border: 1px solid #94a3b8; border-radius: 4px; }
+      #treasurer-view .tv-bar select { padding: 6px; }
+      #treasurer-view table { width: 100%; border-collapse: collapse; background: #fff; }
+      #treasurer-view th { background: #4b86b4; color: #fff; text-align: left; padding: 8px; font-size: 0.9em; }
+      #treasurer-view td { padding: 8px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+      #treasurer-view .tv-wrap { overflow-x: auto; }
+      #treasurer-view .tv-status { font-weight: 600; }
+      #treasurer-view .tv-status.active { color: #166534; } #treasurer-view .tv-status.pending { color: #b45309; }
+      #treasurer-view .tv-status.inactive { color: #b91c1c; }
+      #treasurer-view td button.tv-act { padding: 3px 8px; font-size: 0.8em; margin-top: 4px; white-space: nowrap; width: auto; }
+      #treasurer-view td button.tv-act.deactivate { background: #fff; color: #b91c1c; border: 1px solid #b91c1c; }
+      #treasurer-view .tv-summary { color: #475569; margin: 0 0 6px; }
       #membership-block { max-width: 640px; margin: 40px auto; padding: 28px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; text-align: center; }
       #membership-block a.ms-pay-big { display: inline-block; margin-top: 10px; padding: 9px 20px; border-radius: 18px; background: #2a4d69; color: #fff; text-decoration: none; font-weight: 700; }
     `;
@@ -376,5 +392,133 @@
     if (am) am.addEventListener('click', loadSettingsQuietly);
   });
 
-  window.Membership = { afterLogin, hide, duesCellHtml, renderSettings };
+  // ---------- Treasurer view of Account Management ----------
+  const STATUS_LABEL = { active: 'Active', pending: 'Pending approval', inactive: 'Inactive' };
+  let tvState = { q: '', filter: 'all', members: [] };
+
+  function setWebmasterParts(visible) {
+    const root = document.getElementById('account-management');
+    if (!root) return;
+    root.querySelectorAll(':scope > .account-management-controls').forEach(n => { n.style.display = visible ? '' : 'none'; });
+    const tv = document.getElementById('treasurer-view');
+    if (tv) tv.style.display = visible ? 'none' : '';
+    const intro = document.getElementById('account-management-intro');
+    if (intro) intro.textContent = visible
+      ? 'Manage user accounts, permissions, and security settings.'
+      : 'Check members\' dues, record payments, and set member accounts active once they\'ve paid.';
+  }
+
+  function showWebmasterView() { setWebmasterParts(true); }
+
+  async function showTreasurerView() {
+    injectStyles();
+    setWebmasterParts(false);
+    const root = document.getElementById('treasurer-view');
+    if (!root) return;
+    root.textContent = 'Loading…';
+    try {
+      const [list] = await Promise.all([api('GET', '/api/dues/members'), loadSettingsQuietly()]);
+      tvState.members = list.members || [];
+      drawTreasurer();
+    } catch (err) {
+      root.textContent = 'Could not load members: ' + err.message;
+    }
+  }
+
+  function drawTreasurer() {
+    const root = document.getElementById('treasurer-view');
+    root.textContent = '';
+    const all = tvState.members;
+    const count = (st) => all.filter(m => m.dues && m.dues.state === st).length;
+    root.appendChild(el('p', 'tv-summary',
+      `${plural(all.length, 'member')}: ${count('paid')} paid, ${count('due-soon')} due soon, ${count('expired')} expired, ` +
+      `${count('none')} with no payment recorded, ${all.filter(m => m.status === 'pending').length} waiting for approval.`));
+
+    const bar = el('div', 'tv-bar');
+    const search = el('input'); search.type = 'text'; search.placeholder = 'Search by username, name or email…'; search.value = tvState.q;
+    const filter = el('select');
+    [['all', 'All members'], ['pending', 'Waiting for approval'], ['expired', 'Dues expired'], ['due-soon', 'Dues due soon'],
+     ['none', 'No payment recorded'], ['paid', 'Paid up'], ['inactive', 'Inactive accounts']]
+      .forEach(([v, t]) => { const o = el('option', null, t); o.value = v; filter.appendChild(o); });
+    filter.value = tvState.filter;
+    bar.appendChild(search); bar.appendChild(filter);
+    root.appendChild(bar);
+
+    const wrap = el('div', 'tv-wrap');
+    const table = el('table');
+    const thead = el('tr');
+    ['Member', 'Email', 'Account', 'Dues'].forEach(h => thead.appendChild(el('th', null, h)));
+    table.appendChild(thead);
+    const body = el('tbody');
+    table.appendChild(body);
+    wrap.appendChild(table);
+    root.appendChild(wrap);
+
+    const rows = () => {
+      body.textContent = '';
+      const q = tvState.q.trim().toLowerCase();
+      const shown = all.filter(m =>
+        (!q || [m.username, m.fullName, m.email].some(v => (v || '').toLowerCase().includes(q))) &&
+        (tvState.filter === 'all' ||
+          (['pending', 'inactive'].includes(tvState.filter) ? m.status === tvState.filter : m.dues && m.dues.state === tvState.filter)));
+      if (!shown.length) {
+        const tr = el('tr'); const td = el('td', null, 'No members match.'); td.colSpan = 4; tr.appendChild(td); body.appendChild(tr);
+        return;
+      }
+      shown.forEach(m => {
+        const tr = el('tr');
+        const who = el('td');
+        who.appendChild(el('div', null, m.username));
+        if (m.fullName) who.appendChild(el('div', 'dues-sub', m.fullName));
+        tr.appendChild(who);
+        tr.appendChild(el('td', null, m.email));
+        const acct = el('td');
+        acct.appendChild(el('div', 'tv-status ' + m.status, STATUS_LABEL[m.status] || m.status));
+        const active = m.status === 'active';
+        const b = el('button', 'tv-act' + (active ? ' deactivate' : ''), active ? 'Set inactive' : 'Set active');
+        b.type = 'button';
+        b.addEventListener('click', async () => {
+          const msg = active ? `Set ${m.username}'s account inactive? They won't be able to log in.` : `Set ${m.username}'s account active? They'll be able to log in.`;
+          if (!confirm(msg)) return;
+          b.disabled = true;
+          try { const r = await api('POST', `/api/dues/members/${encodeURIComponent(m.username)}/status`, { active: !active }); m.status = r.status; drawTreasurer(); }
+          catch (err) { alert('Could not change the account: ' + err.message); b.disabled = false; }
+        });
+        acct.appendChild(b);
+        tr.appendChild(acct);
+        const dc = el('td');
+        dc.innerHTML = duesCellHtml(m); // built from escaped values
+        tr.appendChild(dc);
+        body.appendChild(tr);
+      });
+    };
+    search.addEventListener('input', () => { tvState.q = search.value; rows(); });
+    filter.addEventListener('change', () => { tvState.filter = filter.value; rows(); });
+    rows();
+  }
+
+  // Keep the Treasurer list in step after a payment / email / deletion
+  const baseRefresh = refreshCell;
+  refreshCell = function (username, d) {
+    const m = tvState.members.find(x => x.username === username);
+    if (m) m.dues = d;
+    baseRefresh(username, d);
+  };
+
+  // Webmaster: the Treasurer checkbox in the user table
+  document.addEventListener('change', async (e) => {
+    const box = e.target;
+    if (!box.matches || !box.matches('[data-treasurer-toggle]')) return;
+    const username = box.dataset.username;
+    const want = box.checked;
+    if (!confirm(want
+      ? `Make ${username} a Treasurer? They'll be able to see all members, record dues payments, send dues emails and set member accounts active or inactive.`
+      : `Remove ${username}'s Treasurer access?`)) { box.checked = !want; return; }
+    box.disabled = true;
+    try { await api('POST', `/api/users/${encodeURIComponent(username)}/treasurer`, { isTreasurer: want }); }
+    catch (err) { alert('Could not change Treasurer access: ' + err.message); box.checked = !want; }
+    box.disabled = false;
+  });
+
+  window.Membership = { afterLogin, hide, duesCellHtml, renderSettings, showTreasurerView, showWebmasterView };
 })();

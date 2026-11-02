@@ -58,6 +58,19 @@ Dues** card). Rules:
 Payments are recorded by hand (**Record payment**). PayPal payments are not
 picked up automatically.
 
+**Treasurer.** In Account Management, a webmaster can tick **Treasurer**
+under any member or admin's role. That person then gets a dues-only view of
+Account Management, where they can:
+
+- see every member's account and dues status;
+- record and delete payments, and send dues emails;
+- set member accounts **Active** or **Inactive**, for example to approve a
+  new sign-up once they've paid.
+
+They can't change roles, states or dues settings, create or delete accounts,
+or see Security Logs. They also can't change admin, webmaster or their own
+accounts. Unticking the box removes the access immediately.
+
 **Daily reminder task (recommended).** The app checks for reminders every
 hour while it's running, but Plesk can put it to sleep on quiet days. To
 make sure reminders still go out, add a Plesk Scheduled Task:
