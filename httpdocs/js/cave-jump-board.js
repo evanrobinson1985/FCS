@@ -116,8 +116,39 @@
     }
   }
 
-  window.addEventListener('cavejump:gameover', async (e) => {
+  // Each run is saved once. js/game.js normally reports the run (with the
+  // time actually played). As a backup - e.g. if a browser or Cloudflare is
+  // still serving an older cached game.js that doesn't report runs - the
+  // board also watches the game-over screen and saves the final score
+  // itself, timing the run from when the start / game-over screen closed.
+  let runStartedAt = null;   // when the current run began
+  let overSaved = false;     // this game-over screen's run has been saved
+  const startOv = document.getElementById('startOverlay');
+  const overOv = document.getElementById('gameOverOverlay');
+  const isShown = (n) => n && !n.classList.contains('hidden');
+  if (window.MutationObserver) {
+    const watch = (node, onChange) => node && new MutationObserver(onChange).observe(node, { attributes: true, attributeFilter: ['class'] });
+    watch(startOv, () => { if (!isShown(startOv)) runStartedAt = Date.now(); });
+    watch(overOv, () => {
+      if (!isShown(overOv)) { overSaved = false; runStartedAt = Date.now(); return; }
+      // Give game.js a moment to report the run itself first
+      setTimeout(() => {
+        if (overSaved || !isShown(overOv)) return;
+        const score = parseInt((document.getElementById('finalScore') || {}).textContent, 10);
+        const seconds = runStartedAt ? Math.max(1, (Date.now() - runStartedAt) / 1000) : 1;
+        if (Number.isFinite(score)) saveRun(score, Math.round(seconds * 10) / 10);
+      }, 400);
+    });
+  }
+
+  window.addEventListener('cavejump:gameover', (e) => {
     const { score, seconds } = e.detail || {};
+    saveRun(score, seconds);
+  });
+
+  async function saveRun(score, seconds) {
+    if (overSaved) return;
+    overSaved = true;
     if (!token()) {
       const tenth = last && last.top && last.top.length >= 10 ? last.top[9].score : -1;
       saveMessage(score > tenth ? 'That would make the Top 10!' : '', true);
@@ -144,7 +175,7 @@
     } catch (_) {
       saveMessage('Your score couldn\'t be saved (no connection).');
     }
-  });
+  }
 
   function init() {
     if (!document.getElementById('cj-board')) return;
