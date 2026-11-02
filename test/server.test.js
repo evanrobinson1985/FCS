@@ -2553,3 +2553,69 @@ describe("Cave Jump page", () => {
     }
   });
 });
+
+describe("Cave Jump leaderboard", () => {
+  const post = (h, body) => request(app).post("/api/cave-jump/scores").set(h).send(body);
+  let wm;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (let i = 1; i <= 12; i++) await seedUser({ username: `jumper${i}`, password: MEMBER_PASSWORD, role: "member" });
+  });
+
+  test("anyone can see the board; only logged-in players can add to it", async () => {
+    const res = await request(app).get("/api/cave-jump/leaderboard");
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body.top));
+    assert.equal(res.body.you, null);
+    assert.equal((await request(app).post("/api/cave-jump/scores").send({ score: 10, seconds: 5 })).status, 401);
+  });
+
+  test("keeps each player's best score under their username, top 10 only", async () => {
+    for (let i = 1; i <= 12; i++) {
+      const h = { Authorization: `Bearer ${await login(`jumper${i}`, MEMBER_PASSWORD)}` };
+      const r = await post(h, { score: i * 100, seconds: 60 });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.isNewBest, true);
+    }
+    const h1 = { Authorization: `Bearer ${await login("jumper12", MEMBER_PASSWORD)}` };
+    const lower = await post(h1, { score: 50, seconds: 60 });
+    assert.equal(lower.body.isNewBest, false);
+    assert.equal(lower.body.you.best, 1200);
+    assert.equal(lower.body.you.rank, 1);
+
+    const board = (await request(app).get("/api/cave-jump/leaderboard")).body;
+    assert.equal(board.top.length, 10);
+    assert.deepEqual(board.top.slice(0, 3).map((e) => [e.rank, e.name, e.score]),
+      [[1, "jumper12", 1200], [2, "jumper11", 1100], [3, "jumper10", 1000]]);
+    assert.equal(board.top[9].name, "jumper3");
+    assert.equal(board.top[0].id, undefined); // account ids only go to webmasters
+  });
+
+  test("rejects scores that don't fit the run", async () => {
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await post(h, { score: 100000, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 1.5, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 100, seconds: 0 })).status, 400);
+    assert.equal((await post(h, { score: -1, seconds: 10 })).status, 400);
+  });
+
+  test("a webmaster can remove a score", async () => {
+    const board = (await request(app).get("/api/cave-jump/leaderboard").set(wm)).body;
+    assert.equal(board.canManage, true);
+    const top = board.top[0];
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(h)).status, 403);
+    const res = await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.top[0].name, "jumper11");
+  });
+
+  test("the board still works in maintenance mode", async () => {
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      assert.equal((await request(app).get("/api/cave-jump/leaderboard")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});

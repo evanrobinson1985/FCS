@@ -38,6 +38,8 @@ const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
 const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 // Feature requests and bug reports sent from the Site Updates tab
 const FEEDBACK_FILE = path.join(DATA_DIR, "feedback.json");
+// Cave Jump leaderboard: each account's best score
+const CAVE_JUMP_FILE = path.join(DATA_DIR, "cave-jump-scores.json");
 // How many distinct login addresses to remember per account
 const MAX_LOGIN_IPS = 50;
 
@@ -762,6 +764,9 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
   "/api/site-status",
   // The daily scheduled task that sends dues reminders (key-protected)
   "/api/dues/run-reminders",
+  // Cave Jump stays playable during maintenance (see /cave-jump)
+  "/api/cave-jump/leaderboard",
+  "/api/cave-jump/scores",
 ]);
 
 app.use((req, res, next) => {
@@ -1269,6 +1274,118 @@ if (process.env.NODE_ENV !== "test") {
 }
 app.runDuesReminders = runDuesReminders; // for the test suite
 
+// ---- Cave Jump leaderboard --------------------------------------------------
+// Top 10 of each account's best score, shown on /cave-jump and the
+// maintenance page. Anyone can see it; only logged-in accounts can add to
+// it (so every name on it is a real account). Stored by account id, and
+// shown with the account's current username (not the full name - the game
+// page is public), so renames carry over and deleted accounts drop off.
+// Scores come from the browser, so they're sanity-checked against how long
+// the run lasted; that stops casual tampering, not a determined cheat.
+const CAVE_JUMP_TOP = 10;
+const CAVE_JUMP_MAX_POINTS_PER_SECOND = 80; // the game tops out near 50/s plus gems
+
+function loadCaveJump() {
+  try {
+    if (fs.existsSync(CAVE_JUMP_FILE)) {
+      const data = JSON.parse(fs.readFileSync(CAVE_JUMP_FILE, "utf-8"));
+      if (data && typeof data.best === "object" && data.best) return data;
+    }
+  } catch (err) {
+    console.error("Error loading Cave Jump scores:", err);
+  }
+  return { best: {} };
+}
+
+function saveCaveJump(data) {
+  backupDataFile(CAVE_JUMP_FILE);
+  fs.writeFileSync(CAVE_JUMP_FILE, JSON.stringify(data, null, 2));
+}
+
+// Ranked list of every account's best, best first (ties: earlier score first)
+function caveJumpRanking(data, users) {
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return Object.entries(data.best)
+    .filter(([id]) => byId.has(id))
+    .map(([id, e]) => ({ id, name: byId.get(id).username, score: e.score, at: e.at }))
+    .sort((a, b) => b.score - a.score || (a.at < b.at ? -1 : 1))
+    .map((e, i) => ({ rank: i + 1, ...e }));
+}
+
+// Who's asking, if a valid login token came with the request (optional)
+function optionalUser(req) {
+  const h = req.headers["authorization"];
+  const token = h && h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return null;
+  try {
+    const d = jwt.verify(token, JWT_SECRET);
+    return d && !d.pending2FA ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+function leaderboardFor(viewer) {
+  const users = loadUsers();
+  const ranking = caveJumpRanking(loadCaveJump(), users);
+  const me = viewer ? users.find((u) => u.username === viewer.username) : null;
+  const mine = me ? ranking.find((e) => e.id === me.id) : null;
+  const canManage = !!viewer && viewer.role === "webmaster";
+  return {
+    top: ranking.slice(0, CAVE_JUMP_TOP).map((e) => ({
+      rank: e.rank, name: e.name, score: e.score, at: e.at, ...(canManage ? { id: e.id } : {}),
+    })),
+    you: me ? { name: me.username, best: mine ? mine.score : null, rank: mine ? mine.rank : null } : null,
+    canManage,
+  };
+}
+
+app.get("/api/cave-jump/leaderboard", (req, res) => {
+  res.json(leaderboardFor(optionalUser(req)));
+});
+
+const caveJumpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many scores sent. Take a break and try again later." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/cave-jump/scores", caveJumpLimiter, authenticateToken, express.json(), (req, res) => {
+  const { score, seconds } = req.body || {};
+  if (!Number.isInteger(score) || score < 0 || score > 1000000) {
+    return res.status(400).json({ error: "Invalid score." });
+  }
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 1 || seconds > 3 * 60 * 60) {
+    return res.status(400).json({ error: "Invalid run length." });
+  }
+  if (score > seconds * CAVE_JUMP_MAX_POINTS_PER_SECOND + 300) {
+    return res.status(400).json({ error: "That score doesn't match how long the run lasted." });
+  }
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  if (!me) return res.status(404).json({ error: "Account not found." });
+  const data = loadCaveJump();
+  const prev = data.best[me.id];
+  const isNewBest = !prev || score > prev.score;
+  if (isNewBest) {
+    data.best[me.id] = { score, at: new Date().toISOString() };
+    saveCaveJump(data);
+  }
+  res.json({ isNewBest, previousBest: prev ? prev.score : null, ...leaderboardFor(req.user) });
+});
+
+// Webmasters can take an entry off the board (e.g. an obviously fake score)
+app.delete("/api/cave-jump/scores/:userId", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const data = loadCaveJump();
+  if (!data.best[req.params.userId]) return res.status(404).json({ error: "No score for that account." });
+  delete data.best[req.params.userId];
+  saveCaveJump(data);
+  console.log(`Cave Jump score for account ${req.params.userId} removed by ${req.user.username}`);
+  res.json({ success: true, ...leaderboardFor(req.user) });
+});
+
 // Called when the account closes the "What's new" card: records the newest
 // update it has now seen, so the card stays away until there's a newer one.
 app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
@@ -1369,6 +1486,7 @@ const DUES_EXPIRED_ALLOWED_PATHS = new Set([
   "/api/site-updates/seen",
   "/api/feedback",
   "/api/change-password",
+  "/api/cave-jump/scores",
 ]);
 
 // Restricts a route to one of the given roles. Must run after authenticateToken.

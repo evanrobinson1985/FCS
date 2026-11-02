@@ -1044,6 +1044,7 @@
       this.player.reset();
       this.spawner.reset();
       this.score = 0;
+      this.playTime = 0; // seconds actually played (not paused) - sent with the score
       this.lives = START_LIVES;
       this.speed = START_SPEED;
       this.shake = 0;
@@ -1099,6 +1100,10 @@
       highscoreEl.textContent = this.highScore;
       gameOverMsg.textContent = isNew ? "New best! The cave has never been tamed like this." : pick(this.gameOverMessages);
       gameOverOverlay.classList.remove("hidden");
+      // Lets js/cave-jump-board.js save the run to the Top 10
+      window.dispatchEvent(new CustomEvent("cavejump:gameover", {
+        detail: { score: Math.floor(this.score), seconds: Math.round((this.playTime || 0) * 10) / 10 },
+      }));
     }
 
     checkCollisions() {
@@ -1163,6 +1168,7 @@
       if (this.state !== STATE.PLAYING) return;
 
       this.speed = Math.min(MAX_SPEED, this.speed + SPEED_RAMP * dt);
+      this.playTime = (this.playTime || 0) + dt;
       this.score += this.speed * dt * 0.08;
       scoreEl.textContent = Math.floor(this.score);
 
