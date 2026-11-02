@@ -760,8 +760,8 @@
 <!-- Multi-Angle Hillshade + Transparency -->
 <div class="control-block">
 <label><input id="multi-angle-hillshade" type="checkbox"/> Multi-Angle Hillshade</label>
-<label for="hillshade-opacity">Transparency: <span id="hillshade-opacity-value">20%</span></label>
-<input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="80"/>
+<label for="hillshade-opacity">Transparency: <span id="hillshade-opacity-value">25%</span></label>
+<input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="25"/>
 </div>
 
 <!-- Waypoints Heatmap + Transparency -->
@@ -1787,7 +1787,7 @@
             
             // Get the current transparency value from the slider
             const transparencySlider = document.getElementById('hillshade-opacity');
-            const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 80;
+            const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 25;
             const opacityValue = (100 - transparencyValue) / 100; // Convert to opacity (0-1)
             
             // Apply the opacity value
@@ -2497,7 +2497,7 @@
       
       // Get the current transparency value from the slider
       const transparencySlider = document.getElementById('hillshade-opacity');
-      const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 80;
+      const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 25;
       const opacityValue = (100 - transparencyValue) / 100; // Convert to opacity (0-1)
       
       // Remove all base layers with error handling

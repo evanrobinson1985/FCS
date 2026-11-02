@@ -1,5 +1,13 @@
 [
   {
+    "id": "2026-11-02-hillshade-default",
+    "date": "2026-11-02",
+    "title": "Multi-Angle Hillshade starts at 25% transparency",
+    "changes": [
+      "On the Interactive Map, the Multi-Angle Hillshade now starts at 25% transparency, so the relief shows more strongly. (Before, it started at 80% while the label wrongly said 20%.)"
+    ]
+  },
+  {
     "id": "2026-11-02-3d-terrain-view",
     "date": "2026-11-02",
     "title": "3D terrain view on the Interactive Map",
