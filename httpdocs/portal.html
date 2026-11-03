@@ -1493,7 +1493,15 @@
 <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
 <script src="https://unpkg.com/esri-leaflet-renderers@3.0.1/dist/esri-leaflet-renderers.js"></script>
 <script src="https://unpkg.com/leaflet-compass@1.5.6/dist/leaflet-compass.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
+<!-- Self-hosted, not loaded from a CDN: this one-time report was
+     "L.heatLayer function not found" - the heatmap feature silently
+     breaking whenever cdnjs.cloudflare.com failed to serve this file for a
+     given visitor. It's a tiny (~5KB), stable library unchanged since 2015
+     (version 0.2.0, vendored from the leaflet.heat npm package), so
+     self-hosting it removes that whole class of failure for no real
+     downside - no CDN caching benefit was worth keeping for a file this
+     small anyway. -->
+<script src="js/vendor/leaflet-heat.js"></script>
 
 <!-- GeoTIFF Support -->
 <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
