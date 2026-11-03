@@ -2442,6 +2442,61 @@ describe("site updates", () => {
     assert.equal(res.body.updates[0].id, "webmaster-secret");
   });
 
+  describe("toggling an update's webmasterOnly flag", () => {
+    test("requires a webmaster", async () => {
+      const token = await login("updates-reader", MEMBER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ id: "older", webmasterOnly: true });
+      assert.equal(res.status, 403);
+    });
+
+    test("rejects a missing id or a non-boolean webmasterOnly", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const auth = { Authorization: `Bearer ${token}` };
+      const noId = await request(app).post("/api/site-updates/visibility").set(auth).send({ webmasterOnly: true });
+      assert.equal(noId.status, 400);
+      const badFlag = await request(app)
+        .post("/api/site-updates/visibility")
+        .set(auth)
+        .send({ id: "older", webmasterOnly: "yes" });
+      assert.equal(badFlag.status, 400);
+    });
+
+    test("404s on an unknown id", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ id: "no-such-update", webmasterOnly: true });
+      assert.equal(res.status, 404);
+    });
+
+    test("hides an update from a member and shows it again once unflagged", async () => {
+      const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+      const memberToken = await login("updates-reader", MEMBER_PASSWORD);
+
+      let res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "older", webmasterOnly: true });
+      assert.equal(res.status, 200);
+
+      let memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(!memberRes.body.updates.some((u) => u.id === "older"));
+
+      res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "older", webmasterOnly: false });
+      assert.equal(res.status, 200);
+
+      memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(memberRes.body.updates.some((u) => u.id === "older"));
+    });
+  });
+
   test("the shipped config/site-updates.json is valid", () => {
     const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
     assert.ok(Array.isArray(list) && list.length > 0);

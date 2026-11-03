@@ -958,6 +958,45 @@ app.get("/api/site-updates", authenticateToken, (req, res) => {
   });
 });
 
+// Lets a webmaster flip a single entry's webmasterOnly flag from the Site
+// Updates tab (a checkbox per entry) instead of hand-editing
+// config/site-updates.json. Reads/writes the raw file directly, not via
+// loadSiteUpdates() - that function drops anything outside its known
+// schema, which would silently discard fields on an entry it doesn't
+// recognize; this only ever touches the one field it's asked to.
+app.post("/api/site-updates/visibility", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { id, webmasterOnly } = req.body || {};
+  if (typeof id !== "string" || !id) {
+    return res.status(400).json({ error: "id is required." });
+  }
+  if (typeof webmasterOnly !== "boolean") {
+    return res.status(400).json({ error: "webmasterOnly must be true or false." });
+  }
+
+  let list;
+  try {
+    list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+  } catch (err) {
+    console.error("Error reading site updates file:", err);
+    return res.status(500).json({ error: "Could not read the site updates file." });
+  }
+  if (!Array.isArray(list)) {
+    return res.status(500).json({ error: "The site updates file is malformed." });
+  }
+
+  const entry = list.find((u) => u && u.id === id);
+  if (!entry) return res.status(404).json({ error: "No update with that id." });
+
+  entry.webmasterOnly = webmasterOnly;
+  backupDataFile(SITE_UPDATES_FILE);
+  fs.writeFileSync(SITE_UPDATES_FILE, JSON.stringify(list, null, 2));
+
+  console.log(
+    `Site update "${id}" ${webmasterOnly ? "hidden from" : "made visible to"} non-webmasters, by ${req.user.username}`
+  );
+  res.json({ success: true, updates: loadSiteUpdates() });
+});
+
 // ---- Feature requests and bug reports --------------------------------------
 // Any logged-in account can send one (Site Updates tab). Webmasters are
 // emailed, see every item, and can set its status, reply, or delete it;

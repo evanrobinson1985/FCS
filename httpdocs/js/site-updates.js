@@ -21,6 +21,7 @@
   let newIds = new Set();   // updates that were new for this account at login
 
   const token = () => sessionStorage.getItem('sessionToken');
+  const role = () => localStorage.getItem('role') || sessionStorage.getItem('role');
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -54,6 +55,9 @@
       .su-title { font-weight: 700; margin: 1px 0 3px; color: #0f172a; }
       .su-entry ul { margin: 0; padding-left: 20px; }
       .su-entry li { margin: 2px 0; }
+      .su-visibility { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: #64748b; cursor: pointer; user-select: none; }
+      .su-visibility input { margin: 0; }
+      .su-visibility-status { color: #166534; }
       .su-more { color: #64748b; font-style: italic; margin: 0 0 6px; }
       .su-timeline { position: relative; max-width: 820px; margin: 10px 0 20px; padding-left: 26px; }
       .su-timeline::before { content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px; width: 2px; background: #cbd5e1; }
@@ -99,7 +103,7 @@
     document.head.appendChild(st);
   }
 
-  function entryEl(u, isNew) {
+  function entryEl(u, isNew, showVisibilityControl) {
     const box = el('div', 'su-entry');
     const date = el('div', 'su-date', formatDate(u.date));
     if (isNew) date.appendChild(el('span', 'su-badge', 'New'));
@@ -110,7 +114,47 @@
       u.changes.forEach(c => ul.appendChild(el('li', null, c)));
       box.appendChild(ul);
     }
+    // Webmaster-only, and only on the full Site Updates tab (not the brief
+    // "What's new" popup card) - a checkbox to hide this entry from
+    // everyone else (member and admin alike) without editing
+    // config/site-updates.json by hand. GET /api/site-updates already
+    // sends a webmaster every entry (that's the only way this checkbox can
+    // reflect the real state), so this never shows for anyone who wouldn't
+    // also already see the entry.
+    if (showVisibilityControl && role() === 'webmaster') box.appendChild(visibilityRow(u));
     return box;
+  }
+
+  function visibilityRow(u) {
+    const row = el('label', 'su-visibility');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!u.webmasterOnly;
+    const status = el('span', 'su-visibility-status');
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(' Hide from everyone but webmasters'));
+    row.appendChild(status);
+    cb.addEventListener('change', async () => {
+      const next = cb.checked;
+      cb.disabled = true;
+      status.textContent = ' Saving…';
+      try {
+        await api('POST', '/api/site-updates/visibility', { id: u.id, webmasterOnly: next });
+        u.webmasterOnly = next;
+        if (cache) {
+          const cached = (cache.updates || []).find(x => x.id === u.id);
+          if (cached) cached.webmasterOnly = next;
+        }
+        status.textContent = ' Saved';
+        setTimeout(() => { status.textContent = ''; }, 1500);
+      } catch (err) {
+        cb.checked = !next;
+        status.textContent = ' Error: ' + err.message;
+      } finally {
+        cb.disabled = false;
+      }
+    });
+    return row;
   }
 
   async function fetchUpdates() {
@@ -222,7 +266,7 @@
       const list = (data && data.updates) || [];
       if (!list.length) { box.appendChild(el('p', null, 'No updates have been posted yet.')); return; }
       const tl = el('div', 'su-timeline');
-      list.forEach(u => tl.appendChild(entryEl(u, newIds.has(u.id))));
+      list.forEach(u => tl.appendChild(entryEl(u, newIds.has(u.id), true)));
       box.appendChild(tl);
     } catch (err) {
       box.textContent = 'Could not load the update history. Please try again later.';
