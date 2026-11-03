@@ -2960,8 +2960,19 @@
       // real "your filters matched nothing" case worth a blocking alert()
       // - it's just not loaded yet, and will correct itself automatically
       // once it is.
-      if (filteredCaves.length === 0 && caveDataStore.length > 0) {
-        alert("No caves match the current filters. Try adjusting your filters.");
+      //
+      // That same "not loaded yet" case must take its own branch here too,
+      // not just skip the alert: L.latLngBounds([]).fitBounds() throws
+      // "Bounds are not valid" for an empty array, so falling through to
+      // the bounds-fitting branch below with zero caves turned the old
+      // alert-spam bug into an uncaught exception instead - still thrown
+      // (and still aborting the rest of this function) every time the map
+      // tab loads before cave data has arrived, just silently instead of
+      // visibly.
+      if (filteredCaves.length === 0) {
+        if (caveDataStore.length > 0) {
+          alert("No caves match the current filters. Try adjusting your filters.");
+        }
       } else if (filteredCaves.length === 1) {
         // If only one cave is shown, zoom to it
         map.setView([filteredCaves[0].lat, filteredCaves[0].lng], 15);
