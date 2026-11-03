@@ -67,6 +67,8 @@
       .dues-state.paid { color: #166534; } .dues-state.due-soon { color: #b45309; }
       .dues-state.expired { color: #b91c1c; } .dues-state.none { color: #64748b; font-weight: 400; font-style: italic; }
       .dues-sub { color: #64748b; font-size: 0.85em; }
+      #dues-settings-section > details > summary { font-weight: bold; font-size: 1.08em; cursor: pointer; margin-bottom: 4px; }
+      #dues-settings-section > details > summary::marker { color: #2a4d69; }
       .dues-cell .dues-btns { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
       .dues-cell button { padding: 3px 8px; font-size: 0.8em; white-space: nowrap; width: auto; }
       .dues-cell button.dues-notice { background: #b91c1c; }
@@ -330,22 +332,39 @@
   // ---------- Account Management: Membership Dues card (webmasters) ----------
   let settingsCache = null;
 
+  // Collapsed/expanded state is per-browser (localStorage), not per-account
+  // server state - purely a "get it out of my way" convenience, collapsed
+  // by default (hence checking for the explicit opt-out below, not an
+  // explicit opt-in) so it stays out of the way until a webmaster actually
+  // wants it.
+  const DUES_SECTION_COLLAPSED_KEY = 'duesSectionCollapsed';
+
   async function renderSettings() {
     const root = document.getElementById('dues-settings-section');
     if (!root) return;
     injectStyles();
     root.textContent = '';
-    root.appendChild(el('h4', null, 'Membership Dues'));
+
+    const details = el('details');
+    let startCollapsed = true;
+    try { startCollapsed = localStorage.getItem(DUES_SECTION_COLLAPSED_KEY) !== 'false'; } catch (_) { /* ignore */ }
+    details.open = !startCollapsed;
+    details.addEventListener('toggle', () => {
+      try { localStorage.setItem(DUES_SECTION_COLLAPSED_KEY, details.open ? 'false' : 'true'); } catch (_) { /* ignore */ }
+    });
+    details.appendChild(el('summary', null, 'Membership Dues'));
+    root.appendChild(details);
+
     let s;
     try { s = settingsCache = await api('GET', '/api/dues/settings'); }
-    catch (err) { root.appendChild(el('p', null, 'Could not load dues settings: ' + err.message)); return; }
+    catch (err) { details.appendChild(el('p', null, 'Could not load dues settings: ' + err.message)); return; }
 
     const row = (label, input, hint) => {
       const wrap = el('div'); wrap.style.margin = '8px 0';
       const l = el('label', null, label); l.style.display = 'block'; l.style.fontWeight = '600';
       wrap.appendChild(l); wrap.appendChild(input);
       if (hint) { const h = el('div', 'dues-sub', hint); wrap.appendChild(h); }
-      root.appendChild(wrap);
+      details.appendChild(wrap);
       return input;
     };
     const amount = el('input'); amount.type = 'number'; amount.min = '0'; amount.step = '0.01'; amount.value = s.duesAmount; amount.style.maxWidth = '120px';
@@ -359,11 +378,11 @@
     enfText.appendChild(el('strong', null, 'Block members whose membership has expired'));
     enfText.appendChild(el('div', 'dues-sub', 'Off by default. When on, an expired member can still log in but only sees a "pay your dues" page. Never affects admins, webmasters, or members with no payment recorded.'));
     enfWrap.appendChild(enf); enfWrap.appendChild(enfText);
-    root.appendChild(enfWrap);
+    details.appendChild(enfWrap);
 
     const save = el('button', 'btn-success', 'Save dues settings'); save.type = 'button';
     const note = el('span', 'dues-sub'); note.style.marginLeft = '10px';
-    root.appendChild(save); root.appendChild(note);
+    details.appendChild(save); details.appendChild(note);
     save.addEventListener('click', async () => {
       if (enf.checked && !s.duesEnforcement &&
           !confirm('Turn on blocking? Members whose recorded membership has expired will only see a "pay your dues" page until a payment is recorded.')) return;
@@ -383,7 +402,7 @@
     const copy = el('button', null, 'Copy URL'); copy.type = 'button'; copy.style.marginTop = '6px';
     copy.addEventListener('click', () => { url.select(); (navigator.clipboard ? navigator.clipboard.writeText(url.value) : Promise.reject()).catch(() => document.execCommand('copy')); copy.textContent = 'Copied'; });
     sched.appendChild(copy);
-    root.appendChild(sched);
+    details.appendChild(sched);
   }
 
   // Load the dues price for the Record payment form once Account Management opens
