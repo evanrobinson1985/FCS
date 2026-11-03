@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-11-03-large-file-controls",
+    "date": "2026-11-03",
+    "title": "Photo display fix and a new large-file control",
+    "changes": [
+      "Fixed a bug that kept uploaded narrative photos from ever showing up on the site.",
+      "Webmasters can now temporarily turn off uploading and viewing/downloading photos and cave map files site-wide from Website Management, for use while server storage is being set up."
+    ]
+  },
+  {
     "id": "2026-11-03-membership-dues",
     "date": "2026-11-03",
     "title": "Membership dues tracking",
