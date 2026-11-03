@@ -1783,6 +1783,119 @@ describe("narrative image upload validates real file content", () => {
   });
 });
 
+describe("disable large files mode", () => {
+  after(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false, disableLargeFilesMessage: "" });
+  });
+
+  test("blocks uploading a narrative photo, even for a webmaster", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true, disableLargeFilesMessage: "Large files are off for testing." });
+
+    const pngBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", pngBuffer, { filename: "whatever.png", contentType: "image/png" });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.largeFilesDisabled, true);
+    assert.equal(res.body.error, "Large files are off for testing.");
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false, disableLargeFilesMessage: "" });
+  });
+
+  test("blocks uploading a cave map file", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true });
+
+    const res = await request(app)
+      .post("/api/cave-maps/upload")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("mapFiles", Buffer.from("not a real geotiff"), { filename: "test.tif", contentType: "image/tiff" });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.largeFilesDisabled, true);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false });
+  });
+
+  test("blocks viewing/downloading an already-uploaded narrative photo", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const pngBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const uploadRes = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", pngBuffer, { filename: "whatever.png", contentType: "image/png" });
+    assert.equal(uploadRes.status, 200);
+    const imageUrl = uploadRes.body.imageUrl;
+
+    // Sanity check: viewable normally before the toggle.
+    const beforeRes = await request(app).get(imageUrl).set("Authorization", `Bearer ${token}`);
+    assert.equal(beforeRes.status, 200);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true });
+
+    const afterRes = await request(app).get(imageUrl).set("Authorization", `Bearer ${token}`);
+    assert.equal(afterRes.status, 403);
+    assert.equal(afterRes.body.largeFilesDisabled, true);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false });
+  });
+
+  test("does not block submitting a new cave proposal or saving a narrative", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ disableLargeFiles: true });
+
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const submissionRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ type: "new_cave", caveId: "FLGTEMP", state: "FL", county: "AL", proposedData: { name: "Large Files Off Test Cave" } });
+    assert.equal(submissionRes.status, 200);
+
+    const narrativeRes = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ id: "FAL001", html: "<p>Written while large files are disabled.</p>" });
+    assert.equal(narrativeRes.status, 200);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ disableLargeFiles: false });
+  });
+});
+
 // Deliberately last in the file: maintenance mode is a single global
 // toggle (not partitionable the way a dedicated test state/user is for
 // other describe blocks), so a test here that left it "on" would break

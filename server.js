@@ -474,6 +474,15 @@ const DEFAULT_SITE_CONFIG = {
   // maintenance mode. See requireNotReadOnly() below.
   readOnlyMode: false,
   readOnlyMessage: "",
+  // Blocks both uploading AND serving large files (narrative photos, cave
+  // map GeoTIFFs/shapefiles) while the site's storage/bandwidth isn't set
+  // up to handle them yet - everything else (submitting/editing cave data,
+  // narratives themselves) keeps working normally. Unlike readOnlyMode,
+  // this applies to every role including admin/webmaster - the constraint
+  // is server capacity, not who's trusted to write. See
+  // requireLargeFilesEnabled() below.
+  disableLargeFiles: false,
+  disableLargeFilesMessage: "",
   // Per-account login lockout policy (see /api/login) - was previously
   // hardcoded; exposed here so a webmaster can tune it without a deploy.
   loginLockoutThreshold: 5,
@@ -553,6 +562,21 @@ function requireNotReadOnly(req, res, next) {
   });
 }
 
+// Blocks uploading or serving narrative photos and cave map files (GeoTIFFs,
+// shapefiles) while disableLargeFiles is on - see DEFAULT_SITE_CONFIG above.
+// No role exemption, unlike requireNotReadOnly: this exists because the
+// server isn't set up to handle large files yet, a constraint that applies
+// regardless of who's uploading or downloading.
+function requireLargeFilesEnabled(req, res, next) {
+  if (!siteConfig.disableLargeFiles) return next();
+  res.status(403).json({
+    error:
+      siteConfig.disableLargeFilesMessage ||
+      "Photo and map file uploads/downloads are temporarily disabled while additional server storage is set up.",
+    largeFilesDisabled: true,
+  });
+}
+
 // Turns a webmaster-typed plain-text banner message into safe HTML: any
 // bare http(s) URL becomes a real, clickable link (so the webmaster never
 // has to write HTML themselves), then the whole result is run through
@@ -594,6 +618,8 @@ app.get("/api/site-status", (req, res) => {
     bannerColor: siteConfig.bannerColor,
     readOnlyMode: siteConfig.readOnlyMode,
     readOnlyMessage: siteConfig.readOnlyMessage,
+    disableLargeFiles: siteConfig.disableLargeFiles,
+    disableLargeFilesMessage: siteConfig.disableLargeFilesMessage,
     hiddenTabs: siteConfig.hiddenTabs,
   });
 });
@@ -620,6 +646,8 @@ app.post(
       bannerColor,
       readOnlyMode,
       readOnlyMessage,
+      disableLargeFiles,
+      disableLargeFilesMessage,
       loginLockoutThreshold,
       loginLockoutMinutes,
       hiddenTabs,
@@ -675,6 +703,8 @@ app.post(
     if (typeof bannerColor === "string") updated.bannerColor = bannerColor;
     if (typeof readOnlyMode === "boolean") updated.readOnlyMode = readOnlyMode;
     if (typeof readOnlyMessage === "string") updated.readOnlyMessage = readOnlyMessage.slice(0, 2000);
+    if (typeof disableLargeFiles === "boolean") updated.disableLargeFiles = disableLargeFiles;
+    if (typeof disableLargeFilesMessage === "string") updated.disableLargeFilesMessage = disableLargeFilesMessage.slice(0, 2000);
     if (loginLockoutThreshold !== undefined) updated.loginLockoutThreshold = loginLockoutThreshold;
     if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
     if (hiddenTabs !== undefined) updated.hiddenTabs = [...new Set(hiddenTabs)];
@@ -683,7 +713,7 @@ app.post(
     saveSiteConfig(siteConfig);
 
     console.log(
-      `Site config updated by ${req.user.username}: maintenanceMode=${siteConfig.maintenanceMode}, bannerEnabled=${siteConfig.bannerEnabled}, readOnlyMode=${siteConfig.readOnlyMode}`
+      `Site config updated by ${req.user.username}: maintenanceMode=${siteConfig.maintenanceMode}, bannerEnabled=${siteConfig.bannerEnabled}, readOnlyMode=${siteConfig.readOnlyMode}, disableLargeFiles=${siteConfig.disableLargeFiles}`
     );
     res.json({ ...siteConfig, maintenanceActive: isMaintenanceActive(), bannerHtml: bannerMessageToHtml(siteConfig.bannerMessage) });
   }
@@ -1221,6 +1251,25 @@ app.get("/portal", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
 });
 
+// Overridable so cave pictures can live outside httpdocs (e.g. a private/
+// directory not directly web-exposed) and so the test suite can point this
+// at a throwaway directory. Declared here, ahead of the /upload-narrative-image
+// and /cave-pictures routes further down that both need it, rather than
+// where it used to sit much later in the file - that gap meant this route
+// was built before this constant existed and was hardcoded to
+// httpdocs/cave-pictures directly instead, which only coincidentally
+// matched when CAVE_PICTURES_DIR was left at its default. The moment it's
+// set to anything else - e.g. this site's own production config, which
+// points it at a private/ directory outside httpdocs - uploaded images
+// were being written to CAVE_PICTURES_DIR but served from the old
+// hardcoded path, i.e. silently 404ing for every visitor.
+const CAVE_PICTURES_DIR = process.env.CAVE_PICTURES_DIR
+  ? path.resolve(process.env.CAVE_PICTURES_DIR)
+  : path.join(__dirname, "httpdocs", "cave-pictures");
+if (!fs.existsSync(CAVE_PICTURES_DIR)) {
+  fs.mkdirSync(CAVE_PICTURES_DIR, { recursive: true });
+}
+
 // Narrative photos are member content - require login to view them, same as
 // the narratives themselves. This MUST be registered before the general
 // httpdocs static mount below: httpdocs/cave-pictures is a subdirectory of
@@ -1231,7 +1280,8 @@ app.get("/portal", (req, res) => {
 app.use(
   "/cave-pictures",
   authenticateToken,
-  express.static(path.join(__dirname, "httpdocs", "cave-pictures"))
+  requireLargeFilesEnabled,
+  express.static(CAVE_PICTURES_DIR)
 );
 
 // Serve static files - the public site shell (login page, styles, logo).
@@ -2650,6 +2700,7 @@ app.get("/api/cave-maps-collection/list", authenticateToken, (req, res) => {
 app.get(
   "/api/cave-maps-collection/download/:filename",
   authenticateToken,
+  requireLargeFilesEnabled,
   (req, res) => {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(caveMapsCollectionDir, filename);
@@ -2665,7 +2716,7 @@ app.get(
 // Serve cave maps collection files. These are cave location maps and are
 // exactly the kind of data this app must keep away from anyone who isn't
 // logged in - so this, like every other cave-maps route, requires a token.
-app.use("/cave-maps-collection", authenticateToken, express.static(caveMapsCollectionDir));
+app.use("/cave-maps-collection", authenticateToken, requireLargeFilesEnabled, express.static(caveMapsCollectionDir));
 
 // Upload endpoint for cave maps. This used to be a stub that always
 // returned 501, while the client had a matching "Upload Maps" button and
@@ -2720,6 +2771,7 @@ app.post(
   "/api/cave-maps/upload",
   authenticateToken,
   requireRole("admin", "webmaster"),
+  requireLargeFilesEnabled,
   (req, res) => {
     caveMapUpload.array("mapFiles", 20)(req, res, (err) => {
       if (err) {
@@ -2795,7 +2847,7 @@ app.delete(
 // website on the internet to read these files from a logged-in member's
 // browser - has been removed; the app-wide CORS policy above already covers
 // the legitimate front-end origin.)
-app.use("/cave-maps", authenticateToken, express.static(caveMapsDir));
+app.use("/cave-maps", authenticateToken, requireLargeFilesEnabled, express.static(caveMapsDir));
 
 // Overridable so the test suite can point this at a throwaway directory
 // instead of the real narratives/ folder.
@@ -3237,14 +3289,6 @@ app.get("/get-all-narratives-log", authenticateToken, (req, res) => {
   }
 });
 
-// Overridable so the test suite can point this at a throwaway directory.
-const CAVE_PICTURES_DIR = process.env.CAVE_PICTURES_DIR
-  ? path.resolve(process.env.CAVE_PICTURES_DIR)
-  : path.join(__dirname, "httpdocs", "cave-pictures");
-if (!fs.existsSync(CAVE_PICTURES_DIR)) {
-  fs.mkdirSync(CAVE_PICTURES_DIR, { recursive: true });
-}
-
 // Read-only diagnostic for exactly one question: "where on disk is this
 // running process actually looking for its data?" Written after a live
 // deployment turned out to have its File Manager view and its Node
@@ -3389,7 +3433,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, (req, res) => {
+app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, requireLargeFilesEnabled, (req, res) => {
   upload.single("image")(req, res, (err) => {
     if (err) {
       return res.status(400).json({ error: err.message || "Upload failed" });

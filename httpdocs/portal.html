@@ -520,6 +520,21 @@
     </div>
 
     <div class="control-section">
+      <h4>Large File Uploads/Downloads</h4>
+      <p style="margin-bottom: 10px;">Blocks uploading AND viewing/downloading narrative photos and cave map files (GeoTIFFs, shapefiles) site-wide, for every role including admin and webmaster - use this while the server isn't set up to handle large files yet. Submitting and editing cave data, and narratives themselves, keep working normally.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="large-files-disabled-toggle" style="width: 18px; height: 18px;">
+        <strong>Large file uploads/downloads are currently disabled</strong>
+      </label>
+      <label for="large-files-message-input" style="display: block; margin-bottom: 5px;">Message shown where an upload/download is blocked (optional):</label>
+      <textarea id="large-files-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Photo and map uploads are temporarily disabled while we set up additional storage."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveLargeFilesSettings()">Save Large File Settings</button>
+        <span id="large-files-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
       <h4>Tab Visibility</h4>
       <p style="margin-bottom: 10px;">Hide a tab from the dashboard - for everyone, every role - while a feature in it is broken or still being worked on. Checked means visible; unchecked means hidden. Account Management and Website Management can't be hidden here, so there's always a way back in.</p>
       <div id="tab-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
@@ -5208,6 +5223,11 @@ function loadFcsDatabaseTable() {
       if (readOnlyToggle) readOnlyToggle.checked = !!status.readOnlyMode;
       if (readOnlyMessageInput) readOnlyMessageInput.value = status.readOnlyMessage || '';
 
+      const largeFilesToggle = document.getElementById('large-files-disabled-toggle');
+      const largeFilesMessageInput = document.getElementById('large-files-message-input');
+      if (largeFilesToggle) largeFilesToggle.checked = !!status.disableLargeFiles;
+      if (largeFilesMessageInput) largeFilesMessageInput.value = status.disableLargeFilesMessage || '';
+
       const lockoutThresholdInput = document.getElementById('login-lockout-threshold-input');
       const lockoutMinutesInput = document.getElementById('login-lockout-minutes-input');
       if (lockoutThresholdInput) lockoutThresholdInput.value = status.loginLockoutThreshold ?? 5;
@@ -5275,6 +5295,31 @@ function loadFcsDatabaseTable() {
         }
       } catch (error) {
         console.error('Error saving read-only settings:', error);
+        if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
+      }
+    }
+
+    async function saveLargeFilesSettings() {
+      const statusEl = document.getElementById('large-files-save-status');
+      const disableLargeFiles = document.getElementById('large-files-disabled-toggle').checked;
+      const disableLargeFilesMessage = document.getElementById('large-files-message-input').value;
+
+      try {
+        const response = await fetch('/api/site-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disableLargeFiles, disableLargeFilesMessage }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Save failed');
+        if (statusEl) {
+          statusEl.textContent = disableLargeFiles
+            ? 'Saved. Photo and map uploads/downloads are now blocked for everyone.'
+            : 'Saved. Photo and map uploads/downloads work normally again.';
+          statusEl.style.color = 'green';
+        }
+      } catch (error) {
+        console.error('Error saving large file settings:', error);
         if (statusEl) { statusEl.textContent = 'Error: ' + error.message; statusEl.style.color = '#b00'; }
       }
     }
