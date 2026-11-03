@@ -609,27 +609,73 @@ function requireNotReadOnly(req, res, next) {
   });
 }
 
-// Turns a webmaster-typed plain-text banner message into safe HTML: any
-// bare http(s) URL becomes a real, clickable link (so the webmaster never
-// has to write HTML themselves), then the whole result is run through
-// sanitize-html with a tight allowlist as the actual enforcement - the
-// linkify step is just convenience, sanitize-html is what guarantees a
-// typed "<script>...", an event-handler attribute, or any other markup
-// never reaches a visitor's browser as anything but escaped, inert text.
-// Same defense-in-depth pattern as NARRATIVE_SANITIZE_OPTIONS below, just
-// with a far smaller allowlist appropriate for a one-line banner.
+// Turns a webmaster-typed plain-text banner message into safe HTML, with
+// links and email addresses made clickable so the webmaster never has to
+// write HTML:
+//   https://example.org/x, http://...    -> link (new tab)
+//   www.caves.org, fcs.caves.org/portal  -> link to https://... (new tab)
+//   someone@caves.org                    -> mailto: link (opens email app)
+// A full stop, comma or closing bracket right after a link is treated as
+// punctuation, not part of the link.
+//
+// Safety: the typed text is first reduced to plain, escaped text (any typed
+// tags are dropped, <script> contents and all), the links are added to that,
+// and the result goes through sanitize-html with a tight allowlist (only
+// <a> with href/target/rel, only http/https/mailto) as the actual
+// enforcement. Same defense-in-depth pattern as NARRATIVE_SANITIZE_OPTIONS
+// below, with a far smaller allowlist for a one-line banner.
 const BANNER_SANITIZE_OPTIONS = {
   allowedTags: ["a"],
   allowedAttributes: { a: ["href", "target", "rel"] },
-  allowedSchemes: ["http", "https"],
+  allowedSchemes: ["http", "https", "mailto"],
 };
+
+// Characters allowed inside a link: anything but whitespace, quotes and
+// angle brackets - including the escaped forms of those (&quot; &lt; ...)
+// that the plain-text step produces
+const LINK_CHAR = String.raw`(?:(?!&(?:quot|#x27|#39|lt|gt|nbsp);)[^\s<>"'])`;
+const BANNER_LINK_RE = new RegExp(
+  String.raw`(?<![\w@./-])(?:` +
+    // 1: full URL with a scheme
+    String.raw`(https?:\/\/${LINK_CHAR}+)` +
+    // 2: email address
+    String.raw`|([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})` +
+    // 3: www. address without a scheme
+    String.raw`|(www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/${LINK_CHAR}*)?)` +
+    // 4: bare domain with a common ending, e.g. fcs.caves.org/portal
+    String.raw`|((?:[A-Za-z0-9-]+\.)+(?:com|org|net|gov|edu|us|info|io|mil|biz)(?![A-Za-z0-9-])(?:\/${LINK_CHAR}*)?)` +
+    String.raw`)`,
+  "g"
+);
+
+// Sentence punctuation after a link isn't part of it; a closing bracket is
+// kept only if the link itself opened one (e.g. Wikipedia-style links)
+function splitTrailingPunctuation(link) {
+  let end = link.length;
+  for (;;) {
+    const ch = link[end - 1];
+    if (/[.,;:!?]/.test(ch)) { end--; continue; }
+    if (ch === ")" || ch === "]") {
+      const open = ch === ")" ? "(" : "[";
+      const body = link.slice(0, end);
+      if (body.split(open).length - 1 < body.split(ch).length - 1) { end--; continue; }
+    }
+    break;
+  }
+  return [link.slice(0, end), link.slice(end)];
+}
 
 function bannerMessageToHtml(text) {
   if (!text) return "";
-  const linkified = text.replace(
-    /(https?:\/\/[^\s<>"']+)/g,
-    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-  );
+  // Plain, escaped text: typed tags (and <script>/<style> contents) gone
+  const plain = sanitizeHtml(String(text), { allowedTags: [], allowedAttributes: {} });
+  const linkified = plain.replace(BANNER_LINK_RE, (match, url, email, www, bare) => {
+    const [link, trailing] = splitTrailingPunctuation(match);
+    if (!link) return match;
+    if (email) return `<a href="mailto:${link}">${link}</a>${trailing}`;
+    const href = url ? link : `https://${link}`;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${link}</a>${trailing}`;
+  });
   return sanitizeHtml(linkified, BANNER_SANITIZE_OPTIONS);
 }
 

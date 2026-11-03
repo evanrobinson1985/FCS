@@ -1853,6 +1853,45 @@ describe("website management: site status, banner, and maintenance mode", () => 
     assert.equal(statusRes.body.bannerHtml, res.body.bannerHtml);
   });
 
+  test("banner message: email addresses and links without http:// are clickable too", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage:
+          "Questions? Email webmaster@caves.org or see www.caves.org, fcs.caves.org/portal and https://example.com/a?x=1&y=2. " +
+          "Info (https://en.wikipedia.org/wiki/Cave_(disambiguation)). Version 1.5 and Node.js aren't links.",
+      });
+    assert.equal(res.status, 200);
+    const html = res.body.bannerHtml;
+    assert.match(html, /<a href="mailto:webmaster@caves\.org">webmaster@caves\.org<\/a> or/);
+    assert.match(html, /<a href="https:\/\/www\.caves\.org" target="_blank" rel="noopener noreferrer">www\.caves\.org<\/a>,/);
+    assert.match(html, /<a href="https:\/\/fcs\.caves\.org\/portal" target="_blank" rel="noopener noreferrer">fcs\.caves\.org\/portal<\/a> and/);
+    // query string kept, trailing full stop not part of the link
+    assert.match(html, /<a href="https:\/\/example\.com\/a\?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/a\?x=1&amp;y=2<\/a>\. /);
+    // a bracket the link opened is kept; the sentence's closing bracket isn't
+    assert.match(html, /href="https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)"[^>]*>https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)<\/a>\)\./);
+    assert.ok(!/<a[^>]*>1\.5<\/a>/.test(html) && !/<a[^>]*>Node\.js<\/a>/.test(html), "ordinary dotted words aren't links");
+  });
+
+  test("banner message: links can't be used to sneak in markup or scripts", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage: 'See "https://example.com/x" and <a href="javascript:alert(1)">click</a> or javascript:alert(2) <img src=x onerror=alert(3)>',
+      });
+    const html = res.body.bannerHtml;
+    assert.ok(!html.includes("javascript:alert(1)\""), "typed <a> tags are dropped");
+    assert.ok(!/href="javascript/i.test(html), "no javascript: links");
+    assert.ok(!html.includes("<img") && !html.includes("onerror"), "no other tags or handlers");
+    assert.match(html, /href="https:\/\/example\.com\/x"/); // quotes around a link aren't part of it
+  });
+
   test("rejects an invalid bannerColor", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);
     const res = await request(app)
