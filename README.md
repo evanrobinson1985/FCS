@@ -29,6 +29,13 @@ To announce a change, add an entry to the top of that file:
 `id` must be unique, and `date` must be `YYYY-MM-DD`; `npm test` checks
 both.
 
+Add `"webmasterOnly": true` to an entry to announce a webmaster-only tool
+or feature (e.g. a Website Management control) without any non-webmaster
+account - including admin - ever seeing it exists. The server filters
+these out of `GET /api/site-updates` entirely for anyone but a webmaster,
+rather than just hiding them client-side, so the title and change list
+never reach a member or admin's browser in the first place.
+
 Requests and bug reports sent with the **Request a feature** and **Report a
 bug** buttons on the Site Updates tab are saved in `data/feedback.json`
 (private, backed up like the other data files) and emailed to every active

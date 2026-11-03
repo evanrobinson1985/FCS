@@ -921,7 +921,17 @@ function loadSiteUpdates() {
           typeof u.title === "string" &&
           Array.isArray(u.changes)
       )
-      .map((u) => ({ id: u.id, date: u.date, title: u.title, changes: u.changes.filter((c) => typeof c === "string") }))
+      .map((u) => ({
+        id: u.id,
+        date: u.date,
+        title: u.title,
+        changes: u.changes.filter((c) => typeof c === "string"),
+        // Set on an entry describing a webmaster-only tool/feature (e.g. a
+        // Website Management control) so it never reaches a member or
+        // admin's device - see the filtering in GET /api/site-updates below,
+        // the only place this ever gets read.
+        webmasterOnly: u.webmasterOnly === true,
+      }))
       .map((u, i) => ({ u, i }))
       .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
       .map(({ u }) => u);
@@ -932,11 +942,17 @@ function loadSiteUpdates() {
 }
 
 // Every update, plus which one this account last dismissed, so the page can
-// show the "What's new" card only for updates it hasn't seen yet.
+// show the "What's new" card only for updates it hasn't seen yet. A
+// webmasterOnly entry is dropped entirely for anyone but a webmaster (not
+// admin - the request was specifically "only the webmaster should see
+// them") rather than sent and merely hidden client-side, so its title/body
+// never reaches a non-webmaster's browser at all.
 app.get("/api/site-updates", authenticateToken, (req, res) => {
   const user = loadUsers().find((u) => u.username === req.user.username);
+  const isWebmaster = req.user.role === "webmaster";
+  const updates = loadSiteUpdates().filter((u) => !u.webmasterOnly || isWebmaster);
   res.json({
-    updates: loadSiteUpdates(),
+    updates,
     lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
     lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
   });

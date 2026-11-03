@@ -30,6 +30,13 @@ fs.writeFileSync(
     { id: "newest", date: "2026-03-01", title: "Newest update", changes: ["b", "c"] },
     { id: "bad-date", date: "March", title: "Malformed", changes: [] },
     { id: "middle", date: "2026-02-01", title: "Middle update", changes: [] },
+    {
+      id: "webmaster-secret",
+      date: "2026-04-01",
+      title: "Webmaster secret update",
+      changes: ["x"],
+      webmasterOnly: true,
+    },
   ])
 );
 process.env.NODE_ENV = "test";
@@ -2411,6 +2418,28 @@ describe("site updates", () => {
     await request(app).post("/api/site-updates/seen").set(auth).send({ id: "older" });
     res = await request(app).get("/api/site-updates").set(auth);
     assert.equal(res.body.lastSeenUpdateId, "newest");
+  });
+
+  test("hides a webmasterOnly update from a member", async () => {
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.updates.some((u) => u.id === "webmaster-secret"));
+  });
+
+  test("hides a webmasterOnly update from an admin too - only a webmaster sees it", async () => {
+    await seedUser({ username: "updates-admin", password: MEMBER_PASSWORD, role: "admin" });
+    const token = await login("updates-admin", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.updates.some((u) => u.id === "webmaster-secret"));
+  });
+
+  test("shows a webmasterOnly update to a webmaster, newest first", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.updates[0].id, "webmaster-secret");
   });
 
   test("the shipped config/site-updates.json is valid", () => {
