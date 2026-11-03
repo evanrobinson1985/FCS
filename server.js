@@ -21,6 +21,11 @@ const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const XLSX = require("xlsx");
+const dues = require("./lib/dues");
+const { checkEmail } = require("./lib/email-check");
+// DNS check of email domains at sign-up (see lib/email-check.js). Off in
+// the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
+const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
 
 // Private data directory. This is NEVER mounted with express.static, so nothing
 // placed here (the cave database, the user list) can ever be fetched directly
@@ -35,11 +40,23 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CAVE_DB_FILE = path.join(DATA_DIR, "cave-database.json");
 const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
+// Feature requests and bug reports sent from the Site Updates tab
+const FEEDBACK_FILE = path.join(DATA_DIR, "feedback.json");
+// Cave Jump leaderboard: each account's best score
+const CAVE_JUMP_FILE = path.join(DATA_DIR, "cave-jump-scores.json");
+// How many distinct login addresses to remember per account
+const MAX_LOGIN_IPS = 50;
 
 // State/county reference data (see scripts/generate-states-config.js). This
 // is public geographic reference data, not survey data, so unlike the files
 // above it lives in config/ and IS tracked in git.
 const STATES_CONFIG_FILE = path.join(__dirname, "config", "states.json");
+
+// The site's update history ("What's new" card and the Site Updates tab).
+// Shipped with the code like states.json, so each deploy can bring its own
+// entry: add one to the top of this file whenever a change goes live.
+// Overridable so the test suite can point it at its own file.
+const SITE_UPDATES_FILE = process.env.SITE_UPDATES_FILE || path.join(__dirname, "config", "site-updates.json");
 
 // Timestamped backups of the two data files, taken right before every write.
 // These are the only copies of the cave database and the user list - a bad
@@ -250,6 +267,17 @@ async function sendAdminNotification(recipients, subject, text) {
   );
 }
 
+// Email to one member (dues reminders/notices). Same dev fallback as the
+// other emails: without SMTP it's logged instead. Throws on a send failure
+// so callers can tell the webmaster, or retry later.
+async function sendUserEmail(user, { subject, text }) {
+  if (!mailTransporter) {
+    console.log(`[DEV] Email "${subject}" would be sent to ${user.email}:\n${text}`);
+    return;
+  }
+  await mailTransporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: user.email, subject, text });
+}
+
 // New member submission (cave proposal or edit) waiting for review -
 // notified to everyone who can actually approve one (admin + webmaster,
 // matching PATCH /api/pending-submissions/:id's own requireRole). Errors
@@ -276,12 +304,34 @@ async function notifyNewSubmission(submission, req) {
 // webmasters only, matching POST /api/toggle-user-status's own
 // requireRole("webmaster") (admin can't activate an account). Same
 // error-swallowing contract as notifyNewSubmission above.
+// Legal first/last names (sign-up, webmaster-created accounts, and the
+// webmaster's Edit name). Letters in any language plus spaces, hyphens,
+// apostrophes and periods - e.g. "Mary-Jane", "O'Neil", "St. John",
+// "José". Returns the cleaned name, or null if it isn't acceptable.
+function cleanPersonName(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim().replace(/\s+/g, " ");
+  if (v.length < 1 || v.length > 50) return null;
+  return /^\p{L}[\p{L}\p{M}' .\-]*$/u.test(v) ? v : null;
+}
+
+function nameFields(req, res) {
+  const firstName = cleanPersonName(req.body && req.body.firstName);
+  const lastName = cleanPersonName(req.body && req.body.lastName);
+  if (!firstName || !lastName) {
+    res.status(400).json({ error: "Please enter a first and last name (letters, spaces, hyphens, apostrophes and periods; up to 50 characters each)." });
+    return null;
+  }
+  return { firstName, lastName, fullName: `${firstName} ${lastName}` };
+}
+
 async function notifyNewAccount(user, req) {
   try {
     const recipients = getNotificationRecipients(["webmaster"]);
     const subject = "Florida Cave Survey - New Account Awaiting Approval";
     const text =
       "A new account has signed up and is waiting for approval.\n\n" +
+      `Name: ${user.firstName || ""} ${user.lastName || ""}\n` +
       `Username: ${user.username}\n` +
       `Email: ${user.email}\n` +
       `Requested states: ${(user.allowedStates || []).join(", ") || "(none)"}\n\n` +
@@ -493,6 +543,12 @@ const DEFAULT_SITE_CONFIG = {
   // including admin/webmaster; see HIDEABLE_TABS below for why Account
   // Management and Website Management can never be in this list.
   hiddenTabs: [],
+  // Membership dues (see lib/dues.js). The access switch is OFF by
+  // default: with it off, dues are only tracked and emailed about, and
+  // nobody is ever blocked.
+  duesAmount: 15,
+  duesReminderDays: 30,
+  duesEnforcement: false,
 };
 
 // The only tabs a webmaster is allowed to hide via hiddenTabs above.
@@ -577,27 +633,73 @@ function requireLargeFilesEnabled(req, res, next) {
   });
 }
 
-// Turns a webmaster-typed plain-text banner message into safe HTML: any
-// bare http(s) URL becomes a real, clickable link (so the webmaster never
-// has to write HTML themselves), then the whole result is run through
-// sanitize-html with a tight allowlist as the actual enforcement - the
-// linkify step is just convenience, sanitize-html is what guarantees a
-// typed "<script>...", an event-handler attribute, or any other markup
-// never reaches a visitor's browser as anything but escaped, inert text.
-// Same defense-in-depth pattern as NARRATIVE_SANITIZE_OPTIONS below, just
-// with a far smaller allowlist appropriate for a one-line banner.
+// Turns a webmaster-typed plain-text banner message into safe HTML, with
+// links and email addresses made clickable so the webmaster never has to
+// write HTML:
+//   https://example.org/x, http://...    -> link (new tab)
+//   www.caves.org, fcs.caves.org/portal  -> link to https://... (new tab)
+//   someone@caves.org                    -> mailto: link (opens email app)
+// A full stop, comma or closing bracket right after a link is treated as
+// punctuation, not part of the link.
+//
+// Safety: the typed text is first reduced to plain, escaped text (any typed
+// tags are dropped, <script> contents and all), the links are added to that,
+// and the result goes through sanitize-html with a tight allowlist (only
+// <a> with href/target/rel, only http/https/mailto) as the actual
+// enforcement. Same defense-in-depth pattern as NARRATIVE_SANITIZE_OPTIONS
+// below, with a far smaller allowlist for a one-line banner.
 const BANNER_SANITIZE_OPTIONS = {
   allowedTags: ["a"],
   allowedAttributes: { a: ["href", "target", "rel"] },
-  allowedSchemes: ["http", "https"],
+  allowedSchemes: ["http", "https", "mailto"],
 };
+
+// Characters allowed inside a link: anything but whitespace, quotes and
+// angle brackets - including the escaped forms of those (&quot; &lt; ...)
+// that the plain-text step produces
+const LINK_CHAR = String.raw`(?:(?!&(?:quot|#x27|#39|lt|gt|nbsp);)[^\s<>"'])`;
+const BANNER_LINK_RE = new RegExp(
+  String.raw`(?<![\w@./-])(?:` +
+    // 1: full URL with a scheme
+    String.raw`(https?:\/\/${LINK_CHAR}+)` +
+    // 2: email address
+    String.raw`|([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})` +
+    // 3: www. address without a scheme
+    String.raw`|(www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/${LINK_CHAR}*)?)` +
+    // 4: bare domain with a common ending, e.g. fcs.caves.org/portal
+    String.raw`|((?:[A-Za-z0-9-]+\.)+(?:com|org|net|gov|edu|us|info|io|mil|biz)(?![A-Za-z0-9-])(?:\/${LINK_CHAR}*)?)` +
+    String.raw`)`,
+  "g"
+);
+
+// Sentence punctuation after a link isn't part of it; a closing bracket is
+// kept only if the link itself opened one (e.g. Wikipedia-style links)
+function splitTrailingPunctuation(link) {
+  let end = link.length;
+  for (;;) {
+    const ch = link[end - 1];
+    if (/[.,;:!?]/.test(ch)) { end--; continue; }
+    if (ch === ")" || ch === "]") {
+      const open = ch === ")" ? "(" : "[";
+      const body = link.slice(0, end);
+      if (body.split(open).length - 1 < body.split(ch).length - 1) { end--; continue; }
+    }
+    break;
+  }
+  return [link.slice(0, end), link.slice(end)];
+}
 
 function bannerMessageToHtml(text) {
   if (!text) return "";
-  const linkified = text.replace(
-    /(https?:\/\/[^\s<>"']+)/g,
-    (url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`
-  );
+  // Plain, escaped text: typed tags (and <script>/<style> contents) gone
+  const plain = sanitizeHtml(String(text), { allowedTags: [], allowedAttributes: {} });
+  const linkified = plain.replace(BANNER_LINK_RE, (match, url, email, www, bare) => {
+    const [link, trailing] = splitTrailingPunctuation(match);
+    if (!link) return match;
+    if (email) return `<a href="mailto:${link}">${link}</a>${trailing}`;
+    const href = url ? link : `https://${link}`;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${link}</a>${trailing}`;
+  });
   return sanitizeHtml(linkified, BANNER_SANITIZE_OPTIONS);
 }
 
@@ -762,6 +864,11 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
   "/api/forgot-password",
   "/api/reset-password",
   "/api/site-status",
+  // The daily scheduled task that sends dues reminders (key-protected)
+  "/api/dues/run-reminders",
+  // Cave Jump stays playable during maintenance (see /cave-jump)
+  "/api/cave-jump/leaderboard",
+  "/api/cave-jump/scores",
 ]);
 
 app.use((req, res, next) => {
@@ -795,6 +902,626 @@ app.use((req, res, next) => {
     error: siteConfig.maintenanceMessage || "The site is currently down for maintenance. Please check back soon.",
     maintenance: true,
   });
+});
+
+// ---- Site updates ("What's new") ------------------------------------------
+// Read on every request (the file is small) so a deploy that changes it is
+// picked up without a restart. Entries are returned newest first; anything
+// malformed is skipped rather than breaking the list.
+function loadSiteUpdates() {
+  try {
+    const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (u) =>
+          u &&
+          typeof u.id === "string" && u.id &&
+          typeof u.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(u.date) &&
+          typeof u.title === "string" &&
+          Array.isArray(u.changes)
+      )
+      .map((u) => ({ id: u.id, date: u.date, title: u.title, changes: u.changes.filter((c) => typeof c === "string") }))
+      .map((u, i) => ({ u, i }))
+      .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
+      .map(({ u }) => u);
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
+    return [];
+  }
+}
+
+// Every update, plus which one this account last dismissed, so the page can
+// show the "What's new" card only for updates it hasn't seen yet.
+app.get("/api/site-updates", authenticateToken, (req, res) => {
+  const user = loadUsers().find((u) => u.username === req.user.username);
+  res.json({
+    updates: loadSiteUpdates(),
+    lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
+    lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
+  });
+});
+
+// ---- Feature requests and bug reports --------------------------------------
+// Any logged-in account can send one (Site Updates tab). Webmasters are
+// emailed, see every item, and can set its status, reply, or delete it;
+// everyone else sees only their own items and the webmaster's status/reply.
+const FEEDBACK_TYPES = ["feature", "bug"];
+const FEEDBACK_STATUSES = ["new", "planned", "in-progress", "done", "declined"];
+
+function loadFeedback() {
+  try {
+    if (fs.existsSync(FEEDBACK_FILE)) {
+      const list = JSON.parse(fs.readFileSync(FEEDBACK_FILE, "utf-8"));
+      return Array.isArray(list) ? list : [];
+    }
+  } catch (err) {
+    console.error("Error loading feedback:", err);
+  }
+  return [];
+}
+
+function saveFeedback(list) {
+  backupDataFile(FEEDBACK_FILE);
+  fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(list, null, 2));
+}
+
+async function notifyNewFeedback(item, req) {
+  try {
+    const recipients = getNotificationRecipients(["webmaster"]);
+    const kind = item.type === "bug" ? "Bug Report" : "Feature Request";
+    const text =
+      `A new ${kind.toLowerCase()} was sent from the Site Updates tab.\n\n` +
+      `Title: ${item.title}\n` +
+      `From: ${item.submittedBy}\n\n` +
+      `${item.description}\n\n` +
+      (item.userAgent ? `Browser: ${item.userAgent}\n\n` : "") +
+      `See and manage it on the Site Updates tab: ${siteOrigin(req)}/portal`;
+    await sendAdminNotification(recipients, `Florida Cave Survey - New ${kind}: ${item.title}`, text);
+  } catch (err) {
+    console.error("Error sending feedback notification:", err);
+  }
+}
+
+// Keeps one account from flooding the list (or the webmasters' inboxes)
+const feedbackLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "You've sent a lot of requests in the last hour. Please try again later." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/feedback", authenticateToken, feedbackLimiter, express.json(), async (req, res) => {
+  const { type, title, description } = req.body || {};
+  if (!FEEDBACK_TYPES.includes(type)) {
+    return res.status(400).json({ error: "type must be 'feature' or 'bug'." });
+  }
+  const cleanTitle = typeof title === "string" ? title.trim() : "";
+  const cleanDescription = typeof description === "string" ? description.trim() : "";
+  if (!cleanTitle || cleanTitle.length > 150) {
+    return res.status(400).json({ error: "Please give a short title (up to 150 characters)." });
+  }
+  if (!cleanDescription || cleanDescription.length > 5000) {
+    return res.status(400).json({ error: "Please add a description (up to 5000 characters)." });
+  }
+  const item = {
+    id: crypto.randomUUID(),
+    type,
+    title: cleanTitle,
+    description: cleanDescription,
+    submittedBy: req.user.username,
+    created: new Date().toISOString(),
+    status: "new",
+    response: "",
+    updated: null,
+    userAgent: String(req.get("user-agent") || "").slice(0, 300),
+  };
+  try {
+    const list = loadFeedback();
+    list.unshift(item);
+    saveFeedback(list);
+  } catch (err) {
+    console.error("Error saving feedback:", err);
+    return res.status(500).json({ error: "Could not save your request. Please try again." });
+  }
+  await notifyNewFeedback(item, req);
+  res.status(201).json({ success: true, item });
+});
+
+app.get("/api/feedback", authenticateToken, (req, res) => {
+  const all = req.user.role === "webmaster";
+  const list = loadFeedback().filter((f) => all || f.submittedBy === req.user.username);
+  // Only webmasters see the sender's browser details
+  res.json({ items: all ? list : list.map(({ userAgent, ...rest }) => rest), canManage: all });
+});
+
+app.patch("/api/feedback/:id", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { status, response } = req.body || {};
+  if (status !== undefined && !FEEDBACK_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}.` });
+  }
+  if (response !== undefined && (typeof response !== "string" || response.length > 2000)) {
+    return res.status(400).json({ error: "The reply must be text of up to 2000 characters." });
+  }
+  const list = loadFeedback();
+  const item = list.find((f) => f.id === req.params.id);
+  if (!item) return res.status(404).json({ error: "Not found." });
+  if (status !== undefined) item.status = status;
+  if (response !== undefined) item.response = response.trim();
+  item.updated = new Date().toISOString();
+  item.updatedBy = req.user.username;
+  saveFeedback(list);
+  res.json({ success: true, item });
+});
+
+app.delete("/api/feedback/:id", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const list = loadFeedback();
+  const i = list.findIndex((f) => f.id === req.params.id);
+  if (i < 0) return res.status(404).json({ error: "Not found." });
+  list.splice(i, 1);
+  saveFeedback(list);
+  res.json({ success: true });
+});
+
+// ---- Membership dues --------------------------------------------------------
+// Logic lives in lib/dues.js. Per member account this stores:
+//   duesPayments: [{ id, paidOn, amount, method, note, recordedBy, recordedAt }]
+//   duesExpires: cached expiry date (recomputed from duesPayments on change)
+//   duesReminderSentFor / duesReminderSentAt: the automatic reminder, once
+//     per membership year (keyed to the expiry date it was sent for)
+//   duesNoticeSentAt: the last "dues are due" email a webmaster sent
+//   duesLog: [{ at, action, by, details }] - shown in Security Logs
+const DUES_METHODS = ["paypal", "cash", "check", "other"];
+const MAX_DUES_LOG = 200;
+
+function duesOptions() {
+  return { reminderDays: siteConfig.duesReminderDays };
+}
+
+function duesView(user) {
+  const status = dues.duesStatus(user, duesOptions());
+  if (status.state === "exempt") return { ...status };
+  return {
+    ...status,
+    payments: (user.duesPayments || []).slice().sort((a, b) => (a.paidOn < b.paidOn ? 1 : -1)),
+    reminderSentAt: user.duesReminderSentAt || null,
+    noticeSentAt: user.duesNoticeSentAt || null,
+  };
+}
+
+function addDuesLog(user, action, by, details) {
+  user.duesLog = (user.duesLog || []).concat({ at: new Date().toISOString(), action, by: by || null, details });
+  if (user.duesLog.length > MAX_DUES_LOG) user.duesLog = user.duesLog.slice(-MAX_DUES_LOG);
+}
+
+// Key for the scheduled-task URL, derived from the app's secret so there's
+// nothing extra to configure. Only ever lets someone trigger the reminder
+// check early, which is harmless (each reminder still goes out once).
+function duesReminderKey() {
+  return crypto.createHmac("sha256", String(JWT_SECRET)).update("dues-reminders").digest("hex").slice(0, 32);
+}
+
+// ---- Treasurer -------------------------------------------------------------
+// A webmaster can give any member or admin account the Treasurer
+// permission (user.isTreasurer). A Treasurer can see the members-and-dues
+// list, record/delete payments, send dues emails, and set member accounts
+// active or inactive - nothing else in Account Management. Checked against
+// the live account record on every request, so removing the permission
+// (or disabling the account) takes effect immediately.
+function isTreasurerAccount(user) {
+  return !!user && !!user.isTreasurer && user.role !== "webmaster";
+}
+
+function requireDuesManager(req, res, next) {
+  if (req.user && req.user.role === "webmaster") return next();
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  if (me && me.status === "active" && isTreasurerAccount(me)) return next();
+  return res.status(403).json({ error: "Only webmasters and the Treasurer can do this." });
+}
+
+// Set an account's legal first/last name (webmaster) - e.g. for accounts
+// created before names were asked for at sign-up
+app.post("/api/users/:username/name", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const names = nameFields(req, res);
+  if (!names) return;
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  const before = user.firstName || user.lastName ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "(none)";
+  Object.assign(user, names);
+  addDuesLog(user, "Name Changed", req.user.username, `Legal name changed from ${before} to ${names.fullName}`);
+  saveUsers(users);
+  res.json({ success: true, firstName: user.firstName, lastName: user.lastName, fullName: user.fullName });
+});
+
+app.post("/api/users/:username/treasurer", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+  const { isTreasurer } = req.body || {};
+  if (typeof isTreasurer !== "boolean") return res.status(400).json({ error: "isTreasurer must be true or false." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  if (user.role === "webmaster") return res.status(400).json({ error: "Webmasters can already manage dues." });
+  user.isTreasurer = isTreasurer;
+  addDuesLog(user, isTreasurer ? "Treasurer Access Granted" : "Treasurer Access Removed", req.user.username,
+    isTreasurer ? "Can now manage dues and member account status" : "Can no longer manage dues");
+  saveUsers(users);
+  res.json({ success: true, isTreasurer: isTreasurerAccount(user) });
+});
+
+// The members-and-dues list for the Treasurer view (members only - admins
+// and webmasters don't pay dues)
+app.get("/api/dues/members", authenticateToken, requireDuesManager, (req, res) => {
+  const list = loadUsers()
+    .filter((u) => u.role === "member")
+    .map((u) => ({
+      username: u.username,
+      fullName: u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : "",
+      firstName: u.firstName || "",
+      lastName: u.lastName || "",
+      email: u.email || "",
+      status: u.status,
+      created: u.created || null,
+      lastLogin: u.lastLogin || null,
+      dues: duesView(u),
+    }))
+    .sort((a, b) => a.username.localeCompare(b.username));
+  res.json({ members: list });
+});
+
+// Set a member's account active (e.g. approve a new sign-up once they've
+// paid) or inactive. Members only, and never your own account.
+app.post("/api/dues/members/:username/status", authenticateToken, requireDuesManager, express.json(), (req, res) => {
+  const { active } = req.body || {};
+  if (typeof active !== "boolean") return res.status(400).json({ error: "active must be true or false." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  if (user.role !== "member") return res.status(403).json({ error: "Only member accounts can be changed here." });
+  if (user.username === req.user.username) return res.status(400).json({ error: "You can't change your own account's status." });
+  const before = user.status;
+  user.status = active ? "active" : "inactive";
+  if (before !== user.status) {
+    addDuesLog(user, active ? "Account Activated" : "Account Deactivated", req.user.username, `Status changed from ${before} to ${user.status}`);
+  }
+  saveUsers(users);
+  res.json({ success: true, status: user.status });
+});
+
+app.get("/api/dues/settings", authenticateToken, requireDuesManager, (req, res) => {
+  res.json({
+    duesAmount: siteConfig.duesAmount,
+    duesReminderDays: siteConfig.duesReminderDays,
+    duesEnforcement: siteConfig.duesEnforcement,
+    // Only webmasters see the scheduled-task link
+    reminderUrl: req.user.role === "webmaster" ? `${siteOrigin(req)}/api/dues/run-reminders?key=${duesReminderKey()}` : null,
+  });
+});
+
+// Webmasters can change everything here; the Treasurer can change the
+// price only (the reminder timing and the blocking switch stay
+// webmaster-only).
+app.post("/api/dues/settings", authenticateToken, requireDuesManager, express.json(), (req, res) => {
+  const { duesAmount, duesReminderDays, duesEnforcement } = req.body || {};
+  if (req.user.role !== "webmaster" && (duesReminderDays !== undefined || duesEnforcement !== undefined)) {
+    return res.status(403).json({ error: "Only a webmaster can change the reminder timing or the blocking switch." });
+  }
+  if (duesAmount !== undefined && (typeof duesAmount !== "number" || !isFinite(duesAmount) || duesAmount < 0 || duesAmount > 10000)) {
+    return res.status(400).json({ error: "The dues amount must be a number from 0 to 10000." });
+  }
+  if (duesReminderDays !== undefined && (!Number.isInteger(duesReminderDays) || duesReminderDays < 1 || duesReminderDays > 180)) {
+    return res.status(400).json({ error: "Reminder days must be a whole number from 1 to 180." });
+  }
+  if (duesEnforcement !== undefined && typeof duesEnforcement !== "boolean") {
+    return res.status(400).json({ error: "duesEnforcement must be true or false." });
+  }
+  const previousAmount = siteConfig.duesAmount;
+  const updated = { ...siteConfig };
+  if (duesAmount !== undefined) updated.duesAmount = Math.round(duesAmount * 100) / 100;
+  if (duesReminderDays !== undefined) updated.duesReminderDays = duesReminderDays;
+  if (duesEnforcement !== undefined) updated.duesEnforcement = duesEnforcement;
+  siteConfig = updated;
+  saveSiteConfig(siteConfig);
+  if (duesAmount !== undefined && previousAmount !== siteConfig.duesAmount) {
+    console.log(`Dues price changed from $${previousAmount} to $${siteConfig.duesAmount} by ${req.user.username}`);
+  }
+  console.log(`Dues settings updated by ${req.user.username}: amount=${siteConfig.duesAmount}, reminderDays=${siteConfig.duesReminderDays}, enforcement=${siteConfig.duesEnforcement}`);
+  res.json({ duesAmount: siteConfig.duesAmount, duesReminderDays: siteConfig.duesReminderDays, duesEnforcement: siteConfig.duesEnforcement });
+});
+
+// The logged-in account's own membership status
+app.get("/api/my-membership", authenticateToken, (req, res) => {
+  const user = loadUsers().find((u) => u.username === req.user.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  const status = dues.duesStatus(user, duesOptions());
+  res.json({
+    ...status,
+    duesAmount: siteConfig.duesAmount,
+    enforcement: siteConfig.duesEnforcement,
+    isTreasurer: isTreasurerAccount(user),
+    payLink: status.state === "exempt" ? null : dues.paypalDuesLink(siteConfig.duesAmount, user.username),
+  });
+});
+
+function findMember(req, res) {
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) { res.status(404).json({ error: "Account not found." }); return null; }
+  if (dues.isExempt(user)) { res.status(400).json({ error: "Admins and webmasters don't pay dues." }); return null; }
+  return { users, user };
+}
+
+app.post("/api/users/:username/dues/payments", authenticateToken, requireDuesManager, express.json(), (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { users, user } = found;
+  const { paidOn, amount, method, note } = req.body || {};
+  const today = dues.todayISO();
+  if (!dues.isValidDate(paidOn) || paidOn < "2000-01-01" || dues.daysBetween(today, paidOn) > 1) {
+    return res.status(400).json({ error: "Enter the date it was paid (not in the future)." });
+  }
+  const amt = amount === undefined || amount === "" ? siteConfig.duesAmount : Number(amount);
+  if (!isFinite(amt) || amt < 0 || amt > 10000) {
+    return res.status(400).json({ error: "The amount must be a number from 0 to 10000." });
+  }
+  if (method !== undefined && !DUES_METHODS.includes(method)) {
+    return res.status(400).json({ error: `Method must be one of: ${DUES_METHODS.join(", ")}.` });
+  }
+  if (note !== undefined && (typeof note !== "string" || note.length > 300)) {
+    return res.status(400).json({ error: "The note can be up to 300 characters." });
+  }
+  const payment = {
+    id: crypto.randomUUID(),
+    paidOn,
+    amount: Math.round(amt * 100) / 100,
+    method: method || "paypal",
+    note: (note || "").trim(),
+    recordedBy: req.user.username,
+    recordedAt: new Date().toISOString(),
+  };
+  user.duesPayments = (user.duesPayments || []).concat(payment);
+  user.duesExpires = dues.computeExpiry(user.duesPayments);
+  addDuesLog(user, "Dues Payment Recorded", req.user.username,
+    `$${payment.amount.toFixed(2)} paid ${payment.paidOn} by ${payment.method}; membership now expires ${user.duesExpires}`);
+  saveUsers(users);
+  res.status(201).json({ success: true, dues: duesView(user) });
+});
+
+app.delete("/api/users/:username/dues/payments/:paymentId", authenticateToken, requireDuesManager, (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { users, user } = found;
+  const payment = (user.duesPayments || []).find((p) => p.id === req.params.paymentId);
+  if (!payment) return res.status(404).json({ error: "Payment not found." });
+  user.duesPayments = user.duesPayments.filter((p) => p.id !== payment.id);
+  user.duesExpires = dues.computeExpiry(user.duesPayments);
+  addDuesLog(user, "Dues Payment Deleted", req.user.username,
+    `Removed $${Number(payment.amount).toFixed(2)} paid ${payment.paidOn}; membership now ${user.duesExpires ? "expires " + user.duesExpires : "has no payment recorded"}`);
+  saveUsers(users);
+  res.json({ success: true, dues: duesView(user) });
+});
+
+// "Send dues email": only for a member whose recorded membership has
+// expired, so nobody gets an overdue notice by mistake.
+app.post("/api/users/:username/dues/notice", authenticateToken, requireDuesManager, async (req, res) => {
+  const found = findMember(req, res);
+  if (!found) return;
+  const { user } = found;
+  const status = dues.duesStatus(user, duesOptions());
+  if (status.state !== "expired") {
+    return res.status(409).json({ error: "This member's dues aren't overdue, so no email was sent." });
+  }
+  if (!user.email) return res.status(400).json({ error: "This account has no email address." });
+  try {
+    await sendUserEmail(user, dues.overdueEmail(user, status, siteConfig.duesAmount, siteOrigin(req)));
+  } catch (err) {
+    console.error(`Failed to send dues notice to ${user.email}:`, err.message);
+    return res.status(502).json({ error: "The email could not be sent: " + err.message });
+  }
+  // Reload before saving so a login or other change made while the email
+  // was sending isn't overwritten
+  const users = loadUsers();
+  const fresh = users.find((u) => u.username === user.username);
+  if (fresh) {
+    fresh.duesNoticeSentAt = new Date().toISOString();
+    addDuesLog(fresh, "Dues Email Sent", req.user.username, `Dues-overdue email sent to ${fresh.email}`);
+    saveUsers(users);
+  }
+  res.json({ success: true, dues: duesView(fresh || user) });
+});
+
+// Sends the automatic "your membership expires in N days" reminders that
+// are due. Safe to run as often as you like: each member gets it once per
+// membership year. A failed send isn't marked, so it's retried next run.
+let duesReminderRunning = false;
+async function runDuesReminders(siteUrl) {
+  if (duesReminderRunning) return { sent: 0, failed: 0, skipped: true };
+  duesReminderRunning = true;
+  let sent = 0, failed = 0;
+  try {
+    const opts = duesOptions();
+    const due = loadUsers().filter((u) => dues.needsReminder(u, opts));
+    for (const user of due) {
+      const status = dues.duesStatus(user, opts);
+      try {
+        await sendUserEmail(user, dues.reminderEmail(user, status, siteConfig.duesAmount, siteUrl));
+      } catch (err) {
+        failed++;
+        console.error(`Failed to send dues reminder to ${user.email}:`, err.message);
+        continue;
+      }
+      const users = loadUsers();
+      const fresh = users.find((u) => u.username === user.username);
+      if (fresh) {
+        fresh.duesReminderSentFor = status.expires;
+        fresh.duesReminderSentAt = new Date().toISOString();
+        addDuesLog(fresh, "Dues Reminder Sent", null, `Automatic reminder: membership expires ${status.expires} (${status.daysLeft} days)`);
+        saveUsers(users);
+        sent++;
+      }
+    }
+  } catch (err) {
+    console.error("Error running dues reminders:", err);
+  } finally {
+    duesReminderRunning = false;
+  }
+  if (sent || failed) console.log(`Dues reminders: ${sent} sent, ${failed} failed`);
+  return { sent, failed };
+}
+
+function defaultSiteUrl() {
+  return (process.env.ALLOWED_ORIGINS || "https://fcs.caves.org").split(",")[0].trim();
+}
+
+// For a Plesk Scheduled Task ("Fetch a URL", once a day) - see README
+app.get("/api/dues/run-reminders", async (req, res) => {
+  const key = typeof req.query.key === "string" ? req.query.key : "";
+  const expected = duesReminderKey();
+  if (key.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected))) {
+    return res.status(403).json({ error: "Invalid key." });
+  }
+  const result = await runDuesReminders(siteOrigin(req));
+  res.json({ success: true, ...result });
+});
+
+// Also checked hourly while the app is running (and shortly after it
+// starts), in case the scheduled task isn't set up. Not in tests.
+if (process.env.NODE_ENV !== "test") {
+  setTimeout(() => runDuesReminders(defaultSiteUrl()), 60 * 1000).unref();
+  setInterval(() => runDuesReminders(defaultSiteUrl()), 60 * 60 * 1000).unref();
+}
+app.runDuesReminders = runDuesReminders; // for the test suite
+
+// ---- Cave Jump leaderboard --------------------------------------------------
+// Top 10 of each account's best score, shown on /cave-jump and the
+// maintenance page. Anyone can see it; only logged-in accounts can add to
+// it (so every name on it is a real account). Stored by account id, and
+// shown with the account's current username (not the full name - the game
+// page is public), so renames carry over and deleted accounts drop off.
+// Scores come from the browser, so they're sanity-checked against how long
+// the run lasted; that stops casual tampering, not a determined cheat.
+const CAVE_JUMP_TOP = 10;
+const CAVE_JUMP_MAX_POINTS_PER_SECOND = 80; // the game tops out near 50/s plus gems
+
+function loadCaveJump() {
+  try {
+    if (fs.existsSync(CAVE_JUMP_FILE)) {
+      const data = JSON.parse(fs.readFileSync(CAVE_JUMP_FILE, "utf-8"));
+      if (data && typeof data.best === "object" && data.best) return data;
+    }
+  } catch (err) {
+    console.error("Error loading Cave Jump scores:", err);
+  }
+  return { best: {} };
+}
+
+function saveCaveJump(data) {
+  backupDataFile(CAVE_JUMP_FILE);
+  fs.writeFileSync(CAVE_JUMP_FILE, JSON.stringify(data, null, 2));
+}
+
+// Ranked list of every account's best, best first (ties: earlier score first)
+function caveJumpRanking(data, users) {
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return Object.entries(data.best)
+    .filter(([id]) => byId.has(id))
+    .map(([id, e]) => ({ id, name: byId.get(id).username, score: e.score, at: e.at }))
+    .sort((a, b) => b.score - a.score || (a.at < b.at ? -1 : 1))
+    .map((e, i) => ({ rank: i + 1, ...e }));
+}
+
+// Who's asking, if a valid login token came with the request (optional)
+function optionalUser(req) {
+  const h = req.headers["authorization"];
+  const token = h && h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return null;
+  try {
+    const d = jwt.verify(token, JWT_SECRET);
+    return d && !d.pending2FA ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+function leaderboardFor(viewer) {
+  const users = loadUsers();
+  const ranking = caveJumpRanking(loadCaveJump(), users);
+  const me = viewer ? users.find((u) => u.username === viewer.username) : null;
+  const mine = me ? ranking.find((e) => e.id === me.id) : null;
+  const canManage = !!viewer && viewer.role === "webmaster";
+  return {
+    top: ranking.slice(0, CAVE_JUMP_TOP).map((e) => ({
+      rank: e.rank, name: e.name, score: e.score, at: e.at, ...(canManage ? { id: e.id } : {}),
+    })),
+    you: me ? { name: me.username, best: mine ? mine.score : null, rank: mine ? mine.rank : null } : null,
+    canManage,
+  };
+}
+
+app.get("/api/cave-jump/leaderboard", (req, res) => {
+  res.json(leaderboardFor(optionalUser(req)));
+});
+
+const caveJumpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many scores sent. Take a break and try again later." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/cave-jump/scores", caveJumpLimiter, authenticateToken, express.json(), (req, res) => {
+  const { score, seconds } = req.body || {};
+  if (!Number.isInteger(score) || score < 0 || score > 1000000) {
+    return res.status(400).json({ error: "Invalid score." });
+  }
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 1 || seconds > 3 * 60 * 60) {
+    return res.status(400).json({ error: "Invalid run length." });
+  }
+  if (score > seconds * CAVE_JUMP_MAX_POINTS_PER_SECOND + 300) {
+    return res.status(400).json({ error: "That score doesn't match how long the run lasted." });
+  }
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  if (!me) return res.status(404).json({ error: "Account not found." });
+  const data = loadCaveJump();
+  const prev = data.best[me.id];
+  const isNewBest = !prev || score > prev.score;
+  if (isNewBest) {
+    data.best[me.id] = { score, at: new Date().toISOString() };
+    saveCaveJump(data);
+  }
+  res.json({ isNewBest, previousBest: prev ? prev.score : null, ...leaderboardFor(req.user) });
+});
+
+// Webmasters can take an entry off the board (e.g. an obviously fake score)
+app.delete("/api/cave-jump/scores/:userId", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const data = loadCaveJump();
+  if (!data.best[req.params.userId]) return res.status(404).json({ error: "No score for that account." });
+  delete data.best[req.params.userId];
+  saveCaveJump(data);
+  console.log(`Cave Jump score for account ${req.params.userId} removed by ${req.user.username}`);
+  res.json({ success: true, ...leaderboardFor(req.user) });
+});
+
+// Called when the account closes the "What's new" card: records the newest
+// update it has now seen, so the card stays away until there's a newer one.
+app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
+  const id = req.body && req.body.id;
+  const update = loadSiteUpdates().find((u) => u.id === id);
+  if (!update) return res.status(400).json({ error: "Unknown update id." });
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  if (!user) return res.status(404).json({ error: "Account not found." });
+  // Never move backwards (e.g. an old tab closing the card after a newer
+  // update was already dismissed elsewhere)
+  if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
+    user.lastSeenUpdateId = update.id;
+    user.lastSeenUpdateDate = update.date;
+    saveUsers(users);
+  }
+  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
 });
 
 // Rate limiting on authentication-adjacent endpoints to blunt brute-force
@@ -851,9 +1578,35 @@ function authenticateToken(req, res, next) {
       return res.status(401).json({ error: "Two-factor verification required." });
     }
     req.user = decoded;
+    // Dues access switch (Account Management, off by default): a member
+    // whose recorded membership has expired can only reach the few routes
+    // needed to see their status, pay, and get back in. Never applies to
+    // admins/webmasters, or to members with no payment recorded.
+    if (siteConfig.duesEnforcement && decoded.role === "member") {
+      const p = (req.originalUrl || "").split("?")[0];
+      if (!DUES_EXPIRED_ALLOWED_PATHS.has(p)) {
+        const user = loadUsers().find((u) => u.username === decoded.username);
+        if (user && dues.duesStatus(user, { reminderDays: siteConfig.duesReminderDays }).state === "expired") {
+          return res.status(403).json({
+            error: "Your membership has expired. Please pay your yearly dues to regain access.",
+            duesExpired: true,
+          });
+        }
+      }
+    }
     next();
   });
 }
+
+// What an expired member can still use while the dues access switch is on
+const DUES_EXPIRED_ALLOWED_PATHS = new Set([
+  "/api/my-membership",
+  "/api/site-updates",
+  "/api/site-updates/seen",
+  "/api/feedback",
+  "/api/change-password",
+  "/api/cave-jump/scores",
+]);
 
 // Restricts a route to one of the given roles. Must run after authenticateToken.
 function requireRole(...roles) {
@@ -934,10 +1687,13 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
 
     // Track login IP
     const clientIP = req.ip || req.connection.remoteAddress || "unknown";
-    if (!user.loginIPs) user.loginIPs = [];
-    if (!user.loginIPs.includes(clientIP)) {
-      user.loginIPs.push(clientIP);
-    }
+    // Kept in order of most recent use (this login's address moves to the
+    // end), and capped so it can't grow forever - phones on mobile data get
+    // a new IPv6 address often.
+    if (!Array.isArray(user.loginIPs)) user.loginIPs = [];
+    user.loginIPs = user.loginIPs.filter((ip) => ip !== clientIP);
+    user.loginIPs.push(clientIP);
+    if (user.loginIPs.length > MAX_LOGIN_IPS) user.loginIPs = user.loginIPs.slice(-MAX_LOGIN_IPS);
 
     // The password is correct, but if this account has 2FA enabled that's
     // not enough to log in yet - email a code and hand back a short-lived
@@ -992,6 +1748,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user),
+      isTreasurer: isTreasurerAccount(user),
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -1069,6 +1826,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       nssNumber: user.nssNumber,
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user),
+      isTreasurer: isTreasurerAccount(user),
     });
   } catch (error) {
     console.error("2FA verification error:", error);
@@ -1249,6 +2007,12 @@ app.get("/", (req, res) => {
 // protected either way), just not the address regular visitors are given.
 app.get("/portal", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
+});
+
+// The Cave Jump game on its own page - always available, maintenance mode
+// or not (it's a static page that needs no login and no API).
+app.get("/cave-jump", (req, res) => {
+  res.sendFile(path.join(__dirname, "httpdocs", "cave-jump.html"));
 });
 
 // Overridable so cave pictures can live outside httpdocs (e.g. a private/
@@ -4212,6 +4976,8 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       username: user.username,
       email: user.email,
       fullName: user.fullName,
+      firstName: user.firstName || "",
+      lastName: user.lastName || "",
       nssNumber: user.nssNumber,
       role: user.role,
       status: user.status,
@@ -4222,7 +4988,9 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
-      isActive: user.status === "active"
+      isActive: user.status === "active",
+      isTreasurer: isTreasurerAccount(user),
+      dues: duesView(user),
     }));
     
     res.json(safeUsers);
@@ -4240,11 +5008,13 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
 // always "member"; use /api/change-user-role afterward to promote it.
 app.post("/api/create-user", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
   try {
-    const { username, email, password, fullName } = req.body;
+    const { username, email, password } = req.body;
 
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required" });
     }
+    const names = nameFields(req, res);
+    if (!names) return;
     // Same charset restriction as public self-registration - this username/
     // email is rendered in the Account Management table too (escapeStatsHtml()
     // on render is the other half of this defense-in-depth pair).
@@ -4255,6 +5025,12 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
     }
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
+    }
+    // Real-looking address whose domain can actually receive email, not a
+    // disposable inbox or a typo like gmial.com (lib/email-check.js)
+    const emailCheck = await checkEmail(email, { dns: EMAIL_DNS_CHECK });
+    if (!emailCheck.ok) {
+      return res.status(400).json({ error: emailCheck.reason, suggestion: emailCheck.suggestion });
     }
     if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
@@ -4277,7 +5053,9 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
       username,
       email,
       passwordHash,
-      fullName: fullName || username,
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName,
       nssNumber: "",
       role: "member",
       status: "active",
@@ -4463,8 +5241,18 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
           details: `Account created with role: ${user.role}`
         });
       }
+
+      (user.duesLog || []).forEach((entry) => {
+        logs.push({
+          timestamp: entry.at,
+          action: entry.action,
+          username: user.username,
+          ipAddress: "system",
+          details: entry.by ? `${entry.details} (by ${entry.by})` : entry.details,
+        });
+      });
     });
-    
+
     // Sort by timestamp (newest first)
     logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
@@ -4499,11 +5287,19 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
+    // Real-looking address whose domain can actually receive email, not a
+    // disposable inbox or a typo like gmial.com (lib/email-check.js)
+    const emailCheck = await checkEmail(email, { dns: EMAIL_DNS_CHECK });
+    if (!emailCheck.ok) {
+      return res.status(400).json({ error: emailCheck.reason, suggestion: emailCheck.suggestion });
+    }
     if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
       });
     }
+    const names = nameFields(req, res);
+    if (!names) return;
     if (!Array.isArray(states) || states.length === 0) {
       return res.status(400).json({ error: "Please select at least one state." });
     }
@@ -4533,7 +5329,9 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       username,
       email,
       passwordHash,
-      fullName: username, // Default to username
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName,
       nssNumber: "",
       role: "member",
       status: "pending",
@@ -4559,6 +5357,23 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     console.error("Error creating account:", error);
     res.status(500).json({ error: "Failed to create account" });
   }
+});
+
+// Instant email check for the sign-up form (when the email box loses
+// focus). Only looks at the address/domain - never says whether an account
+// with that email already exists, so it can't be used to find members.
+const emailCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many checks. Please try again in a few minutes." },
+  skip: () => process.env.NODE_ENV === "test",
+});
+
+app.post("/api/check-email", emailCheckLimiter, express.json(), async (req, res) => {
+  const result = await checkEmail(req.body && req.body.email, { dns: EMAIL_DNS_CHECK });
+  res.json(result.ok ? { ok: true } : { ok: false, reason: result.reason, suggestion: result.suggestion || null });
 });
 
 // Forgot password endpoint
@@ -4758,6 +5573,8 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
 // data-card-id attributes and card.dataset.cardId assignments) - the
 // allowlist a saved layout's hidden/order arrays are validated against
 // below, so a user's own record can never end up holding arbitrary strings.
+// "recent-activity" is a retired card (removed from the page) - kept here
+// only so layouts saved while it existed still validate.
 const KNOWN_STATS_CARD_IDS = new Set([
   "summary", "nationwide", "access-status", "cave-types", "states", "counties",
   "entry-status", "equipment", "recent-activity", "dimensions",

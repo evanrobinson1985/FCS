@@ -17,6 +17,19 @@
 /* .wrap/#landingView set their own `display`, which ties or beats the UA
    [hidden] rule on specificity and wins the cascade as author CSS -- so the
    toggled view stayed visible. Force it explicitly, keyed to the same ids. */
+/* The game view: no accidental text selection, long-press callouts or tap
+   flashes on phones (it's a game, there's nothing there to copy). */
+#gameView {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.game-shell {
+  touch-action: none;
+}
+
 #landingView[hidden],
 #gameView[hidden] {
   display: none;
@@ -272,7 +285,8 @@ kbd {
   font-size: 0.75rem;
   backdrop-filter: blur(3px);
 }
-.touch-btn:active { background: rgba(255,207,92,0.3); }
+.touch-btn:active,
+.touch-btn.pressed { background: rgba(255,207,92,0.3); }
 .touch-jump { border-color: var(--amber); color: var(--amber); }
 
 @media (hover: none) and (pointer: coarse) {

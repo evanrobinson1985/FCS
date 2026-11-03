@@ -22,6 +22,16 @@ process.env.SUBMISSIONS_FILE = path.join(TEST_ROOT, "pending-submissions.json");
 process.env.NARRATIVE_DIR = path.join(TEST_ROOT, "narratives");
 process.env.CAVE_MAPS_DIR = path.join(TEST_ROOT, "cave-maps");
 process.env.CAVE_PICTURES_DIR = path.join(TEST_ROOT, "cave-pictures");
+process.env.SITE_UPDATES_FILE = path.join(TEST_ROOT, "site-updates.json");
+fs.writeFileSync(
+  process.env.SITE_UPDATES_FILE,
+  JSON.stringify([
+    { id: "older", date: "2026-01-01", title: "Older update", changes: ["a"] },
+    { id: "newest", date: "2026-03-01", title: "Newest update", changes: ["b", "c"] },
+    { id: "bad-date", date: "March", title: "Malformed", changes: [] },
+    { id: "middle", date: "2026-02-01", title: "Middle update", changes: [] },
+  ])
+);
 process.env.NODE_ENV = "test";
 process.env.ALLOWED_ORIGINS = "http://localhost:3000";
 
@@ -219,7 +229,7 @@ describe("webmaster accounts are protected from other webmasters", () => {
 
 describe("password hashing", () => {
   test("stores a bcrypt hash, never the plaintext password, on self-registration", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "newmember",
       email: "newmember@example.com",
       password: "SomeStrongPass123!",
@@ -236,7 +246,7 @@ describe("password hashing", () => {
   });
 
   test("rejects a password shorter than the minimum length", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "shortpw",
       email: "shortpw@example.com",
       password: "short1",
@@ -245,7 +255,7 @@ describe("password hashing", () => {
   });
 
   test("rejects self-registration with no state selected", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "nostateuser",
       email: "nostateuser@example.com",
       password: "SomeStrongPass123!",
@@ -255,7 +265,7 @@ describe("password hashing", () => {
   });
 
   test("rejects self-registration with an unrecognized state code", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "badstateuser",
       email: "badstateuser@example.com",
       password: "SomeStrongPass123!",
@@ -270,7 +280,7 @@ describe("password hashing", () => {
   // be accepted in the first place (defense-in-depth alongside escaping it
   // on render).
   test("rejects a username containing HTML/script syntax", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: '<img src=x onerror=alert(1)>',
       email: "xssattempt@example.com",
       password: "SomeStrongPass123!",
@@ -283,7 +293,7 @@ describe("password hashing", () => {
   });
 
   test("rejects an email address containing HTML/script syntax", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "emailxssattempt",
       email: '"><script>alert(1)</script>@example.com',
       password: "SomeStrongPass123!",
@@ -293,7 +303,7 @@ describe("password hashing", () => {
   });
 
   test("stores the selected states as allowedStates on the new account", async () => {
-    const res = await request(app).post("/api/create-account").send({
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "twostateuser",
       email: "twostateuser@example.com",
       password: "SomeStrongPass123!",
@@ -307,7 +317,7 @@ describe("password hashing", () => {
   });
 
   test("a freshly hashed password actually verifies on login", async () => {
-    await request(app).post("/api/create-account").send({
+    await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
       username: "roundtrip",
       email: "roundtrip@example.com",
       password: "RoundTripPass123!",
@@ -357,7 +367,7 @@ describe("admin notification emails", () => {
 
   test("a new self-registration notifies active webmasters, not admins or inactive webmasters", async () => {
     const line = await captureNotificationLog(async () => {
-      const res = await request(app).post("/api/create-account").send({
+      const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
         username: "notifytestaccount",
         email: "notifytestaccount@example.com",
         password: "SomeStrongPass123!",
@@ -406,7 +416,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
     assert.equal(res.status, 200);
 
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
@@ -422,15 +432,23 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     assert.ok(loginToken);
   });
 
-  test("defaults fullName to username when not provided", async () => {
+  test("requires a first and last name, and builds the full name from them", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const missing = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", wm)
+      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
+    assert.equal(missing.status, 400);
+
     await request(app)
       .post("/api/create-user")
-      .set("Authorization", `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`)
-      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
-
+      .set("Authorization", wm)
+      .send({ firstName: "Dana", lastName: "Rivers", username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
     const created = users.find((u) => u.username === "nofullname");
-    assert.equal(created.fullName, "nofullname");
+    assert.equal(created.firstName, "Dana");
+    assert.equal(created.lastName, "Rivers");
+    assert.equal(created.fullName, "Dana Rivers");
   });
 
   test("a member cannot create a user account", async () => {
@@ -438,7 +456,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
     assert.equal(res.status, 403);
   });
 
@@ -454,7 +472,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "member1", email: "different@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: "member1", email: "different@example.com", password: "SomePass123!" });
     assert.equal(res.status, 400);
   });
 
@@ -463,7 +481,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
+      .send({ firstName: "Test", lastName: "Member", username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
     assert.equal(res.status, 400);
   });
 
@@ -474,7 +492,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
     const res = await request(app)
       .post("/api/create-user")
       .set("Authorization", `Bearer ${token}`)
-      .send({ username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
+      .send({ firstName: "Test", lastName: "Member", username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
     assert.equal(res.status, 400);
 
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
@@ -1948,6 +1966,45 @@ describe("website management: site status, banner, and maintenance mode", () => 
     assert.equal(statusRes.body.bannerHtml, res.body.bannerHtml);
   });
 
+  test("banner message: email addresses and links without http:// are clickable too", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage:
+          "Questions? Email webmaster@caves.org or see www.caves.org, fcs.caves.org/portal and https://example.com/a?x=1&y=2. " +
+          "Info (https://en.wikipedia.org/wiki/Cave_(disambiguation)). Version 1.5 and Node.js aren't links.",
+      });
+    assert.equal(res.status, 200);
+    const html = res.body.bannerHtml;
+    assert.match(html, /<a href="mailto:webmaster@caves\.org">webmaster@caves\.org<\/a> or/);
+    assert.match(html, /<a href="https:\/\/www\.caves\.org" target="_blank" rel="noopener noreferrer">www\.caves\.org<\/a>,/);
+    assert.match(html, /<a href="https:\/\/fcs\.caves\.org\/portal" target="_blank" rel="noopener noreferrer">fcs\.caves\.org\/portal<\/a> and/);
+    // query string kept, trailing full stop not part of the link
+    assert.match(html, /<a href="https:\/\/example\.com\/a\?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/a\?x=1&amp;y=2<\/a>\. /);
+    // a bracket the link opened is kept; the sentence's closing bracket isn't
+    assert.match(html, /href="https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)"[^>]*>https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)<\/a>\)\./);
+    assert.ok(!/<a[^>]*>1\.5<\/a>/.test(html) && !/<a[^>]*>Node\.js<\/a>/.test(html), "ordinary dotted words aren't links");
+  });
+
+  test("banner message: links can't be used to sneak in markup or scripts", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage: 'See "https://example.com/x" and <a href="javascript:alert(1)">click</a> or javascript:alert(2) <img src=x onerror=alert(3)>',
+      });
+    const html = res.body.bannerHtml;
+    assert.ok(!html.includes("javascript:alert(1)\""), "typed <a> tags are dropped");
+    assert.ok(!/href="javascript/i.test(html), "no javascript: links");
+    assert.ok(!html.includes("<img") && !html.includes("onerror"), "no other tags or handlers");
+    assert.match(html, /href="https:\/\/example\.com\/x"/); // quotes around a link aren't part of it
+  });
+
   test("rejects an invalid bannerColor", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);
     const res = await request(app)
@@ -2323,3 +2380,463 @@ describe("website management: site status, banner, and maintenance mode", () => 
   });
 });
 
+describe("site updates", () => {
+  test("require a login", async () => {
+    const res = await request(app).get("/api/site-updates");
+    assert.equal(res.status, 401);
+  });
+
+  test("lists valid updates newest first, with nothing seen yet for a new account", async () => {
+    await seedUser({ username: "updates-reader", password: MEMBER_PASSWORD, role: "member" });
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.updates.map((u) => u.id), ["newest", "middle", "older"]);
+    assert.equal(res.body.lastSeenUpdateId, null);
+  });
+
+  test("closing the card records the newest seen update, and never moves backwards", async () => {
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const bad = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "no-such-update" });
+    assert.equal(bad.status, 400);
+
+    const seen = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "newest" });
+    assert.equal(seen.status, 200);
+    let res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+    assert.equal(res.body.lastSeenUpdateDate, "2026-03-01");
+
+    await request(app).post("/api/site-updates/seen").set(auth).send({ id: "older" });
+    res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+  });
+
+  test("the shipped config/site-updates.json is valid", () => {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
+    assert.ok(Array.isArray(list) && list.length > 0);
+    const ids = new Set();
+    for (const u of list) {
+      assert.equal(typeof u.id, "string");
+      assert.ok(!ids.has(u.id), `duplicate update id ${u.id}`);
+      ids.add(u.id);
+      assert.match(u.date, /^\d{4}-\d{2}-\d{2}$/, `bad date on ${u.id}`);
+      assert.equal(typeof u.title, "string");
+      assert.ok(Array.isArray(u.changes) && u.changes.every((c) => typeof c === "string"), `bad changes on ${u.id}`);
+    }
+  });
+});
+
+describe("feature requests and bug reports", () => {
+  test("require a login", async () => {
+    const res = await request(app).post("/api/feedback").send({ type: "bug", title: "x", description: "y" });
+    assert.equal(res.status, 401);
+  });
+
+  test("validate the type, title and description", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+    for (const body of [
+      { type: "complaint", title: "t", description: "d" },
+      { type: "bug", title: "   ", description: "d" },
+      { type: "bug", title: "t".repeat(151), description: "d" },
+      { type: "feature", title: "t", description: "" },
+    ]) {
+      const res = await request(app).post("/api/feedback").set(auth).send(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  });
+
+  test("members see only their own items; webmasters see all and can manage them", async () => {
+    await seedUser({ username: "feedback-other", password: MEMBER_PASSWORD, role: "member" });
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    const other = { Authorization: `Bearer ${await login("feedback-other", MEMBER_PASSWORD)}` };
+    const webmaster = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+
+    const sent = await request(app).post("/api/feedback").set(member)
+      .send({ type: "bug", title: "  Markers vanish  ", description: "After filtering by county." });
+    assert.equal(sent.status, 201);
+    assert.equal(sent.body.item.title, "Markers vanish");
+    assert.equal(sent.body.item.status, "new");
+    await request(app).post("/api/feedback").set(other).send({ type: "feature", title: "PDF export", description: "Please." });
+
+    const mine = await request(app).get("/api/feedback").set(member);
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.canManage, false);
+    assert.deepEqual(mine.body.items.map((f) => f.title), ["Markers vanish"]);
+    assert.equal(mine.body.items[0].userAgent, undefined);
+
+    const all = await request(app).get("/api/feedback").set(webmaster);
+    assert.equal(all.body.canManage, true);
+    assert.equal(all.body.items.length, 2);
+
+    const id = sent.body.item.id;
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(member).send({ status: "done" })).status, 403);
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "nope" })).status, 400);
+    const patched = await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "planned", response: "Thanks, on the list." });
+    assert.equal(patched.status, 200);
+    const mineAfter = await request(app).get("/api/feedback").set(member);
+    assert.equal(mineAfter.body.items[0].status, "planned");
+    assert.equal(mineAfter.body.items[0].response, "Thanks, on the list.");
+
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(member)).status, 403);
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(webmaster)).status, 200);
+    assert.equal((await request(app).get("/api/feedback").set(member)).body.items.length, 0);
+  });
+});
+
+describe("login IP history", () => {
+  test("moves this login's address to the end (most recent) and keeps at most 50", async () => {
+    await seedUser({ username: "ip-history", password: MEMBER_PASSWORD, role: "member" });
+    // What supertest's requests arrive as
+    const res0 = await request(app).post("/api/login").send({ username: "ip-history", password: MEMBER_PASSWORD });
+    assert.equal(res0.status, 200);
+    let users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const myIP = users.find((u) => u.username === "ip-history").loginIPs.slice(-1)[0];
+
+    // Pretend there's a long history with this address near the start
+    const old = Array.from({ length: 60 }, (_, i) => `2600:387:f:d1a::${i.toString(16)}`);
+    users.find((u) => u.username === "ip-history").loginIPs = [old[0], myIP, ...old.slice(1)];
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    await login("ip-history", MEMBER_PASSWORD);
+    users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const ips = users.find((u) => u.username === "ip-history").loginIPs;
+    assert.equal(ips.length, 50);
+    assert.equal(ips[ips.length - 1], myIP);
+    assert.equal(ips.filter((ip) => ip === myIP).length, 1);
+  });
+});
+
+describe("membership dues", () => {
+  const dues = require("../lib/dues");
+  // A date N days before today (Eastern), as YYYY-MM-DD
+  const daysAgo = (n) => {
+    const [y, m, d] = dues.todayISO().split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
+  };
+  let wm, auth;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (const u of ["dues-current", "dues-expired", "dues-soon", "dues-none"]) {
+      await seedUser({ username: u, password: MEMBER_PASSWORD, role: "member" });
+    }
+    auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  });
+
+  test("settings default to $15, a 30-day reminder and blocking off; webmaster only", async () => {
+    const res = await request(app).get("/api/dues/settings").set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 15);
+    assert.equal(res.body.duesReminderDays, 30);
+    assert.equal(res.body.duesEnforcement, false);
+    assert.match(res.body.reminderUrl, /\/api\/dues\/run-reminders\?key=[0-9a-f]{32}$/);
+    assert.equal((await request(app).get("/api/dues/settings").set(await auth("dues-none"))).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: -1 })).status, 400);
+    const changed = await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 20 });
+    assert.equal(changed.body.duesAmount, 20);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
+  test("recording a payment makes the membership good for a year", async () => {
+    const today = dues.todayISO();
+    const res = await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: today, method: "paypal" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.dues.state, "paid");
+    assert.equal(res.body.dues.expires, dues.addOneYear(today));
+    assert.equal(res.body.dues.payments[0].amount, 15); // defaults to the current price
+    const mine = await request(app).get("/api/my-membership").set(await auth("dues-current"));
+    assert.equal(mine.body.state, "paid");
+    assert.ok(mine.body.payLink.startsWith("https://www.paypal.com/"));
+  });
+
+  test("rejects bad payments, and payments for admins/webmasters", async () => {
+    const future = dues.addOneYear(dues.todayISO());
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: future })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: "2026-02-30" })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: daysAgo(1), method: "bitcoin" })).status, 400);
+    assert.equal((await request(app).post("/api/users/webmaster1/dues/payments").set(wm).send({ paidOn: daysAgo(1) })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(await auth("dues-none")).send({ paidOn: daysAgo(1) })).status, 403);
+    const mine = await request(app).get("/api/my-membership").set(wm);
+    assert.equal(mine.body.state, "exempt");
+  });
+
+  test("the dues email only goes to members whose membership has expired", async () => {
+    assert.equal((await request(app).post("/api/users/dues-current/dues/notice").set(wm)).status, 409);
+    assert.equal((await request(app).post("/api/users/dues-none/dues/notice").set(wm)).status, 409);
+    const rec = await request(app).post("/api/users/dues-expired/dues/payments").set(wm).send({ paidOn: daysAgo(400) });
+    assert.equal(rec.body.dues.state, "expired");
+    const sent = await request(app).post("/api/users/dues-expired/dues/notice").set(wm);
+    assert.equal(sent.status, 200);
+    assert.ok(sent.body.dues.noticeSentAt);
+  });
+
+  test("automatic reminders go out once per membership year", async () => {
+    await request(app).post("/api/users/dues-soon/dues/payments").set(wm).send({ paidOn: daysAgo(355) });
+    const first = await app.runDuesReminders("http://localhost");
+    assert.equal(first.sent, 1);
+    const again = await app.runDuesReminders("http://localhost");
+    assert.equal(again.sent, 0);
+    const users = await request(app).get("/api/users").set(wm);
+    const soon = users.body.find((u) => u.username === "dues-soon");
+    assert.equal(soon.dues.state, "due-soon");
+    assert.ok(soon.dues.reminderSentAt);
+    assert.equal(users.body.find((u) => u.username === "webmaster1").dues.state, "exempt");
+  });
+
+  test("the scheduled-task URL needs the right key", async () => {
+    assert.equal((await request(app).get("/api/dues/run-reminders?key=wrong")).status, 403);
+    const { body } = await request(app).get("/api/dues/settings").set(wm);
+    const key = new URL(body.reminderUrl).searchParams.get("key");
+    const res = await request(app).get(`/api/dues/run-reminders?key=${key}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sent, 0);
+  });
+
+  test("blocking (off by default) only affects expired members, and only when switched on", async () => {
+    const expired = await auth("dues-expired");
+    const none = await auth("dues-none");
+    assert.equal((await request(app).get("/api/cave-database").set(expired)).status, 200);
+
+    await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: true });
+    try {
+      const blocked = await request(app).get("/api/cave-database").set(expired);
+      assert.equal(blocked.status, 403);
+      assert.equal(blocked.body.duesExpired, true);
+      assert.equal((await request(app).get("/api/my-membership").set(expired)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(none)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(await auth("dues-current"))).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(wm)).status, 200);
+    } finally {
+      await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: false });
+    }
+  });
+
+  test("deleting a mistaken payment recalculates the expiry", async () => {
+    const users = await request(app).get("/api/users").set(wm);
+    const cur = users.body.find((u) => u.username === "dues-current");
+    const id = cur.dues.payments[0].id;
+    const res = await request(app).delete(`/api/users/dues-current/dues/payments/${id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.dues.state, "none");
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Dues Payment Deleted" && l.username === "dues-current"));
+  });
+});
+
+describe("treasurer", () => {
+  let wm;
+  const auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await seedUser({ username: "treasurer1", password: MEMBER_PASSWORD, role: "member" });
+    await seedUser({ username: "new-signup", password: MEMBER_PASSWORD, role: "member", status: "pending" });
+    await seedUser({ username: "an-admin", password: MEMBER_PASSWORD, role: "admin" });
+  });
+
+  test("only a webmaster can grant Treasurer access", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).post("/api/users/treasurer1/treasurer").set(t).send({ isTreasurer: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/users/webmaster1/treasurer").set(wm).send({ isTreasurer: true })).status, 400);
+    const res = await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: true });
+    assert.equal(res.status, 200);
+    const loginRes = await request(app).post("/api/login").send({ username: "treasurer1", password: MEMBER_PASSWORD });
+    assert.equal(loginRes.body.isTreasurer, true);
+  });
+
+  test("a Treasurer can list members, record payments and approve accounts", async () => {
+    const t = await auth("treasurer1");
+    const list = await request(app).get("/api/dues/members").set(t);
+    assert.equal(list.status, 200);
+    assert.ok(list.body.members.every((m) => m.username !== "webmaster1" && m.username !== "an-admin"));
+    assert.ok(list.body.members.some((m) => m.username === "new-signup" && m.status === "pending"));
+
+    const pay = await request(app).post("/api/users/new-signup/dues/payments").set(t).send({ paidOn: require("../lib/dues").todayISO() });
+    assert.equal(pay.status, 201);
+    const act = await request(app).post("/api/dues/members/new-signup/status").set(t).send({ active: true });
+    assert.equal(act.status, 200);
+    assert.equal(act.body.status, "active");
+    assert.equal((await request(app).post("/api/login").send({ username: "new-signup", password: MEMBER_PASSWORD })).status, 200);
+
+    const settings = await request(app).get("/api/dues/settings").set(t);
+    assert.equal(settings.status, 200);
+    assert.equal(settings.body.reminderUrl, null); // the scheduled-task link stays webmaster-only
+  });
+
+  test("a Treasurer can change the dues price, but not the other dues settings", async () => {
+    const t = await auth("treasurer1");
+    const res = await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 17.5 });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 17.5);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesReminderDays: 10 })).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 20, duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/settings").set(wm)).body.duesAmount, 17.5);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
+  test("a Treasurer can't do webmaster-only things", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).get("/api/users").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/an-admin/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/webmaster1/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/treasurer1/status").set(t).send({ active: false })).status, 400);
+    assert.equal((await request(app).get("/api/security-logs").set(t)).status, 403);
+  });
+
+  test("removing Treasurer access takes effect straight away", async () => {
+    const t = await auth("treasurer1");
+    await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: false });
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Account Activated" && l.username === "new-signup"));
+    assert.ok(logs.body.some((l) => l.action === "Treasurer Access Removed" && l.username === "treasurer1"));
+  });
+});
+
+describe("Cave Jump page", () => {
+  test("is always available, even in maintenance mode", async () => {
+    const res = await request(app).get("/cave-jump");
+    assert.equal(res.status, 200);
+    assert.match(res.text, /<title>Cave Jump/);
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      const during = await request(app).get("/cave-jump");
+      assert.equal(during.status, 200);
+      assert.match(during.text, /<title>Cave Jump/);
+      assert.equal((await request(app).get("/js/game.js")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});
+
+describe("Cave Jump leaderboard", () => {
+  const post = (h, body) => request(app).post("/api/cave-jump/scores").set(h).send(body);
+  let wm;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (let i = 1; i <= 12; i++) await seedUser({ username: `jumper${i}`, password: MEMBER_PASSWORD, role: "member" });
+  });
+
+  test("anyone can see the board; only logged-in players can add to it", async () => {
+    const res = await request(app).get("/api/cave-jump/leaderboard");
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body.top));
+    assert.equal(res.body.you, null);
+    assert.equal((await request(app).post("/api/cave-jump/scores").send({ score: 10, seconds: 5 })).status, 401);
+  });
+
+  test("keeps each player's best score under their username, top 10 only", async () => {
+    for (let i = 1; i <= 12; i++) {
+      const h = { Authorization: `Bearer ${await login(`jumper${i}`, MEMBER_PASSWORD)}` };
+      const r = await post(h, { score: i * 100, seconds: 60 });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.isNewBest, true);
+    }
+    const h1 = { Authorization: `Bearer ${await login("jumper12", MEMBER_PASSWORD)}` };
+    const lower = await post(h1, { score: 50, seconds: 60 });
+    assert.equal(lower.body.isNewBest, false);
+    assert.equal(lower.body.you.best, 1200);
+    assert.equal(lower.body.you.rank, 1);
+
+    const board = (await request(app).get("/api/cave-jump/leaderboard")).body;
+    assert.equal(board.top.length, 10);
+    assert.deepEqual(board.top.slice(0, 3).map((e) => [e.rank, e.name, e.score]),
+      [[1, "jumper12", 1200], [2, "jumper11", 1100], [3, "jumper10", 1000]]);
+    assert.equal(board.top[9].name, "jumper3");
+    assert.equal(board.top[0].id, undefined); // account ids only go to webmasters
+  });
+
+  test("rejects scores that don't fit the run", async () => {
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await post(h, { score: 100000, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 1.5, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 100, seconds: 0 })).status, 400);
+    assert.equal((await post(h, { score: -1, seconds: 10 })).status, 400);
+  });
+
+  test("a webmaster can remove a score", async () => {
+    const board = (await request(app).get("/api/cave-jump/leaderboard").set(wm)).body;
+    assert.equal(board.canManage, true);
+    const top = board.top[0];
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(h)).status, 403);
+    const res = await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.top[0].name, "jumper11");
+  });
+
+  test("the board still works in maintenance mode", async () => {
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      assert.equal((await request(app).get("/api/cave-jump/leaderboard")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});
+
+describe("legal first and last names", () => {
+  test("sign-up requires a first and last name and stores them", async () => {
+    const base = { username: "named-signup", email: "named-signup@example.com", password: "SomeStrongPass123!", states: ["FL"] };
+    assert.equal((await request(app).post("/api/create-account").send(base)).status, 400);
+    assert.equal((await request(app).post("/api/create-account").send({ ...base, firstName: "Ann", lastName: "<b>x</b>" })).status, 400);
+    const ok = await request(app).post("/api/create-account").send({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
+    assert.equal(ok.status, 200);
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const u = users.find((x) => x.username === "named-signup");
+    assert.equal(u.firstName, "Mary-Jane");
+    assert.equal(u.lastName, "O'Neil");
+    assert.equal(u.fullName, "Mary-Jane O'Neil");
+  });
+
+  test("accepts names with accents and spaces", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "named-accent", email: "named-accent@example.com", password: "SomeStrongPass123!", states: ["FL"],
+      firstName: "José", lastName: "St. John",
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("webmasters see names and can set them on existing accounts", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const list = await request(app).get("/api/users").set(wm);
+    assert.equal(list.body.find((u) => u.username === "named-signup").lastName, "O'Neil");
+    const res = await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Pat", lastName: "Caver" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.fullName, "Pat Caver");
+    assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "", lastName: "Caver" })).status, 400);
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).post("/api/users/member1/name").set(member).send({ firstName: "Me", lastName: "Me" })).status, 403);
+  });
+});
+
+describe("email checks at sign-up", () => {
+  const base = { firstName: "Em", lastName: "Check", password: "SomeStrongPass123!", states: ["FL"] };
+  test("sign-up rejects disposable inboxes and typo domains", async () => {
+    const d = await request(app).post("/api/create-account").send({ ...base, username: "disp1", email: "disp1@mailinator.com" });
+    assert.equal(d.status, 400);
+    const t = await request(app).post("/api/create-account").send({ ...base, username: "typo1", email: "typo1@gmial.com" });
+    assert.equal(t.status, 400);
+    assert.equal(t.body.suggestion, "typo1@gmail.com");
+  });
+
+  test("the instant check route reports problems without revealing accounts", async () => {
+    const bad = await request(app).post("/api/check-email").send({ email: "x@yopmail.com" });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    const good = await request(app).post("/api/check-email").send({ email: "member1@example.com" });
+    assert.deepEqual(good.body, { ok: true }); // an existing member's email looks the same as any other
+  });
+
+  test("webmaster-created accounts are checked too", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const res = await request(app).post("/api/create-user").set("Authorization", wm)
+      .send({ firstName: "A", lastName: "B", username: "wmdisp", email: "wmdisp@guerrillamail.com", password: "SomeStrongPass123!" });
+    assert.equal(res.status, 400);
+  });
+});

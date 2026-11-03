@@ -218,13 +218,11 @@
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
 
+  // Mouse on the on-screen buttons (touch is handled by the screen halves below)
   function bindHold(el, onDown, onUp) {
     if (!el) return;
     const down = (e) => { e.preventDefault(); onDown(); };
     const up = (e) => { e.preventDefault(); onUp(); };
-    el.addEventListener("touchstart", down, { passive: false });
-    el.addEventListener("touchend", up, { passive: false });
-    el.addEventListener("touchcancel", up, { passive: false });
     el.addEventListener("mousedown", down);
     el.addEventListener("mouseup", up);
     el.addEventListener("mouseleave", up);
@@ -232,12 +230,55 @@
   bindHold(touchJumpBtn, () => { if (!keys.up) jumpPressedEdge = true; keys.up = true; }, () => { keys.up = false; });
   bindHold(touchDuckBtn, () => { keys.down = true; }, () => { keys.down = false; });
 
-  canvas.addEventListener("pointerdown", () => {
+  // Mouse/pen: click the game to jump (touch is handled below)
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "touch") return;
     canvas.focus();
     if (!keys.up) jumpPressedEdge = true;
     keys.up = true;
   });
-  canvas.addEventListener("pointerup", () => { keys.up = false; });
+  canvas.addEventListener("pointerup", (e) => { if (e.pointerType !== "touch") keys.up = false; });
+
+  // Touch: while playing, a touch anywhere on the LEFT half of the screen is
+  // DUCK and anywhere on the RIGHT half is JUMP, so a thumb that misses the
+  // button still counts. Several fingers work at once (hold duck with one,
+  // jump with the other). The matching on-screen button lights up. While
+  // not playing (start / paused / game over) touches work normally, so the
+  // overlay buttons, links and the Top 10 behave as usual.
+  const activeTouches = new Map(); // touch id -> "duck" | "jump"
+  function syncTouchKeys() {
+    let duck = false, jump = false;
+    activeTouches.forEach((zone) => { if (zone === "duck") duck = true; else jump = true; });
+    if (jump && !keys.up) jumpPressedEdge = true;
+    keys.up = jump;
+    keys.down = duck;
+    if (touchDuckBtn) touchDuckBtn.classList.toggle("pressed", duck);
+    if (touchJumpBtn) touchJumpBtn.classList.toggle("pressed", jump);
+  }
+  // Controls that must keep working normally even mid-game
+  const isUiTarget = (t) => !!(t && t.closest && t.closest("a, #muteBtn, .overlay:not(.hidden)"));
+  document.addEventListener("touchstart", (e) => {
+    if (!game || game.state !== STATE.PLAYING || isUiTarget(e.target)) return;
+    e.preventDefault(); // no text selection, scrolling or zooming mid-game
+    for (const t of e.changedTouches) {
+      activeTouches.set(t.identifier, t.clientX < window.innerWidth / 2 ? "duck" : "jump");
+    }
+    syncTouchKeys();
+  }, { passive: false });
+  const endTouches = (e) => {
+    let changed = false;
+    for (const t of e.changedTouches) if (activeTouches.delete(t.identifier)) changed = true;
+    if (changed) { if (e.cancelable) e.preventDefault(); syncTouchKeys(); }
+  };
+  document.addEventListener("touchend", endTouches, { passive: false });
+  document.addEventListener("touchcancel", endTouches, { passive: false });
+  document.addEventListener("touchmove", (e) => {
+    if (activeTouches.size && e.cancelable) e.preventDefault(); // don't scroll while a control is held
+  }, { passive: false });
+  // No long-press menu on the game page
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target && e.target.closest && e.target.closest(".game-shell")) e.preventDefault();
+  });
 
   // ------------------------------------------------------------------ //
   // Particles
@@ -1044,6 +1085,7 @@
       this.player.reset();
       this.spawner.reset();
       this.score = 0;
+      this.playTime = 0; // seconds actually played (not paused) - sent with the score
       this.lives = START_LIVES;
       this.speed = START_SPEED;
       this.shake = 0;
@@ -1099,6 +1141,10 @@
       highscoreEl.textContent = this.highScore;
       gameOverMsg.textContent = isNew ? "New best! The cave has never been tamed like this." : pick(this.gameOverMessages);
       gameOverOverlay.classList.remove("hidden");
+      // Lets js/cave-jump-board.js save the run to the Top 10
+      window.dispatchEvent(new CustomEvent("cavejump:gameover", {
+        detail: { score: Math.floor(this.score), seconds: Math.round((this.playTime || 0) * 10) / 10 },
+      }));
     }
 
     checkCollisions() {
@@ -1163,6 +1209,7 @@
       if (this.state !== STATE.PLAYING) return;
 
       this.speed = Math.min(MAX_SPEED, this.speed + SPEED_RAMP * dt);
+      this.playTime = (this.playTime || 0) + dt;
       this.score += this.speed * dt * 0.08;
       scoreEl.textContent = Math.floor(this.score);
 

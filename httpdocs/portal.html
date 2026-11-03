@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=6">
+ <link rel="stylesheet" href="styles.css?v=10">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -156,6 +156,12 @@
 <h1 id="main-header-title">Florida Cave Survey</h1>
 <p>Review and manage cave survey submissions</p>
 </div>
+<!-- Donate: opens PayPal's own donation page for the FCS PayPal account in
+     a new tab. A plain link (not a form) so no payment data ever touches
+     this site, and so the page's CSP form-action rule doesn't apply. -->
+<div class="donate-container">
+<a class="donate-btn" href="https://www.paypal.com/donate/?business=Floridacavesurvey%40gmail.com&amp;item_name=Donation+to+the+Florida+Cave+Survey&amp;currency_code=USD" target="_blank" rel="noopener noreferrer" title="Donate to the Florida Cave Survey with PayPal (opens in a new tab)">&#10084; Donate</a>
+</div>
 </div>
 </div>
 <!-- Login Section -->
@@ -185,24 +191,35 @@
     <!-- Create Account Form -->
     <div id="create-account-form" class="auth-form" style="display: none;">
       <h2>Create New Account</h2>
+      <p class="required-note">All fields are required <span class="required-mark" aria-hidden="true">*</span></p>
       <div class="form-group">
-        <label for="new-username">Username:</label>
+        <label for="new-first-name">First name: <span class="required-mark" aria-hidden="true">*</span></label>
+        <input id="new-first-name" placeholder="Your legal first name" type="text" maxlength="50" autocomplete="given-name" required/>
+      </div>
+      <div class="form-group">
+        <label for="new-last-name">Last name: <span class="required-mark" aria-hidden="true">*</span></label>
+        <input id="new-last-name" placeholder="Your legal last name" type="text" maxlength="50" autocomplete="family-name" required/>
+        <small>Your legal name, so the Florida Cave Survey can identify its members. Only webmasters can see it.</small>
+      </div>
+      <div class="form-group">
+        <label for="new-username">Username: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-username" placeholder="Choose a username" type="text" required/>
       </div>
       <div class="form-group">
-        <label for="new-email">Email:</label>
-        <input id="new-email" placeholder="Enter your email" type="email" required/>
+        <label for="new-email">Email: <span class="required-mark" aria-hidden="true">*</span></label>
+        <input id="new-email" placeholder="Enter your email" type="email" autocomplete="email" required/>
+        <small id="new-email-check" class="email-check" aria-live="polite"></small>
       </div>
       <div class="form-group">
-        <label for="new-password">Password:</label>
+        <label for="new-password">Password: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="new-password" placeholder="Choose a password" type="password" required/>
       </div>
       <div class="form-group">
-        <label for="confirm-password">Confirm Password:</label>
+        <label for="confirm-password">Confirm Password: <span class="required-mark" aria-hidden="true">*</span></label>
         <input id="confirm-password" placeholder="Confirm your password" type="password" required/>
       </div>
       <div class="form-group">
-        <label for="new-account-states">State(s) you're a member for:</label>
+        <label for="new-account-states">State(s) you're a member for: <span class="required-mark" aria-hidden="true">*</span></label>
         <select id="new-account-states" multiple size="6" required></select>
         <small>Hold Ctrl/Cmd to select more than one. A webmaster can grant you access to additional states later.</small>
       </div>
@@ -331,6 +348,7 @@
 <div class="tab" data-tab="narrative-tab">Narrative</div>
 <div class="tab" id="account-management-tab" data-tab="account-management" style="display: none;">Account Management</div>
 <div class="tab" id="website-management-tab" data-tab="website-management" style="display: none;">Website Management</div>
+<div class="tab" data-tab="site-updates">Site Updates</div>
 </div>
 
 <!-- Quill Core CSS -->
@@ -373,7 +391,9 @@
 <!-- Account Management Tab Content -->
 <div class="tab-content" id="account-management">
   <h3>Account Management</h3>
-  <p>Manage user accounts, permissions, and security settings.</p>
+  <p id="account-management-intro">Manage user accounts, permissions, and security settings.</p>
+  <!-- The Treasurer's dues-only view, filled by js/membership.js -->
+  <div id="treasurer-view" style="display: none;"></div>
   
   <div class="account-management-controls">
     <div class="control-section">
@@ -390,8 +410,11 @@
         <label>Email<br>
           <input type="email" id="new-user-email" style="padding: 6px; width: 200px;">
         </label>
-        <label>Full Name (optional)<br>
-          <input type="text" id="new-user-fullname" style="padding: 6px; width: 160px;">
+        <label>First Name<br>
+          <input type="text" id="new-user-firstname" maxlength="50" style="padding: 6px; width: 140px;">
+        </label>
+        <label>Last Name<br>
+          <input type="text" id="new-user-lastname" maxlength="50" style="padding: 6px; width: 140px;">
         </label>
         <label>Password<br>
           <input type="text" id="new-user-password" style="padding: 6px; width: 160px;">
@@ -400,6 +423,9 @@
       </div>
       <p id="create-user-status" style="margin-top: 8px;"></p>
     </div>
+
+    <!-- Membership Dues settings (webmasters), filled by js/membership.js -->
+    <div class="control-section" id="dues-settings-section"></div>
 
     <div class="control-section">
       <h4>User Accounts</h4>
@@ -413,9 +439,11 @@
           <thead>
             <tr>
               <th>Username</th>
+              <th>Name</th>
               <th>Email</th>
               <th>Role</th>
               <th>Status</th>
+              <th>Dues</th>
               <th>States</th>
               <th>2FA</th>
               <th>Last Login</th>
@@ -482,7 +510,7 @@
 
     <div class="control-section">
       <h4>Notification Banner</h4>
-      <p style="margin-bottom: 10px;">Shows a thin bar at the very top of every page, for everyone, logged in or not. Any web address you type (starting with http:// or https://) automatically becomes a clickable link - no HTML needed.</p>
+      <p style="margin-bottom: 10px;">Shows a thin bar at the very top of every page, for everyone, logged in or not. Web addresses (like https://example.com, www.caves.org or fcs.caves.org/portal) and email addresses (like someone@caves.org) you type automatically become clickable links - no HTML needed.</p>
       <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <input type="checkbox" id="banner-enabled-toggle" style="width: 18px; height: 18px;">
         <strong>Show notification banner</strong>
@@ -667,6 +695,15 @@
   </div>
 </div>
 
+<!-- Site Updates Tab Content: timeline of every change to the site,
+     filled by js/site-updates.js from config/site-updates.json -->
+<div class="tab-content" id="site-updates">
+<h3>Site Updates</h3>
+<p style="color: #555; margin-top: 0;">Every change to the site, newest first. Have an idea, or found something broken? Let the webmasters know.</p>
+<div id="feedback-section"></div>
+<div id="site-updates-list">Loading&hellip;</div>
+</div>
+
 <!-- Interactive Map Tab Content -->
 <div class="tab-content" id="map-tab">
 <div class="map-controls">
@@ -766,8 +803,8 @@
 <!-- Multi-Angle Hillshade + Transparency -->
 <div class="control-block">
 <label><input id="multi-angle-hillshade" type="checkbox"/> Multi-Angle Hillshade</label>
-<label for="hillshade-opacity">Transparency: <span id="hillshade-opacity-value">20%</span></label>
-<input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="80"/>
+<label for="hillshade-opacity">Transparency: <span id="hillshade-opacity-value">25%</span></label>
+<input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="25"/>
 </div>
 
 <!-- Waypoints Heatmap + Transparency -->
@@ -1045,27 +1082,6 @@
 </div>
 <div class="stats-card-body">
 <div class="chart-container" id="equipment-chart"></div>
-</div>
-</div>
-<!-- Recent Activity Section - inside the grid (not a separate sibling
-     element) so it participates in the same hide/reorder system as every
-     other card; .full-width already makes it span every column via
-     grid-column, so this is a no-op visually. -->
-<div class="stats-card full-width" data-card-id="recent-activity">
-<div class="stats-card-header">
-<h4>Recent Activity</h4>
-</div>
-<div class="stats-card-body">
-<table class="stats-table">
-<thead>
-<tr>
-<th>Date</th>
-<th>Action</th>
-<th>User</th>
-<th>Details</th>
-</tr>
-</thead>
-</table>
 </div>
 </div>
 </div>
@@ -1485,6 +1501,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
 <script src="https://unpkg.com/georaster-layer-for-leaflet@3.7.0/dist/georaster-layer-for-leaflet.min.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
+<!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
+<script src="js/terrain3d.js?v=4"></script>
+<!-- "What's new" card after login + the Site Updates tab -->
+<script src="js/site-updates.js?v=2"></script>
+<!-- Membership dues: status line, Dues column, dues settings -->
+<script src="js/membership.js?v=5"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -1789,7 +1811,7 @@
             
             // Get the current transparency value from the slider
             const transparencySlider = document.getElementById('hillshade-opacity');
-            const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 80;
+            const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 25;
             const opacityValue = (100 - transparencyValue) / 100; // Convert to opacity (0-1)
             
             // Apply the opacity value
@@ -2232,6 +2254,32 @@
         // Add scale bar (bottom-left corner)
         L.control.scale({ imperial: true, metric: true, position: 'bottomleft' }).addTo(map);
 
+        // 3D terrain view: "3D" button under the zoom control. Shows the
+        // whole map view or a box the user drags, with the caves currently
+        // shown on the map (after filters) as coloured pins.
+        if (window.Terrain3D) {
+          Terrain3D.attachControl(map, {
+            getMarkers: function() {
+              const out = [];
+              if (!cavesLayer) return out;
+              cavesLayer.eachLayer(function(layer) {
+                if (!layer.getLatLng) return;
+                const ll = layer.getLatLng();
+                out.push({ lat: ll.lat, lng: ll.lng, color: layer.options.fillColor, label: layer.caveName || '' });
+              });
+              return out;
+            },
+            // Basemaps that can be draped over the 3D terrain
+            getBasemaps: function() {
+              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer]]
+                .filter(function(pair) { return pair[1] && pair[1]._url; })
+                .map(function(pair) {
+                  return { label: pair[0], url: pair[1]._url, options: pair[1].options, active: map.hasLayer(pair[1]) };
+                });
+            }
+          });
+        }
+
         // Create a custom location control
         const locationControl = L.Control.extend({
           options: {
@@ -2473,7 +2521,7 @@
       
       // Get the current transparency value from the slider
       const transparencySlider = document.getElementById('hillshade-opacity');
-      const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 80;
+      const transparencyValue = transparencySlider ? parseInt(transparencySlider.value, 10) : 25;
       const opacityValue = (100 - transparencyValue) / 100; // Convert to opacity (0-1)
       
       // Remove all base layers with error handling
@@ -2690,6 +2738,8 @@
           opacity: 1,
           fillOpacity: 0.6
         });
+        // Read by the 3D terrain view to label this cave's pin
+        marker.caveName = cave.name || cave.id || '';
 
         
         // Add popup with cave info
@@ -3845,9 +3895,7 @@ function updateStatistics() {
   createCountiesChart(caveDataStore);
   createEntryStatusChart(commercialCaves, governmentCaves, privateCaves, otherAccessCaves);
   createEquipmentChart(caveDataStore);
-  
-  // Update recent activity
-  updateRecentActivity();
+
 // Make sure each card exists before updating
 if (!document.getElementById('avg-cave-length')) {
     createDimensionsStatsCard();
@@ -3976,7 +4024,6 @@ const STATS_CARD_TITLES = {
   'counties': 'Caves by County',
   'entry-status': 'Caves by Entry Status',
   'equipment': 'Equipment Requirements',
-  'recent-activity': 'Recent Activity',
   'dimensions': 'Dimension Statistics',
   'geology': 'Geological Distribution',
   'hazards': 'Hazard Statistics',
@@ -3993,7 +4040,7 @@ const STATS_CARD_TITLES = {
 // customized/saved) and what "Reset to Default" restores.
 const STATS_CARD_DEFAULT_ORDER = [
   'summary', 'nationwide', 'access-status', 'cave-types', 'states', 'counties',
-  'entry-status', 'equipment', 'recent-activity', 'dimensions', 'geology',
+  'entry-status', 'equipment', 'dimensions', 'geology',
   'hazards', 'elevation', 'historical-timeline', 'documentation-coverage',
   'top-contributors', 'map-status', 'submission-funnel',
 ];
@@ -4237,79 +4284,6 @@ function createEquipmentChart(caveData) {
   });
 }
 
-// Add recent activity table update function
-async function updateRecentActivity() {
-  const activityTable = document.getElementById('recent-activity-table');
-  if (!activityTable) return;
-
-  activityTable.innerHTML = '<tr><td colspan="4">Loading...</td></tr>';
-
-  let submissions = [];
-  try {
-    const response = await fetch('/api/pending-submissions');
-    if (response.ok) submissions = await response.json();
-  } catch (error) {
-    console.error('Failed to load submissions for recent activity:', error);
-  }
-
-  // Build activity entries from real submission events
-  const activities = [];
-
-  submissions.forEach(sub => {
-    const caveLabel = sub.caveName || sub.caveId;
-    const actionLabel = sub.type === 'new_cave' ? 'New Cave Proposed' : 'Cave Edit Proposed';
-
-    activities.push({
-      date: new Date(sub.submittedAt),
-      action: actionLabel,
-      user: sub.submittedBy,
-      details: `Proposed "${caveLabel}"`
-    });
-
-    if (sub.status === 'approved' && sub.approvedDate) {
-      activities.push({
-        date: new Date(sub.approvedDate),
-        action: 'Submission Approved',
-        user: sub.approvedBy,
-        details: `Approved "${caveLabel}"${sub.assignedCaveId ? ` (ID ${sub.assignedCaveId})` : ''}`
-      });
-    } else if (sub.status === 'rejected' && sub.rejectedDate) {
-      activities.push({
-        date: new Date(sub.rejectedDate),
-        action: 'Submission Rejected',
-        user: sub.rejectedBy,
-        details: `Rejected "${caveLabel}"`
-      });
-    }
-  });
-
-  // Sort activities by date (newest first)
-  activities.sort((a, b) => b.date - a.date);
-
-  // Take the 10 most recent activities
-  const recentActivities = activities.slice(0, 10);
-
-  activityTable.innerHTML = '';
-  recentActivities.forEach(activity => {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formatDate(activity.date.toISOString())}</td>
-      <td>${escapeStatsHtml(activity.action)}</td>
-      <td>${escapeStatsHtml(activity.user || 'Unknown')}</td>
-      <td>${escapeStatsHtml(activity.details)}</td>
-    `;
-    activityTable.appendChild(row);
-  });
-
-  // If no activities, show a message
-  if (recentActivities.length === 0) {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td colspan="4">No recent activity found.</td>
-    `;
-    activityTable.appendChild(row);
-  }
-}
 
 // Create the cave types pie chart
 function createCaveTypesChart(landCaves, underwaterCaves) {
@@ -7333,6 +7307,8 @@ window.addEventListener('error', function(e) {
           opacity: 1,
           fillOpacity: 0.6
         });
+        // Read by the 3D terrain view to label this cave's pin
+        marker.caveName = cave.name || cave.id || '';
 
         
         // Add popup with cave info
@@ -8129,10 +8105,13 @@ window.addEventListener('error', function(e) {
     document.getElementById('logged-in-user').textContent =
       `Logged in as: ${result.username} (${result.role})`;
 
-    // Show/hide account management tab based on role
+    // Show/hide account management tab based on role. The Treasurer (any
+    // member/admin a webmaster has given that permission) gets it too, with
+    // a dues-only view - see js/membership.js.
+    sessionStorage.setItem('isTreasurer', result.isTreasurer ? '1' : '0');
     const accountTab = document.getElementById('account-management-tab');
     if (accountTab) {
-      if (result.role === 'webmaster') {
+      if (result.role === 'webmaster' || result.isTreasurer) {
         accountTab.style.display = 'block';
       } else {
         accountTab.style.display = 'none';
@@ -8151,6 +8130,12 @@ window.addEventListener('error', function(e) {
     // searchEditCave()'s jump to the Edit Cave Data tab).
     const defaultTab = document.querySelector('.tab[data-tab="map-tab"]');
     if (defaultTab) defaultTab.click();
+
+    // "What's new" card: lists site updates this account hasn't seen yet
+    // (nothing shows if there are none). See js/site-updates.js.
+    if (window.SiteUpdates) SiteUpdates.checkAfterLogin();
+    // Membership dues status by "Logged in as" (see js/membership.js)
+    if (window.Membership) Membership.afterLogin();
 
     // One status fetch, two uses: applyHiddenTabs() runs for every role
     // (unlike the maintenance block below, hidden tabs apply to
@@ -8566,6 +8551,9 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('role');
         sessionStorage.removeItem('sessionToken');
         sessionStorage.removeItem('twoFactorEnabled');
+        sessionStorage.removeItem('isTreasurer');
+        if (window.SiteUpdates) SiteUpdates.hide();
+        if (window.Membership) Membership.hide();
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;
         document.title = 'Florida Cave Survey';
@@ -8659,11 +8647,15 @@ window.addEventListener('error', function(e) {
         // Add this to your existing tab click handler
         if (tabContentId === 'account-management') {
           const currentRole = sessionStorage.getItem('role');
-          if (currentRole !== 'webmaster') {
-            alert('Access denied. Only webmasters can access account management.');
+          if (currentRole === 'webmaster') {
+            if (window.Membership) Membership.showWebmasterView();
+            loadAccountManagement();
+          } else if (sessionStorage.getItem('isTreasurer') === '1' && window.Membership) {
+            Membership.showTreasurerView();
+          } else {
+            alert('Access denied. Only webmasters and the Treasurer can access account management.');
             return;
           }
-          loadAccountManagement();
         }
 
         if (tabContentId === 'website-management') {
@@ -11496,15 +11488,85 @@ async function handleResetPassword() {
 }
 
 // Handle account creation
+// Checks the sign-up email as soon as the box loses focus (POST
+// /api/check-email: format, a domain that can receive email, no
+// disposable inboxes, common typos like gmial.com). The server repeats the
+// same check when the form is submitted.
+(function setUpSignupEmailCheck() {
+  const input = document.getElementById('new-email');
+  const out = document.getElementById('new-email-check');
+  if (!input || !out) return;
+  let lastChecked = '';
+  async function run() {
+    const value = input.value.trim();
+    if (!value || value === lastChecked) return;
+    lastChecked = value;
+    out.className = 'email-check';
+    out.textContent = 'Checking…';
+    try {
+      const r = await fetch('/api/check-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: value }) });
+      const data = await r.json();
+      if (input.value.trim() !== value) return; // changed while checking
+      out.textContent = '';
+      if (data.ok) {
+        out.className = 'email-check ok';
+        out.textContent = '✓ Looks good';
+        input.classList.remove('field-missing');
+      } else {
+        out.className = 'email-check bad';
+        out.textContent = data.reason || 'Please check this email address.';
+        input.classList.add('field-missing');
+        if (data.suggestion) {
+          const use = document.createElement('button');
+          use.type = 'button';
+          use.className = 'email-fix';
+          use.textContent = 'Use ' + data.suggestion;
+          use.addEventListener('click', () => { input.value = data.suggestion; lastChecked = ''; run(); });
+          out.appendChild(document.createTextNode(' '));
+          out.appendChild(use);
+        }
+      }
+    } catch (_) {
+      out.className = 'email-check';
+      out.textContent = '';
+      lastChecked = '';
+    }
+  }
+  input.addEventListener('blur', run);
+  input.addEventListener('input', () => { if (out.classList.contains('ok') || out.classList.contains('bad')) { out.className = 'email-check'; out.textContent = ''; } });
+})();
+
 async function handleCreateAccount() {
+  const firstName = document.getElementById('new-first-name').value.trim();
+  const lastName = document.getElementById('new-last-name').value.trim();
   const username = document.getElementById('new-username').value.trim();
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
   const confirmPassword = document.getElementById('confirm-password').value;
   const states = Array.from(document.getElementById('new-account-states').selectedOptions).map(o => o.value);
 
-  if (!username || !email || !password || !confirmPassword) {
-    alert('Please fill in all fields.');
+  // Every field is required: outline any that are empty, focus the first,
+  // and say which ones are missing
+  const required = [
+    ['new-first-name', 'First name'], ['new-last-name', 'Last name'], ['new-username', 'Username'],
+    ['new-email', 'Email'], ['new-password', 'Password'], ['confirm-password', 'Confirm Password'],
+    ['new-account-states', 'State(s)'],
+  ];
+  const missing = [];
+  required.forEach(([id, label]) => {
+    const el = document.getElementById(id);
+    const empty = el.tagName === 'SELECT' ? el.selectedOptions.length === 0 : !el.value.trim();
+    el.classList.toggle('field-missing', empty);
+    if (empty) {
+      missing.push(label);
+      const clear = () => { el.classList.remove('field-missing'); el.removeEventListener('input', clear); el.removeEventListener('change', clear); };
+      el.addEventListener('input', clear);
+      el.addEventListener('change', clear);
+    }
+  });
+  if (missing.length) {
+    document.getElementById(required.find(([, label]) => label === missing[0])[0]).focus();
+    alert('Please fill in every field. Missing: ' + missing.join(', ') + '.');
     return;
   }
 
@@ -11534,6 +11596,8 @@ async function handleCreateAccount() {
         'X-CSRF-Token': getCSRFToken()
       },
       body: JSON.stringify({
+        firstName: firstName,
+        lastName: lastName,
         username: username,
         email: email,
         password: password,
@@ -11547,6 +11611,8 @@ async function handleCreateAccount() {
       alert('Account created successfully! Please check your email for verification.');
       showLogin();
       // Clear form fields
+      document.getElementById('new-first-name').value = '';
+      document.getElementById('new-last-name').value = '';
       document.getElementById('new-username').value = '';
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
@@ -11603,12 +11669,13 @@ async function handleForgotPassword() {
 async function createUserAccount() {
   const username = document.getElementById('new-user-username').value.trim();
   const email = document.getElementById('new-user-email').value.trim();
-  const fullName = document.getElementById('new-user-fullname').value.trim();
+  const firstName = document.getElementById('new-user-firstname').value.trim();
+  const lastName = document.getElementById('new-user-lastname').value.trim();
   const password = document.getElementById('new-user-password').value;
   const statusEl = document.getElementById('create-user-status');
 
-  if (!username || !email || !password) {
-    statusEl.textContent = 'Username, email, and password are required.';
+  if (!username || !email || !password || !firstName || !lastName) {
+    statusEl.textContent = 'Username, email, first name, last name and password are required.';
     statusEl.style.color = 'red';
     return;
   }
@@ -11621,7 +11688,7 @@ async function createUserAccount() {
         'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
         'X-CSRF-Token': getCSRFToken()
       },
-      body: JSON.stringify({ username, email, password, fullName })
+      body: JSON.stringify({ username, email, password, firstName, lastName })
     });
 
     const result = await response.json();
@@ -11630,7 +11697,8 @@ async function createUserAccount() {
       statusEl.style.color = 'green';
       document.getElementById('new-user-username').value = '';
       document.getElementById('new-user-email').value = '';
-      document.getElementById('new-user-fullname').value = '';
+      document.getElementById('new-user-firstname').value = '';
+      document.getElementById('new-user-lastname').value = '';
       document.getElementById('new-user-password').value = '';
       loadAccountManagement(); // Refresh the list
     } else {
@@ -11680,7 +11748,9 @@ function searchUserAccounts() {
   const filtered = lastLoadedUsers.filter(u =>
     (u.username && u.username.toLowerCase().includes(term)) ||
     (u.email && u.email.toLowerCase().includes(term)) ||
-    (u.fullName && u.fullName.toLowerCase().includes(term))
+    (u.fullName && u.fullName.toLowerCase().includes(term)) ||
+    (u.firstName && u.firstName.toLowerCase().includes(term)) ||
+    (u.lastName && u.lastName.toLowerCase().includes(term))
   );
   displayUsers(filtered, lastLoadedAllStates);
 }
@@ -11711,8 +11781,14 @@ function displayUsers(users, allStates) {
     const lastLogin = user.lastLogin ? 
       new Date(user.lastLogin).toLocaleDateString() + ' ' + new Date(user.lastLogin).toLocaleTimeString() : 'Never';
     
-    const ips = user.loginIPs && user.loginIPs.length > 0 ? 
-      user.loginIPs.slice(-3).join(', ') : 'None';
+    // Newest first: the 5 most recent addresses, the rest behind "Show all".
+    // The server keeps the list ordered oldest -> most recently used.
+    const allIPs = Array.isArray(user.loginIPs) ? user.loginIPs.slice().reverse() : [];
+    const ipLines = (list) => list.map(ip => `<div style="white-space: nowrap;">${escapeStatsHtml(ip)}</div>`).join('');
+    const ips = !allIPs.length ? 'None'
+      : ipLines(allIPs.slice(0, 5)) + (allIPs.length > 5
+        ? `<details style="margin-top: 2px;"><summary style="cursor: pointer; color: var(--secondary-color); font-size: 0.85em;">Show all (${allIPs.length})</summary>${ipLines(allIPs.slice(5))}</details>`
+        : '');
     
     const twoFactorBadge = user.twoFactorEnabled ?
       '<span style="color: green;">🔒 On</span>' :
@@ -11772,13 +11848,18 @@ function displayUsers(users, allStates) {
 
     row.innerHTML = `
       <td>${safeUsername}</td>
+      <td>${window.Membership ? Membership.nameCellHtml(user) : escapeStatsHtml(user.fullName || '')}</td>
       <td>${safeEmail}</td>
-      <td><span class="role-badge role-${user.role}">${user.role}</span></td>
+      <td><span class="role-badge role-${user.role}">${user.role}</span>${user.role === 'webmaster' ? '' : `
+        <label style="display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 0.8em; white-space: nowrap;" title="Can manage dues and set member accounts active or inactive">
+          <input type="checkbox" data-treasurer-toggle data-username="${safeUsername}" ${user.isTreasurer ? 'checked' : ''}> Treasurer
+        </label>`}</td>
       <td>${statusBadge}</td>
+      <td>${window.Membership ? Membership.duesCellHtml(user) : ''}</td>
       <td>${statesCell}</td>
       <td>${twoFactorBadge}</td>
       <td>${lastLogin}</td>
-      <td title="${user.loginIPs ? user.loginIPs.join(', ') : 'None'}">${ips}</td>
+      <td style="font-size: 0.9em;">${ips}</td>
       <td>
         ${user.role === 'webmaster' ? '<em>Protected - no actions available</em>' : `
         <select onchange="changeUserRole(${jsUsername}, this.value)">
@@ -12008,8 +12089,21 @@ function getCSRFToken() {
 </script>
 
 
-  <footer style="text-align: center; font-size: 10px; color: #888; margin-top: 20px;">
+  <footer id="site-footer" style="text-align: center; font-size: 10px; color: #888; margin: 20px 0;">
     Developed by Evan Robinson | NSS #63985 | © 2025
+    <!-- A small, visible-but-tucked-away link to the Cave Jump game -->
+    <div style="margin-top: 6px;">
+      <a href="/cave-jump" title="Take a break: play Cave Jump" style="color: #888; text-decoration: none; font-size: 11px;">&#129415; Cave Jump</a>
+    </div>
   </footer>
+  <script>
+    // An unclosed <div> earlier in this page leaves the footer nested inside
+    // the Edit Cave Data tab, so it only showed on that tab. Move it to the
+    // end of <body> so it shows on every page, including the login page.
+    (function () {
+      var f = document.getElementById('site-footer');
+      if (f) document.body.appendChild(f);
+    })();
+  </script>
 </body>
 </html>

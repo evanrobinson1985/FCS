@@ -6,7 +6,7 @@
 <title>Florida Cave Survey &mdash; Under Construction</title>
 <meta name="description" content="Florida Cave Survey's new site is under construction. Play a quick cave-runner game while you wait.">
 <link rel="icon" href="/fcs-logo.png">
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/style.css?v=3">
 </head>
 <body>
 
@@ -36,6 +36,13 @@
 
         <p>The Florida Cave Survey serves as a bridge between the scientific community, conservation organizations, and property owners, working together to protect Florida's remarkable underground frontier and the unique life it sustains.</p>
       </div>
+    </div>
+
+    <div class="donate-section" style="margin-top: 25px; text-align: center;">
+      <h2 style="margin-bottom: 8px;">Support the Florida Cave Survey</h2>
+      <p style="margin: 0 0 14px;">Your donation helps us document, study and protect Florida's caves.</p>
+      <a href="https://www.paypal.com/donate/?business=Floridacavesurvey%40gmail.com&amp;item_name=Donation+to+the+Florida+Cave+Survey&amp;currency_code=USD" target="_blank" rel="noopener noreferrer"
+         style="display: inline-block; color: var(--secondary-color, #4b86b4); font-weight: 600; font-size: 0.9rem; padding: 6px 16px; border: 1px solid currentColor; border-radius: 16px; text-decoration: none;">&#10084; Donate with PayPal</a>
     </div>
 
     <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid var(--accent-color); width: 100%;">
@@ -110,13 +117,17 @@
     </div>
   </div>
 
+  <!-- Top 10 leaderboard, filled by js/cave-jump-board.js -->
+  <section id="cj-board" class="cj-board" aria-label="Cave Jump Top 10"></section>
+
   <footer class="site-footer">
     <p>Thanks for your patience &mdash; check back soon.</p>
   </footer>
 
 </div>
 
-<script src="/js/game.js" defer></script>
+<script src="/js/game.js?v=3" defer></script>
+<script src="/js/cave-jump-board.js?v=2" defer></script>
 <script>
   // Swaps in the webmaster's custom maintenance message (set from the
   // Website Management tab) if one is configured, replacing the default
