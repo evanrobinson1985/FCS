@@ -992,6 +992,10 @@
 <span class="stat-value" id="total-caves">0</span>
 </div>
 <div class="stat-item">
+<span class="stat-label">Total Entrances:</span>
+<span class="stat-value" id="total-entrances">0</span>
+</div>
+<div class="stat-item">
 <span class="stat-label">Land Caves:</span>
 <span class="stat-value" id="land-caves">0</span>
 </div>
@@ -3859,6 +3863,43 @@ async function updateSubmissionFunnel() {
     : 'N/A';
 }
 
+// A number of Florida's older multi-entrance caves predate the `entrances`
+// array convention and are instead stored as separate sibling records with
+// a single trailing lowercase letter on the ID (FJK0227a, FJK0227b, ...) -
+// one database row per physical entrance, rather than one row for the cave
+// with its extra entrances nested inside. caveDataStore.length therefore
+// overcounts distinct caves by however many of these legacy sibling groups
+// exist. This strips that trailing letter to recover the shared "real"
+// cave identity, so siblings can be grouped back into one cave - a cave ID
+// otherwise never ends directly in a lowercase letter. Mirrors
+// caveBaseId()/countDistinctCaves()/countTotalEntrances() in server.js.
+function caveBaseId(id) {
+  const m = /^(.+\d)[a-z]$/.exec(id || '');
+  return m ? m[1] : id;
+}
+function countDistinctCaves(caves) {
+  return new Set(caves.map(c => caveBaseId(c.id) || c.id)).size;
+}
+function countTotalEntrances(caves) {
+  return caves.reduce((sum, c) => sum + 1 + (Array.isArray(c.entrances) ? c.entrances.length : 0), 0);
+}
+// One representative record per distinct cave (first one found), for stats
+// that break caves down by a property (type, etc.) rather than just
+// counting them - a lettered-suffix sibling carries its own copy of that
+// property, so counting straight from caveDataStore double-counts those
+// too, not just the overall total.
+function dedupeCavesByBaseId(caves) {
+  const seen = new Set();
+  const out = [];
+  for (const c of caves) {
+    const key = caveBaseId(c.id) || c.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 // Update the statistics page with real data
 function updateStatistics() {
   // Several cards below call `new Chart(...)` directly - if this runs
@@ -3881,16 +3922,23 @@ function updateStatistics() {
   // the whole survey's scale.
   loadNationwideCaveStats();
 
-  // Basic counts
-  const totalCaves = caveDataStore.length;
+  // Basic counts. "Total Caves" is distinct caves - it collapses the
+  // legacy lettered-suffix sibling records some older multi-entrance caves
+  // are still stored as (see countDistinctCaves above) so it isn't
+  // inflated by counting each of a cave's entrances as its own cave.
+  // "Total Entrances" is the uncollapsed figure, every entrance however
+  // it's represented, for anyone who wants that instead.
+  const distinctCaves = dedupeCavesByBaseId(caveDataStore);
+  const totalCaves = distinctCaves.length;
   document.getElementById('total-caves').textContent = totalCaves;
-  
+  document.getElementById('total-entrances').textContent = countTotalEntrances(caveDataStore);
+
   // Count by type
-  const landCaves = caveDataStore.filter(cave => cave.type.includes('Land')).length;
-  const underwaterCaves = caveDataStore.filter(cave => cave.type.includes('Underwater')).length;
+  const landCaves = distinctCaves.filter(cave => cave.type.includes('Land')).length;
+  const underwaterCaves = distinctCaves.filter(cave => cave.type.includes('Underwater')).length;
   document.getElementById('land-caves').textContent = landCaves;
   document.getElementById('underwater-caves').textContent = underwaterCaves;
-  
+
   // Count unique state+county pairs - a bare county code can collide across
   // states, so pairing it with state avoids undercounting.
   const counties = new Set(caveDataStore.map(cave => {

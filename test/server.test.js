@@ -956,6 +956,32 @@ describe("public Florida cave count (header banner)", () => {
     const after = await request(app).get("/api/cave-count");
     assert.equal(after.body.count, before.body.count, "a non-Florida cave must not change the Florida count");
   });
+
+  test("collapses legacy lettered-suffix sibling records (FJK0227a/FJK0227b) into one cave", () => {
+    const caves = [
+      { id: "FJK0227a", name: "Jackson Blue Spring" },
+      { id: "FJK0227b", name: "Source Nuveau" },
+      { id: "FAL0001", name: "Alligator Hole" },
+    ];
+    assert.equal(app.countDistinctCaves(caves), 2, "the lettered pair must count as one cave, plus the unrelated one");
+  });
+
+  test("countTotalEntrances counts every entrance, nested or lettered-suffix, unlike countDistinctCaves", () => {
+    const caves = [
+      { id: "FJK0227a", name: "Jackson Blue Spring" },
+      { id: "FJK0227b", name: "Source Nuveau" },
+      { id: "FAL0001", name: "Alligator Hole", entrances: [{ name: "Second Entrance" }, { name: "Third Entrance" }] },
+    ];
+    assert.equal(app.countDistinctCaves(caves), 2);
+    assert.equal(app.countTotalEntrances(caves), 2 + 3, "the lettered pair is 2 entrances, the nested-entrance cave is 1 + 2");
+  });
+
+  test("caveBaseId only strips a trailing lowercase letter after a digit, not a normal ID", () => {
+    assert.equal(app.caveBaseId("FJK0227a"), "FJK0227");
+    assert.equal(app.caveBaseId("FJK0227"), "FJK0227");
+    assert.equal(app.caveBaseId(""), "");
+    assert.equal(app.caveBaseId(null), null);
+  });
 });
 
 describe("state/county reference config", () => {

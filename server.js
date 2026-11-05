@@ -1448,6 +1448,13 @@ if (process.env.NODE_ENV !== "test") {
   setInterval(() => runDuesReminders(defaultSiteUrl()), 60 * 60 * 1000).unref();
 }
 app.runDuesReminders = runDuesReminders; // for the test suite
+// for the test suite - the legacy lettered-suffix-sibling collapsing logic
+// used by /api/cave-count and /api/cave-database/state-counts is easiest
+// to verify directly against plain objects, since the public API doesn't
+// offer a way to create a cave with a specific (suffixed) ID.
+app.caveBaseId = caveBaseId;
+app.countDistinctCaves = countDistinctCaves;
+app.countTotalEntrances = countTotalEntrances;
 
 // ---- Cave Jump leaderboard --------------------------------------------------
 // Top 10 of each account's best score, shown on /cave-jump and the
@@ -2012,28 +2019,29 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
 // scale without exposing any individual cave's location, name, or other
 // details for a state they aren't granted - only a count.
 app.get("/api/cave-database/state-counts", authenticateToken, (req, res) => {
-  const counts = {};
+  const byState = {};
   caveDatabase.forEach((cave) => {
     const state = resolveCaveStateAndCounty(cave).state;
     if (!state) return;
-    counts[state] = (counts[state] || 0) + 1;
+    if (!byState[state]) byState[state] = [];
+    byState[state].push(cave);
   });
 
   const states = statesConfig
-    .map((s) => ({ code: s.code, name: s.name, count: counts[s.code] || 0 }))
+    .map((s) => ({ code: s.code, name: s.name, count: byState[s.code] ? countDistinctCaves(byState[s.code]) : 0 }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
-  res.json({ total: caveDatabase.length, states });
+  res.json({ total: countDistinctCaves(caveDatabase), states });
 });
 
 // Public Florida cave count for the "X caves and counting" banner shown on
 // every page, including the logged-out login screen - deliberately no
-// authenticateToken here. Counts distinct caves only: an extra entrance
-// lives in a cave's own nested `entrances` array rather than as a separate
-// top-level entry, so this already excludes them without any extra filtering.
+// authenticateToken here. Counts distinct caves: a cave's extra entrances,
+// whether nested in its own `entrances` array or (for a number of older
+// caves) a separate lettered-suffix sibling record, don't count again.
 app.get("/api/cave-count", (req, res) => {
-  const floridaCaveCount = caveDatabase.filter((cave) => resolveCaveStateAndCounty(cave).state === "FL").length;
-  res.json({ count: floridaCaveCount });
+  const floridaCaves = caveDatabase.filter((cave) => resolveCaveStateAndCounty(cave).state === "FL");
+  res.json({ count: countDistinctCaves(floridaCaves) });
 });
 
 const MIN_PASSWORD_LENGTH = 10;
@@ -5712,6 +5720,36 @@ function resolveCaveStateAndCounty(cave) {
     }
   }
   return { state, county };
+}
+
+// A number of Florida's older multi-entrance caves predate the `entrances`
+// array convention and are instead stored as separate sibling records with
+// a single trailing lowercase letter on the ID (FJK0227a, FJK0227b, ...) -
+// one top-level cave-database entry per physical entrance, rather than one
+// entry for the cave with its extra entrances nested inside. Counting
+// caveDatabase.length (or any per-row count) therefore overcounts distinct
+// caves by however many of these legacy sibling groups exist. This strips
+// that single trailing letter to recover the shared "real" cave identity,
+// so siblings can be grouped back into one cave for counting purposes - a
+// cave ID otherwise never ends directly in a lowercase letter.
+function caveBaseId(id) {
+  if (!id) return id;
+  const m = /^(.+\d)[a-z]$/.exec(id);
+  return m ? m[1] : id;
+}
+
+// Distinct cave count: one per group of legacy lettered-suffix siblings
+// (FJK0227a/FJK0227b count once, as FJK0227), one per everything else.
+function countDistinctCaves(caves) {
+  return new Set(caves.map((c) => caveBaseId(c.id) || c.id)).size;
+}
+
+// Every entrance a cave has, however it's represented: the legacy sibling
+// records above (each one is itself an entrance) plus any `entrances`
+// nested inside a record (the newer convention). Always >= the distinct
+// cave count, equal to it only when every cave has exactly one entrance.
+function countTotalEntrances(caves) {
+  return caves.reduce((sum, c) => sum + 1 + (Array.isArray(c.entrances) ? c.entrances.length : 0), 0);
 }
 
 // Looks up the ID prefix a state generates new cave IDs with (see
