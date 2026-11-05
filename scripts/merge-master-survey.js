@@ -27,6 +27,16 @@
 // was confirmed with the webmaster from the dry-run report before this
 // script was written. Caves the master file doesn't mention at all are
 // left completely untouched.
+//
+// Equipment is the one exception: it's multi-valued (an array of letter
+// codes, e.g. ["K","N","R"]), and the survey's own codebook is older and
+// often only recorded one or two letters per cave where the real cave
+// already had more recorded. Overwriting outright would silently drop
+// already-known equipment, so this unions the two instead of replacing.
+// (A first run of an earlier version of this script did overwrite it, as
+// a plain string instead of an array to boot - safe to re-run now, since
+// the union of a set with itself changes nothing and every other field's
+// "survey wins" overwrite is idempotent.)
 
 const fs = require("fs");
 const os = require("os");
@@ -215,7 +225,7 @@ function resolveEquipment(raw) {
   const letters = String(raw || "").trim().toUpperCase().split("").filter((c) => /[A-Z]/.test(c));
   const valid = letters.filter((c) => VALID_EQUIPMENT_LETTERS.has(c));
   const dropped = letters.filter((c) => !VALID_EQUIPMENT_LETTERS.has(c));
-  return { code: valid.length ? valid.join("") : null, dropped };
+  return { letters: valid, dropped };
 }
 
 const BLANK_LIKE = new Set(["", " ", "-", "unknown", "unknown status"]);
@@ -366,7 +376,7 @@ function loadMasterCaves(filePath) {
       topoSymbol: pick(fieldsRow[col.topoSymbol]),
       ownership: pick(fieldsRow[col.ownership]),
       entryStatus: entryStatusResolved.code || undefined,
-      equipment: equipmentResolved.code || undefined,
+      equipment: equipmentResolved.letters.length ? equipmentResolved.letters : undefined,
       entranceType: entranceTypeResolved.code || undefined,
       fieldIndication: fieldIndicationResolved.code || undefined,
       locationInfo: pick(fieldsRow[col.locationInfo]),
@@ -409,12 +419,19 @@ function loadMasterCaves(filePath) {
 // ---------------------------------------------------------------------------
 // Apply to the real cave-database.json.
 // ---------------------------------------------------------------------------
+// Equipment is handled separately below (array union, not overwrite).
 const MERGE_FIELDS = [
   "name", "latitude", "longitude", "elevation", "locationAccuracy", "usgsQuad",
-  "topoSymbol", "ownership", "entryStatus", "equipment", "entranceType",
+  "topoSymbol", "ownership", "entryStatus", "entranceType",
   "fieldIndication", "locationInfo", "mapStatus", "geology", "topoProvince",
   "length", "vertical", "waterDepth", "pitch", "exploration", "reporter", "date",
 ];
+
+function normalizeEquipmentToArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.split("").filter((c) => /[A-Z]/i.test(c));
+  return [];
+}
 
 const { caves: masterCaves, skippedNoStructural } = loadMasterCaves(masterPath);
 console.log(`Read ${masterCaves.length} caves from the master survey file (${skippedNoStructural.length} retired/pointer-only rows skipped, no name or coordinates to merge).`);
@@ -451,6 +468,7 @@ for (const masterCave of masterCaves) {
       lng: masterCave.longitude,
       entrances: masterCave.entrances,
       notes: masterCave.notes,
+      equipment: masterCave.equipment || [],
       createdDate: now,
       createdBy: "merge-master-survey script",
       lastUpdated: now,
@@ -478,6 +496,14 @@ for (const masterCave of masterCaves) {
   }
   if (masterCave.latitude !== undefined) { existing.lat = masterCave.latitude; changed = true; }
   if (masterCave.longitude !== undefined) { existing.lng = masterCave.longitude; changed = true; }
+  if (masterCave.equipment && masterCave.equipment.length > 0) {
+    const existingLetters = normalizeEquipmentToArray(existing.equipment);
+    const union = Array.from(new Set([...existingLetters, ...masterCave.equipment])).sort();
+    if (JSON.stringify(union) !== JSON.stringify(existing.equipment)) {
+      existing.equipment = union;
+      changed = true;
+    }
+  }
   if (masterCave.entrances.length > 0) {
     existing.entrances = masterCave.entrances;
     changed = true;
