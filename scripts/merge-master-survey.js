@@ -9,6 +9,14 @@
 // Usage:
 //   node scripts/merge-master-survey.js <path-to-master.xlsx> --data-dir=/path/to/data [--write]
 //
+// From Plesk's "Run Node.js commands" tool (which runs "npm <what you
+// type>", not a raw node command - typing "node scripts/..." there fails
+// with "Unknown command: node"), use the npm script instead, with "--"
+// before the script's own arguments:
+//   run merge-master-survey -- <path-to-master.xlsx> --data-dir=/path/to/data [--write]
+// Or set MERGE_MASTER_FILE / DATA_DIR / MERGE_WRITE=true as environment
+// variables and just type: run merge-master-survey
+//
 // Without --write, this only prints the same before/after summary a dry run
 // would (nothing is saved) - the preview already shown to the webmaster
 // before running this for real. Pass --write to actually save, after taking
