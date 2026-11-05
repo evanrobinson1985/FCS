@@ -3954,9 +3954,13 @@ function updateStatistics() {
   document.getElementById('total-caves').textContent = totalCaves;
   document.getElementById('total-entrances').textContent = countTotalEntrances(caveDataStore);
 
-  // Count by type
-  const landCaves = distinctCaves.filter(cave => cave.type.includes('Land')).length;
-  const underwaterCaves = distinctCaves.filter(cave => cave.type.includes('Underwater')).length;
+  // Count by type. cave.type is missing (not just blank - never set at
+  // all) for any imported row whose source spreadsheet left "Cave Type"
+  // empty, which crashed this unguarded going forward - every other spot
+  // in the code that checks cave.type.includes(...) already guards it the
+  // same way (see applyMapFilters, the map marker colour logic, etc.).
+  const landCaves = distinctCaves.filter(cave => cave.type && cave.type.includes('Land')).length;
+  const underwaterCaves = distinctCaves.filter(cave => cave.type && cave.type.includes('Underwater')).length;
   document.getElementById('land-caves').textContent = landCaves;
   document.getElementById('underwater-caves').textContent = underwaterCaves;
 
