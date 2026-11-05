@@ -395,6 +395,71 @@
       pos[v * 3] = gc / (gw - 1) * sizeX - cx; pos[v * 3 + 1] = z >= ND ? z - minZ : 0; pos[v * 3 + 2] = gr / (gh - 1) * sizeZ - cz;
       uv[v * 2] = gc / (gw - 1); uv[v * 2 + 1] = gr / (gh - 1);
     }
+
+    // Finds where the terrain crosses each contour level (in feet), on a
+    // coarse grid separate from the render mesh so this stays cheap however
+    // high-res the mesh is. One point per crossing cell+level, then thinned
+    // to a minimum on-ground spacing and an overall cap so long contour
+    // lines get a few spread-out labels (like a paper topo map) instead of
+    // a solid wall of text.
+    const LW = 160, LH = Math.max(2, Math.round(LW * sizeZ / sizeX));
+    const MAX_CONTOUR_LABELS = 90, MAX_LABELS_PER_LEVEL = 3, LEVEL_LABEL_SPACING = Math.max(extent * 0.25, res * 60);
+    function buildContourLabelPoints(intervalFt) {
+      const lgrid = resample(LW, LH);
+      const elevFt = (r, c) => { const v = lgrid[r * LW + c]; return v >= ND ? v * 3.28084 : null; };
+      const raw = [];
+      for (let lr = 0; lr < LH - 1; lr++) {
+        for (let lc = 0; lc < LW - 1; lc++) {
+          const e00 = elevFt(lr, lc), e10 = elevFt(lr, lc + 1), e01 = elevFt(lr + 1, lc), e11 = elevFt(lr + 1, lc + 1);
+          if (e00 == null || e10 == null || e01 == null || e11 == null) continue;
+          const lo = Math.min(e00, e10, e01, e11), hi = Math.max(e00, e10, e01, e11);
+          const l0 = Math.ceil(lo / intervalFt), l1 = Math.floor(hi / intervalFt);
+          for (let li = l0; li <= l1 && li - l0 < 8; li++) {
+            const level = li * intervalFt;
+            // Any one crossing edge of this cell gives a point close enough
+            // to the true isoline for a label anchor.
+            const edges = [[e00, e10, lc, lr, lc + 1, lr], [e10, e11, lc + 1, lr, lc + 1, lr + 1],
+              [e11, e01, lc + 1, lr + 1, lc, lr + 1], [e01, e00, lc, lr + 1, lc, lr]];
+            for (const [a, b, c0, r0, c1, r1] of edges) {
+              if (a === b || (a - level) * (b - level) > 0) continue;
+              const t = (level - a) / (b - a);
+              const gcF = c0 + (c1 - c0) * t, grF = r0 + (r1 - r0) * t;
+              raw.push({
+                x: gcF / (LW - 1) * sizeX - cx,
+                z: grF / (LH - 1) * sizeZ - cz,
+                y: level / 3.28084 - minZ,
+                levelFt: level,
+              });
+              break;
+            }
+          }
+        }
+      }
+      // Thin per elevation level first - each level gets at most a few
+      // well-spread labels, however many times its line crosses the box -
+      // like a paper topo map, rather than labelling every crossing (which
+      // on a steep or finely-stepped area would paper the screen in text).
+      const byLevel = new Map();
+      for (const p of raw) {
+        if (!byLevel.has(p.levelFt)) byLevel.set(p.levelFt, []);
+        byLevel.get(p.levelFt).push(p);
+      }
+      let kept = [];
+      for (const pts of byLevel.values()) {
+        const chosen = [];
+        for (const p of pts) {
+          if (chosen.length >= MAX_LABELS_PER_LEVEL) break;
+          let ok = true;
+          for (const k of chosen) { if (Math.hypot(p.x - k.x, p.z - k.z) < LEVEL_LABEL_SPACING) { ok = false; break; } }
+          if (ok) chosen.push(p);
+        }
+        kept.push(...chosen);
+      }
+      if (kept.length <= MAX_CONTOUR_LABELS) return kept;
+      const out = [], step = kept.length / MAX_CONTOUR_LABELS;
+      for (let i = 0; i < MAX_CONTOUR_LABELS; i++) out.push(kept[Math.floor(i * step)]);
+      return out;
+    }
     const nIdx = (gw - 1) * (gh - 1) * 6;
     const idx = nV > 65535 ? new Uint32Array(nIdx) : new Uint16Array(nIdx);
     let k = 0;
@@ -477,6 +542,23 @@
     }
     const namesBox = q('[data-names]');
     if (!labeled.length) q('[data-names-row]').style.display = 'none';
+
+    // Contour elevation labels - built on demand (contour turned on, or its
+    // interval changed), not every frame; only their screen projection is
+    // recomputed per frame, same as the cave-name labels above.
+    let contourLabelPoints = [];
+    function rebuildContourLabels(intervalFt) {
+      for (const p of contourLabelPoints) p.el.remove();
+      contourLabelPoints = buildContourLabelPoints(intervalFt).map((p) => {
+        p.el = el('div', 'position:absolute;left:0;top:0;white-space:nowrap;font-size:10px;font-weight:700;padding:1px 4px;border-radius:3px;background:rgba(255,128,0,0.85);color:#1a0f00;display:none;will-change:transform;pointer-events:none;', `${Math.round(p.levelFt)} ft`);
+        labelLayer.appendChild(p.el);
+        return p;
+      });
+    }
+    function clearContourLabels() {
+      for (const p of contourLabelPoints) p.el.remove();
+      contourLabelPoints = [];
+    }
 
     // ---- Shaders ----
     // Contour lines are blended on top of `c` below - after the terrain
@@ -595,10 +677,19 @@
     const contourOnEl = q('[data-contour-on]'), contourEl = q('[data-contour]'), contourValEl = q('[data-contour-val]');
     const CONTOUR_COLOR = [1, 0.5, 0];
     let contourOn = false, contourIntervalFt = CONTOUR_INTERVALS_FT[9]; // slider default value=10 -> index 9
-    contourOnEl.addEventListener('change', () => { contourOn = contourOnEl.checked; });
+    let contourLabelTimer = null;
+    function scheduleContourLabelRebuild() {
+      clearTimeout(contourLabelTimer);
+      contourLabelTimer = setTimeout(() => { if (contourOn) rebuildContourLabels(contourIntervalFt); }, 200);
+    }
+    contourOnEl.addEventListener('change', () => {
+      contourOn = contourOnEl.checked;
+      if (contourOn) rebuildContourLabels(contourIntervalFt); else clearContourLabels();
+    });
     contourEl.addEventListener('input', () => {
       contourIntervalFt = CONTOUR_INTERVALS_FT[Math.max(0, Math.min(CONTOUR_INTERVALS_FT.length - 1, parseInt(contourEl.value, 10) - 1))];
       contourValEl.textContent = (contourIntervalFt < 1 ? contourIntervalFt : Math.round(contourIntervalFt)) + ' ft';
+      scheduleContourLabelRebuild();
     });
 
     // ---- Camera: orbits a point on the ground, like a web map tilted into 3D ----
@@ -903,6 +994,23 @@
         if (sx < -200 || sx > cssW + 50 || sy < -20 || sy > cssH + 20) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
         if (!p.shown) { p.el.style.display = 'block'; p.shown = true; }
         p.el.style.transform = `translate(${Math.round(sx + 8)}px, ${Math.round(sy - 18)}px)`;
+      }
+
+      // Contour elevation labels - same screen-projection as cave names
+      // above, just centred on the point rather than offset beside it.
+      if (contourOn) {
+        for (const p of contourLabelPoints) {
+          const vx = p.x, vy = p.y * zScale, vz = p.z;
+          const cxp = mvp[0] * vx + mvp[4] * vy + mvp[8] * vz + mvp[12];
+          const cyp = mvp[1] * vx + mvp[5] * vy + mvp[9] * vz + mvp[13];
+          const cwp = mvp[3] * vx + mvp[7] * vy + mvp[11] * vz + mvp[15];
+          const dist = Math.hypot(vx - eye[0], vy - eye[1], vz - eye[2]);
+          if (cwp <= 0 || dist > Math.max(extent * 1.2, cam.dist * 2.5)) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
+          const sx = (cxp / cwp * 0.5 + 0.5) * cssW, sy = (1 - (cyp / cwp * 0.5 + 0.5)) * cssH;
+          if (sx < -40 || sx > cssW + 40 || sy < -20 || sy > cssH + 20) { if (p.shown) { p.el.style.display = 'none'; p.shown = false; } continue; }
+          if (!p.shown) { p.el.style.display = 'block'; p.shown = true; }
+          p.el.style.transform = `translate(${Math.round(sx - 14)}px, ${Math.round(sy - 7)}px)`;
+        }
       }
       raf = requestAnimationFrame(frame);
     }
