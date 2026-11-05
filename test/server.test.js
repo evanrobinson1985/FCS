@@ -982,6 +982,18 @@ describe("public Florida cave count (header banner)", () => {
     assert.equal(app.caveBaseId(""), "");
     assert.equal(app.caveBaseId(null), null);
   });
+
+  test("resolveCaveStateAndCounty resolves a lettered-suffix sibling (no explicit state/county) the same as its unsuffixed peer", () => {
+    const plain = app.resolveCaveStateAndCounty({ id: "FJK0227" });
+    const suffixed = app.resolveCaveStateAndCounty({ id: "FJK0227a" });
+    assert.deepEqual(plain, { state: "FL", county: "JK" });
+    assert.deepEqual(
+      suffixed,
+      plain,
+      "a lettered-suffix sibling record predates the explicit state/county fields just like its unsuffixed peer, " +
+        "and must resolve the same way - otherwise it silently drops out of every state-scoped cave count"
+    );
+  });
 });
 
 describe("state/county reference config", () => {

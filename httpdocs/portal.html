@@ -4873,7 +4873,12 @@ function loadFcsDatabaseTable() {
       let state = cave.state || null;
       let county = cave.county || null;
       if ((!state || !county) && cave.id) {
-        const match = cave.id.match(LEGACY_FLORIDA_ID_RE);
+        // Match against the base ID (suffix letter stripped, see
+        // caveBaseId above) - a legacy lettered-suffix sibling record
+        // (FJK0227a) predates the explicit state/county fields just like
+        // its unsuffixed peers, and without this its state/county
+        // silently resolved to null, dropping it from state-scoped counts.
+        const match = caveBaseId(cave.id).match(LEGACY_FLORIDA_ID_RE);
         if (match) {
           state = state || 'FL';
           county = county || match[1];

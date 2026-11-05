@@ -1455,6 +1455,7 @@ app.runDuesReminders = runDuesReminders; // for the test suite
 app.caveBaseId = caveBaseId;
 app.countDistinctCaves = countDistinctCaves;
 app.countTotalEntrances = countTotalEntrances;
+app.resolveCaveStateAndCounty = resolveCaveStateAndCounty;
 
 // ---- Cave Jump leaderboard --------------------------------------------------
 // Top 10 of each account's best score, shown on /cave-jump and the
@@ -5713,7 +5714,14 @@ function resolveCaveStateAndCounty(cave) {
   let state = cave.state || null;
   let county = cave.county || null;
   if ((!state || !county) && cave.id) {
-    const match = cave.id.match(LEGACY_FLORIDA_ID);
+    // Match against the base ID (suffix letter stripped, see caveBaseId
+    // below) - a legacy lettered-suffix sibling record (FJK0227a) predates
+    // the explicit state/county fields just like its unsuffixed peers, and
+    // without this its state/county silently resolved to null, dropping it
+    // from every state-scoped cave count (the public cave-count endpoint,
+    // the nationwide per-state breakdown) while it still counted toward
+    // any unfiltered total - the two disagreeing is what surfaced this.
+    const match = caveBaseId(cave.id).match(LEGACY_FLORIDA_ID);
     if (match) {
       state = state || "FL";
       county = county || match[1];
