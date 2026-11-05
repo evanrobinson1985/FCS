@@ -235,6 +235,10 @@
                 <option value="terrain">Natural terrain colours</option>
               </select></label>
             <label data-names-row style="display:block;"><input data-names type="checkbox" checked> Show cave names</label>
+            <label style="display:block;"><input data-contour-on type="checkbox"> Contour lines</label>
+            <label style="display:block;">Contour interval
+              <input data-contour type="range" min="1" max="21" step="1" value="10" style="vertical-align:middle;width:130px;">
+              <span data-contour-val>10 ft</span></label>
           </div>
         </div>
         <button data-close style="margin-left:auto;pointer-events:auto;padding:8px 14px;border:none;border-radius:6px;background:#f1f5f9;color:#0f172a;cursor:pointer;font-weight:600;">Close 3D view</button>
@@ -475,19 +479,29 @@
     if (!labeled.length) q('[data-names-row]').style.display = 'none';
 
     // ---- Shaders ----
+    // Contour lines are blended on top of `c` below - after the terrain
+    // colour/draped-imagery choice is resolved - so they show the same way
+    // over natural terrain colours or any draped basemap. Anti-aliased with
+    // fwidth() (from OES_standard_derivatives) when available so the lines
+    // stay crisp at any distance/zoom instead of shimmering; a slightly
+    // softer fixed-width fallback covers the rare GPU without that
+    // extension.
+    const derivExt = gl.getExtension('OES_standard_derivatives');
     const vs = `attribute vec3 a_pos; attribute vec2 a_uv;
-      uniform mat4 u_mvp; uniform float u_zScale; uniform vec3 u_eye; uniform float u_pointSize;
-      varying vec2 v_uv; varying float v_dist;
+      uniform mat4 u_mvp; uniform float u_zScale; uniform vec3 u_eye; uniform float u_pointSize; uniform float u_minZ;
+      varying vec2 v_uv; varying float v_dist; varying float v_elevFt;
       void main() {
         vec3 p = vec3(a_pos.x, a_pos.y * u_zScale, a_pos.z);
         gl_Position = u_mvp * vec4(p, 1.0);
         gl_PointSize = u_pointSize;
         v_uv = a_uv; v_dist = distance(p, u_eye);
+        v_elevFt = (a_pos.y + u_minZ) * 3.28084;
       }`;
-    const fs = `precision mediump float;
-      varying vec2 v_uv; varying float v_dist;
+    const fs = `${derivExt ? '#extension GL_OES_standard_derivatives : enable\n' : ''}precision mediump float;
+      varying vec2 v_uv; varying float v_dist; varying float v_elevFt;
       uniform sampler2D u_nrm; uniform sampler2D u_alb;
       uniform vec3 u_sun; uniform float u_nScale; uniform float u_flat; uniform vec3 u_flatColor; uniform float u_fogFar; uniform float u_img;
+      uniform float u_contourOn; uniform float u_contourInterval; uniform vec3 u_contourColor;
       void main() {
         if (u_flat > 0.5) { gl_FragColor = vec4(u_flatColor, 1.0); return; }
         vec3 n = texture2D(u_nrm, v_uv).xyz * 2.0 - 1.0;
@@ -499,6 +513,14 @@
         // Draped map imagery already has its own colours (and, for aerial
         // photos, shadows), so the relief shading is applied more gently.
         vec3 c = u_img > 0.5 ? alb * mix(1.0, light / 0.9, 0.6) : alb * light;
+        if (u_contourOn > 0.5) {
+          float m = mod(v_elevFt, u_contourInterval);
+          float distToLine = min(m, u_contourInterval - m);
+          ${derivExt
+            ? 'float lineWidth = max(0.02, fwidth(v_elevFt)) * 1.25; float mixAmt = 1.0 - smoothstep(0.0, lineWidth, distToLine);'
+            : 'float mixAmt = 1.0 - smoothstep(0.0, max(0.05, u_contourInterval * 0.02), distToLine);'}
+          c = mix(c, u_contourColor, mixAmt * 0.85);
+        }
         float fog = clamp(v_dist / u_fogFar, 0.0, 1.0) * 0.5;
         gl_FragColor = vec4(mix(c, vec3(0.55, 0.62, 0.72), fog), 1.0);
       }`;
@@ -513,8 +535,10 @@
     const mkBuf = (data, target) => { const bf = gl.createBuffer(); gl.bindBuffer(target || gl.ARRAY_BUFFER, bf); gl.bufferData(target || gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return bf; };
     const bPos = mkBuf(pos), bUv = mkBuf(uv), bIdx = mkBuf(idx, gl.ELEMENT_ARRAY_BUFFER), bMk = mkBuf(markerPos);
     const uMvp = uni('u_mvp'), uZ = uni('u_zScale'), uNScale = uni('u_nScale'), uEye = uni('u_eye'), uSun = uni('u_sun'),
-      uFlat = uni('u_flat'), uFlatColor = uni('u_flatColor'), uFog = uni('u_fogFar'), uPt = uni('u_pointSize'), uImg = uni('u_img');
+      uFlat = uni('u_flat'), uFlatColor = uni('u_flatColor'), uFog = uni('u_fogFar'), uPt = uni('u_pointSize'), uImg = uni('u_img'),
+      uMinZ = uni('u_minZ'), uContourOn = uni('u_contourOn'), uContourInterval = uni('u_contourInterval'), uContourColor = uni('u_contourColor');
     gl.uniform1i(uni('u_nrm'), 0); gl.uniform1i(uni('u_alb'), 1);
+    gl.uniform1f(uMinZ, minZ);
     gl.enable(gl.DEPTH_TEST);
     gl.clearColor(0.55, 0.62, 0.72, 1); // hazy sky, matching the fog
 
@@ -564,6 +588,18 @@
 
     let sunAz = 315;
     sunEl.addEventListener('input', () => { sunAz = parseFloat(sunEl.value); q('[data-sun-val]').textContent = sunAz + '°'; });
+
+    // Contour lines: on/off switch plus an interval slider, same foot
+    // intervals as the 2D map's contour control for a consistent feel.
+    const CONTOUR_INTERVALS_FT = [100, 80, 60, 50, 40, 30, 25, 20, 15, 10, 8, 6, 5, 4, 3, 2.5, 2, 1.5, 1, 0.5, 0.25];
+    const contourOnEl = q('[data-contour-on]'), contourEl = q('[data-contour]'), contourValEl = q('[data-contour-val]');
+    const CONTOUR_COLOR = [1, 0.5, 0];
+    let contourOn = false, contourIntervalFt = CONTOUR_INTERVALS_FT[9]; // slider default value=10 -> index 9
+    contourOnEl.addEventListener('change', () => { contourOn = contourOnEl.checked; });
+    contourEl.addEventListener('input', () => {
+      contourIntervalFt = CONTOUR_INTERVALS_FT[Math.max(0, Math.min(CONTOUR_INTERVALS_FT.length - 1, parseInt(contourEl.value, 10) - 1))];
+      contourValEl.textContent = (contourIntervalFt < 1 ? contourIntervalFt : Math.round(contourIntervalFt)) + ' ft';
+    });
 
     // ---- Camera: orbits a point on the ground, like a web map tilted into 3D ----
     // heading 0 = looking north; tilt 0 = looking straight down.
@@ -824,6 +860,9 @@
       gl.uniform1f(uZ, zScale); gl.uniform1f(uNScale, zScale); gl.uniform3fv(uEye, eye); gl.uniform1f(uFog, Math.max(extent * 2.5, cam.dist * 3));
       const az = sunAz * Math.PI / 180, alt = 45 * Math.PI / 180;
       gl.uniform3f(uSun, Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt));
+      gl.uniform1f(uContourOn, contourOn ? 1 : 0);
+      gl.uniform1f(uContourInterval, contourIntervalFt);
+      gl.uniform3fv(uContourColor, CONTOUR_COLOR);
 
       // Terrain
       gl.uniform1f(uFlat, 0); gl.uniform1f(uPt, 1);
