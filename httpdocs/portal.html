@@ -155,6 +155,7 @@
 <div class="title-container">
 <h1 id="main-header-title">Florida Cave Survey</h1>
 <p>Review and manage cave survey submissions</p>
+<p id="cave-counter-banner" aria-live="polite"></p>
 </div>
 <!-- Donate: opens PayPal's own donation page for the FCS PayPal account in
      a new tab. A plain link (not a form) so no payment data ever touches
@@ -5583,6 +5584,24 @@ function loadFcsDatabaseTable() {
     // anyone logs in (or for a visitor who never does) - the banner is a
     // general-audience announcement, not something gated behind login.
     document.addEventListener('DOMContentLoaded', () => { loadSiteStatus(); });
+
+    // "X caves and counting" banner in the header, on every page/tab and
+    // even before login - fed by the public GET /api/cave-count, so it
+    // always reflects the live database rather than a number someone has
+    // to remember to update by hand.
+    async function loadCaveCounterBanner() {
+      const el = document.getElementById('cave-counter-banner');
+      if (!el) return;
+      try {
+        const response = await fetch('/api/cave-count');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        el.textContent = `${data.count.toLocaleString()} caves and counting`;
+      } catch (error) {
+        console.error('Failed to load cave count:', error);
+      }
+    }
+    document.addEventListener('DOMContentLoaded', () => { loadCaveCounterBanner(); });
 
     // Triggers a browser download of the fill-in-the-blanks template for
     // the state selected in #import-state-select. This is a direct

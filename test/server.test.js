@@ -914,6 +914,50 @@ describe("nationwide cave counts", () => {
   });
 });
 
+describe("public Florida cave count (header banner)", () => {
+  test("GET /api/cave-count is public - no login token needed, for the logged-out login screen", async () => {
+    const res = await request(app).get("/api/cave-count");
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.count, "number");
+  });
+
+  test("counts distinct Florida caves only - adding one Florida cave increases it by exactly one, regardless of its entrance count", async () => {
+    const before = await request(app).get("/api/cave-count");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        action: "createNew",
+        cave: {
+          state: "FL",
+          county: "AL",
+          name: "Cave Count Banner Test Cave",
+          entrances: [{ name: "Second Entrance" }, { name: "Third Entrance" }],
+        },
+      });
+    assert.equal(createRes.status, 200);
+
+    const after = await request(app).get("/api/cave-count");
+    assert.equal(after.body.count, before.body.count + 1, "extra entrances on the same cave must not inflate the count");
+  });
+
+  test("does not count other states - adding a Wyoming cave leaves the Florida count unchanged", async () => {
+    const before = await request(app).get("/api/cave-count");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "WY", county: "AL", name: "Cave Count Banner Wyoming Cave" } });
+    assert.equal(createRes.status, 200);
+
+    const after = await request(app).get("/api/cave-count");
+    assert.equal(after.body.count, before.body.count, "a non-Florida cave must not change the Florida count");
+  });
+});
+
 describe("state/county reference config", () => {
   test("GET /api/states is public (no login token) - the create-account form needs it before anyone is logged in", async () => {
     const res = await request(app).get("/api/states");

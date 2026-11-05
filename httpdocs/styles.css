@@ -909,6 +909,15 @@ input[type="file"] {
       flex: 1;
     }
 
+    /* "X caves and counting" banner - shown on every page (including the
+       logged-out login screen), fed by the public GET /api/cave-count. */
+    #cave-counter-banner {
+      margin-top: 4px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.92);
+    }
+
     /* Donate button (header): small and quiet, outlined in the header's
        own colours. */
     .donate-container {

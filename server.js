@@ -864,6 +864,7 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
   "/api/forgot-password",
   "/api/reset-password",
   "/api/site-status",
+  "/api/cave-count",
   // The daily scheduled task that sends dues reminders (key-protected)
   "/api/dues/run-reminders",
   // Cave Jump stays playable during maintenance (see /cave-jump)
@@ -2023,6 +2024,16 @@ app.get("/api/cave-database/state-counts", authenticateToken, (req, res) => {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
   res.json({ total: caveDatabase.length, states });
+});
+
+// Public Florida cave count for the "X caves and counting" banner shown on
+// every page, including the logged-out login screen - deliberately no
+// authenticateToken here. Counts distinct caves only: an extra entrance
+// lives in a cave's own nested `entrances` array rather than as a separate
+// top-level entry, so this already excludes them without any extra filtering.
+app.get("/api/cave-count", (req, res) => {
+  const floridaCaveCount = caveDatabase.filter((cave) => resolveCaveStateAndCounty(cave).state === "FL").length;
+  res.json({ count: floridaCaveCount });
 });
 
 const MIN_PASSWORD_LENGTH = 10;
