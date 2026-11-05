@@ -808,6 +808,11 @@
 <input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="25"/>
 </div>
 
+<!-- Waypoints Visibility -->
+<div class="control-block">
+<label><input id="toggle-waypoints" type="checkbox" checked/> Show Waypoints</label>
+</div>
+
 <!-- Waypoints Heatmap + Transparency -->
 <div class="control-block">
 <label><input id="waypoints-heatmap" type="checkbox"/> Waypoints Heatmap</label>
@@ -2261,6 +2266,18 @@
       document.getElementById('map-filter-county').addEventListener('change', applyMapFilters);
       document.getElementById('map-filter-type').addEventListener('change', applyMapFilters);
       document.getElementById('map-filter-status').addEventListener('change', applyMapFilters);
+
+      // Show/hide every cave marker at once, independent of the heatmap -
+      // cavesLayer keeps all its markers either way (clearLayers/addLayer
+      // from applyMapFilters etc. work the same whether or not the group
+      // is currently attached to the map), this just toggles whether the
+      // group itself is drawn.
+      const waypointsCheckbox = document.getElementById('toggle-waypoints');
+      if (waypointsCheckbox) {
+        waypointsCheckbox.addEventListener('change', function() {
+          toggleWaypoints(this.checked);
+        });
+      }
 
       // 📍 Add user location tracking, compass, and scale bar
       try {
@@ -7080,6 +7097,32 @@ window.addEventListener('error', function(e) {
         console.log("Heatmap toggled successfully");
       } catch (error) {
         console.error("Error toggling heatmap layer:", error);
+      }
+    }
+
+    // Toggle every individual cave marker on/off, independent of the
+    // heatmap - cavesLayer keeps every marker added to it either way, this
+    // just attaches/detaches the whole group from the map.
+    function toggleWaypoints(enabled) {
+      console.log("Toggling waypoints:", enabled);
+
+      if (!map || !cavesLayer) {
+        console.error("Map or caves layer not initialized!");
+        return;
+      }
+
+      try {
+        if (enabled) {
+          if (!map.hasLayer(cavesLayer)) {
+            cavesLayer.addTo(map);
+          }
+        } else {
+          if (map.hasLayer(cavesLayer)) {
+            map.removeLayer(cavesLayer);
+          }
+        }
+      } catch (error) {
+        console.error("Error toggling waypoints layer:", error);
       }
     }
 
