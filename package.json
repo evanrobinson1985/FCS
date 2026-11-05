@@ -25,6 +25,7 @@
     "list-vhost-root": "node scripts/list-vhost-root.js",
     "bulk-import-local": "node scripts/bulk-import-caves-local.js",
     "merge-master-survey": "node scripts/merge-master-survey.js",
+    "fix-merge-duplicates": "node scripts/fix-merge-duplicates.js",
     "restore-cave-database": "node scripts/restore-cave-database-backup.js",
     "test": "node --test"
   },

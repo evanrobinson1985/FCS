@@ -452,10 +452,58 @@ const byId = new Map(caves.map((c) => [c.id, c]));
 const now = new Date().toISOString();
 let addedCount = 0;
 let updatedCount = 0;
+const possibleDuplicates = [];
+
+// Some older multi-entrance caves are stored as separate flat records with
+// a letter-suffixed ID per entrance (e.g. FJK0227a, FJK0227b) instead of
+// nested under one base ID's `entrances` array. A master-file row with no
+// existing exact-ID match might actually be one of these - matching by
+// county+number alone (ignoring the ID's missing/different suffix) would
+// have caught the first run's FJK0227/FHO1465-style duplicates before they
+// were written. Rather than guess which sibling to merge into
+// automatically, flag it for manual review and skip creating anything.
+const siblingsByCountyNumber = new Map();
+for (const cave of caves) {
+  const match = cave.id && cave.id.match(/^(F[A-Z]{2}(\d+))([a-z])?$/);
+  if (!match) continue;
+  const key = `${match[1].slice(0, 1)}${match[1].slice(1, 3)}|${parseInt(match[2], 10)}`;
+  if (!siblingsByCountyNumber.has(key)) siblingsByCountyNumber.set(key, []);
+  siblingsByCountyNumber.get(key).push(cave.id);
+}
+
+// A survey-file typo in the county code (e.g. "HE" instead of "HO") can
+// also produce a brand new ID that happens to name/locate an already
+// well-documented cave under its real, correct county. Catch that too:
+// same normalized name, very close coordinates, regardless of county.
+function normalizeCaveName(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+const existingByNormalizedName = new Map();
+for (const cave of caves) {
+  const key = normalizeCaveName(cave.name);
+  if (!key) continue;
+  if (!existingByNormalizedName.has(key)) existingByNormalizedName.set(key, []);
+  existingByNormalizedName.get(key).push(cave);
+}
 
 for (const masterCave of masterCaves) {
   const existing = byId.get(masterCave.id);
   if (!existing) {
+    const siblingKey = `${masterCave.county}|${masterCave.number}`;
+    const siblings = siblingsByCountyNumber.get(siblingKey);
+    if (siblings && siblings.length) {
+      possibleDuplicates.push({ masterCaveId: masterCave.id, name: masterCave.name, existingSiblings: siblings });
+      continue;
+    }
+    const nameMatches = existingByNormalizedName.get(normalizeCaveName(masterCave.name)) || [];
+    const closeNameMatch = nameMatches.find((c) => {
+      if (typeof c.latitude !== "number" || typeof masterCave.latitude !== "number") return false;
+      return Math.hypot(c.latitude - masterCave.latitude, c.longitude - masterCave.longitude) < 0.01;
+    });
+    if (closeNameMatch) {
+      possibleDuplicates.push({ masterCaveId: masterCave.id, name: masterCave.name, existingSiblings: [closeNameMatch.id] });
+      continue;
+    }
     const newCave = {
       id: masterCave.id,
       state: "FL",
@@ -523,6 +571,13 @@ for (const masterCave of masterCaves) {
 }
 
 console.log(`\n${addedCount} new cave(s) to add, ${updatedCount} existing cave(s) to update.`);
+
+if (possibleDuplicates.length) {
+  console.log(`\n${possibleDuplicates.length} master-file row(s) skipped as likely duplicates of an existing cave under a different ID - review by hand:`);
+  for (const d of possibleDuplicates) {
+    console.log(`  ${d.masterCaveId} "${d.name}" looks like it may already exist as: ${d.existingSiblings.join(", ")}`);
+  }
+}
 
 if (!doWrite) {
   console.log("\n--write not set: nothing was saved. Re-run with --write to apply this for real.");
