@@ -403,7 +403,7 @@
     // lines get a few spread-out labels (like a paper topo map) instead of
     // a solid wall of text.
     const LW = 160, LH = Math.max(2, Math.round(LW * sizeZ / sizeX));
-    const MAX_CONTOUR_LABELS = 90, MAX_LABELS_PER_LEVEL = 3;
+    const MAX_CONTOUR_LABELS = 100; // headroom above ZONES*ZONES*MAX_PER_ZONE below, so the per-zone cap normally decides this on its own
     function buildContourLabelPoints(intervalFt) {
       const lgrid = resample(LW, LH);
       const elevFt = (r, c) => { const v = lgrid[r * LW + c]; return v >= ND ? v * 3.28084 : null; };
@@ -435,27 +435,29 @@
           }
         }
       }
-      // Thin per elevation level first - each level gets at most a few
-      // well-spread labels, however many times its line crosses the box -
-      // like a paper topo map, rather than labelling every crossing (which
-      // on a steep or finely-stepped area would paper the screen in text).
-      // Points for a level arrive in the raster-scan order above (row by
-      // row, top to bottom), so sampling evenly-spaced INDICES through
-      // that list - rather than greedily keeping whichever points happen
-      // to be found first and are then far enough from each other - picks
-      // from across the whole box instead of clustering near wherever the
-      // scan happened to find its first few crossings for that level.
-      const byLevel = new Map();
+      // Thin by SPATIAL ZONE, not by elevation level or scan order: a
+      // hilly patch generates far more crossing points per unit area than
+      // a flat one (its lines double back through many more coarse grid
+      // cells), so picking evenly "per level" or "every Nth point found"
+      // still over-represents whichever area happens to be hillier -
+      // exactly the bug reported (labels piling up over the relief at one
+      // end of the box, none over the flatter ground making up most of
+      // it). Dividing the box into a grid of zones and capping how many
+      // labels (and distinct levels) each zone contributes guarantees
+      // coverage across the whole visible area regardless of how unevenly
+      // the raw crossings are distributed.
+      const ZONES = 7, MAX_PER_ZONE = 2;
+      const zoneCounts = new Array(ZONES * ZONES).fill(0);
+      const zoneLevels = new Array(ZONES * ZONES).fill(null).map(() => new Set());
+      const kept = [];
       for (const p of raw) {
-        if (!byLevel.has(p.levelFt)) byLevel.set(p.levelFt, []);
-        byLevel.get(p.levelFt).push(p);
-      }
-      let kept = [];
-      for (const pts of byLevel.values()) {
-        const want = Math.min(MAX_LABELS_PER_LEVEL, pts.length);
-        const chosen = [];
-        for (let i = 0; i < want; i++) chosen.push(pts[Math.floor((i + 0.5) * pts.length / want)]);
-        kept.push(...chosen);
+        const zc = Math.min(ZONES - 1, Math.max(0, Math.floor((p.x + cx) / sizeX * ZONES)));
+        const zr = Math.min(ZONES - 1, Math.max(0, Math.floor((p.z + cz) / sizeZ * ZONES)));
+        const zi = zr * ZONES + zc;
+        if (zoneCounts[zi] >= MAX_PER_ZONE || zoneLevels[zi].has(p.levelFt)) continue;
+        zoneLevels[zi].add(p.levelFt);
+        zoneCounts[zi]++;
+        kept.push(p);
       }
       if (kept.length <= MAX_CONTOUR_LABELS) return kept;
       const out = [], step = kept.length / MAX_CONTOUR_LABELS;
