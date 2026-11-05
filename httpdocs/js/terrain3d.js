@@ -403,7 +403,7 @@
     // lines get a few spread-out labels (like a paper topo map) instead of
     // a solid wall of text.
     const LW = 160, LH = Math.max(2, Math.round(LW * sizeZ / sizeX));
-    const MAX_CONTOUR_LABELS = 90, MAX_LABELS_PER_LEVEL = 3, LEVEL_LABEL_SPACING = Math.max(extent * 0.25, res * 60);
+    const MAX_CONTOUR_LABELS = 90, MAX_LABELS_PER_LEVEL = 3;
     function buildContourLabelPoints(intervalFt) {
       const lgrid = resample(LW, LH);
       const elevFt = (r, c) => { const v = lgrid[r * LW + c]; return v >= ND ? v * 3.28084 : null; };
@@ -439,6 +439,12 @@
       // well-spread labels, however many times its line crosses the box -
       // like a paper topo map, rather than labelling every crossing (which
       // on a steep or finely-stepped area would paper the screen in text).
+      // Points for a level arrive in the raster-scan order above (row by
+      // row, top to bottom), so sampling evenly-spaced INDICES through
+      // that list - rather than greedily keeping whichever points happen
+      // to be found first and are then far enough from each other - picks
+      // from across the whole box instead of clustering near wherever the
+      // scan happened to find its first few crossings for that level.
       const byLevel = new Map();
       for (const p of raw) {
         if (!byLevel.has(p.levelFt)) byLevel.set(p.levelFt, []);
@@ -446,13 +452,9 @@
       }
       let kept = [];
       for (const pts of byLevel.values()) {
+        const want = Math.min(MAX_LABELS_PER_LEVEL, pts.length);
         const chosen = [];
-        for (const p of pts) {
-          if (chosen.length >= MAX_LABELS_PER_LEVEL) break;
-          let ok = true;
-          for (const k of chosen) { if (Math.hypot(p.x - k.x, p.z - k.z) < LEVEL_LABEL_SPACING) { ok = false; break; } }
-          if (ok) chosen.push(p);
-        }
+        for (let i = 0; i < want; i++) chosen.push(pts[Math.floor((i + 0.5) * pts.length / want)]);
         kept.push(...chosen);
       }
       if (kept.length <= MAX_CONTOUR_LABELS) return kept;
