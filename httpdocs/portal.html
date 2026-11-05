@@ -974,10 +974,6 @@
 <div class="tab-content" id="statistics">
 <h3>Florida Cave Survey Statistics</h3>
 <p>Overview of the cave database statistics and analytics.</p>
-<div id="stats-state-filter-bar" style="margin-bottom: 10px;">
-<label for="stats-filter-state" style="margin-right: 6px;">Show statistics for:</label>
-<select id="stats-filter-state" onchange="setStatsStateFilter(this.value)"></select>
-</div>
 <div id="stats-customize-bar" style="margin-bottom: 10px;">
 <button type="button" class="btn-success" onclick="toggleStatsCustomizeMode()" id="stats-customize-toggle-btn">Customize Layout</button>
 </div>
@@ -3199,7 +3195,7 @@ function createHistoricalDataChart() {
   setTimeout(() => {
     // Process data to create a timeline
     // This uses the 'date' field (YYMM format) from your cave data
-    const caves = getStatsCaveData().filter(cave => cave.date);
+    const caves = caveDataStore.filter(cave => cave.date);
     
     // Group by year
     const yearCounts = {};
@@ -3336,7 +3332,7 @@ function createGeologyCard() {
       '': 'Unknown'
     };
     
-    getStatsCaveData().forEach(cave => {
+    caveDataStore.forEach(cave => {
       const geology = cave.geology || '';
       const formationName = geologyCodes[geology] || geology || 'Unknown';
       
@@ -3440,7 +3436,7 @@ function updateHazardStats() {
   let totalHazardCount = 0;
   
   // Count caves with each type of hazard
-  getStatsCaveData().forEach(cave => {
+  caveDataStore.forEach(cave => {
     let hasHazard = false;
     
     if (cave.hazards) {
@@ -3515,7 +3511,7 @@ function createElevationDistributionChart() {
   // Create the chart
   setTimeout(() => {
     // Get caves with valid elevation data
-    const cavesWithElevation = getStatsCaveData().filter(cave =>
+    const cavesWithElevation = caveDataStore.filter(cave => 
       cave.elevation && !isNaN(parseFloat(cave.elevation)));
     
     // Create elevation ranges (buckets)
@@ -3634,9 +3630,8 @@ async function updateDocumentationCoverage() {
     const caveIds = await response.json();
     const documentedSet = new Set(caveIds);
 
-    const statsCaves = getStatsCaveData();
-    const total = statsCaves.length;
-    const documented = statsCaves.filter(cave => documentedSet.has(cave.id)).length;
+    const total = caveDataStore.length;
+    const documented = caveDataStore.filter(cave => documentedSet.has(cave.id)).length;
     const undocumented = total - documented;
     const pct = total ? Math.round((documented / total) * 100) : 0;
 
@@ -3772,7 +3767,7 @@ function createMapStatusChart() {
 
     const counts = {};
     let unmapped = 0;
-    getStatsCaveData().forEach(cave => {
+    caveDataStore.forEach(cave => {
       const code = cave.mapType || '';
       const label = mapTypeLabels[code] || code || 'Unknown';
       counts[label] = (counts[label] || 0) + 1;
@@ -3926,31 +3921,6 @@ function dedupeCavesByBaseId(caves) {
   return out;
 }
 
-// Statistics tab's state filter - 'all' (default) or a specific state
-// code, set via the "Show statistics for:" dropdown (see
-// setStatsStateFilter()). Lets a member narrow every per-cave stat down to
-// one state at a time, which also makes it easy to isolate a state-specific
-// data problem (e.g. a bad import) instead of guessing from a mixed total.
-// The "Nationwide Overview" card is deliberately exempt - see
-// loadNationwideCaveStats().
-let statsStateFilter = 'all';
-
-function setStatsStateFilter(value) {
-  statsStateFilter = value || 'all';
-  updateStatistics();
-}
-
-// The slice of caveDataStore the Statistics tab's cards/charts should
-// compute from. 'all' doesn't mean literally every state in the system -
-// caveDataStore itself only ever holds whichever states this account is
-// allowed to see (see GET /api/cave-database's allowedStates filtering) -
-// it just means "every state currently loaded", same as before this filter
-// existed.
-function getStatsCaveData() {
-  if (statsStateFilter === 'all') return caveDataStore;
-  return caveDataStore.filter(cave => resolveCaveStateAndCounty(cave).state === statsStateFilter);
-}
-
 // Update the statistics page with real data
 function updateStatistics() {
   // Several cards below call `new Chart(...)` directly - if this runs
@@ -3973,21 +3943,16 @@ function updateStatistics() {
   // the whole survey's scale.
   loadNationwideCaveStats();
 
-  // Everything else on this tab respects the "Show statistics for:" state
-  // filter (statsStateFilter / getStatsCaveData()) - 'all' behaves exactly
-  // as before this filter existed.
-  const statsCaves = getStatsCaveData();
-
   // Basic counts. "Total Caves" is distinct caves - it collapses the
   // legacy lettered-suffix sibling records some older multi-entrance caves
   // are still stored as (see countDistinctCaves above) so it isn't
   // inflated by counting each of a cave's entrances as its own cave.
   // "Total Entrances" is the uncollapsed figure, every entrance however
   // it's represented, for anyone who wants that instead.
-  const distinctCaves = dedupeCavesByBaseId(statsCaves);
+  const distinctCaves = dedupeCavesByBaseId(caveDataStore);
   const totalCaves = distinctCaves.length;
   document.getElementById('total-caves').textContent = totalCaves;
-  document.getElementById('total-entrances').textContent = countTotalEntrances(statsCaves);
+  document.getElementById('total-entrances').textContent = countTotalEntrances(caveDataStore);
 
   // Count by type. cave.type is missing (not just blank - never set at
   // all) for any imported row whose source spreadsheet left "Cave Type"
@@ -4001,28 +3966,28 @@ function updateStatistics() {
 
   // Count unique state+county pairs - a bare county code can collide across
   // states, so pairing it with state avoids undercounting.
-  const counties = new Set(statsCaves.map(cave => {
+  const counties = new Set(caveDataStore.map(cave => {
     const resolved = resolveCaveStateAndCounty(cave);
     return `${resolved.state || ''}|${resolved.county || ''}`;
   }));
   document.getElementById('counties-count').textContent = counties.size;
-
+  
   // Count by entry status
-  const commercialCaves = statsCaves.filter(cave => cave.entryStatus === 'C').length;
-  const governmentCaves = statsCaves.filter(cave => ['G', 'K'].includes(cave.entryStatus)).length;
-  const privateCaves = statsCaves.filter(cave => ['P', 'F', 'R'].includes(cave.entryStatus)).length;
+  const commercialCaves = caveDataStore.filter(cave => cave.entryStatus === 'C').length;
+  const governmentCaves = caveDataStore.filter(cave => ['G', 'K'].includes(cave.entryStatus)).length;
+  const privateCaves = caveDataStore.filter(cave => ['P', 'F', 'R'].includes(cave.entryStatus)).length;
   const otherAccessCaves = totalCaves - commercialCaves - governmentCaves - privateCaves;
-
+  
   document.getElementById('commercial-caves').textContent = commercialCaves;
   document.getElementById('government-caves').textContent = governmentCaves;
   document.getElementById('private-caves').textContent = privateCaves;
   document.getElementById('other-access-caves').textContent = otherAccessCaves;
-
+  
   // Create charts
   createCaveTypesChart(landCaves, underwaterCaves);
-  createCountiesChart(statsCaves);
+  createCountiesChart(caveDataStore);
   createEntryStatusChart(commercialCaves, governmentCaves, privateCaves, otherAccessCaves);
-  createEquipmentChart(statsCaves);
+  createEquipmentChart(caveDataStore);
 
 // Make sure each card exists before updating
 if (!document.getElementById('avg-cave-length')) {
@@ -4068,7 +4033,7 @@ if (!document.getElementById('avg-cave-length')) {
   updateHazardStats();
   
   // Calculate dimension statistics
-  const cavesWithLength = statsCaves.filter(cave =>
+  const cavesWithLength = caveDataStore.filter(cave => 
     cave.length && !isNaN(parseFloat(cave.length)));
   const totalLength = cavesWithLength.reduce((sum, cave) => 
     sum + parseFloat(cave.length), 0);
@@ -4084,7 +4049,7 @@ if (!document.getElementById('avg-cave-length')) {
   }
   
   // Calculate vertical statistics
-  const cavesWithVertical = statsCaves.filter(cave =>
+  const cavesWithVertical = caveDataStore.filter(cave => 
     cave.vertical && !isNaN(parseFloat(cave.vertical)));
   const totalVertical = cavesWithVertical.reduce((sum, cave) => 
     sum + parseFloat(cave.vertical), 0);
@@ -4100,8 +4065,8 @@ if (!document.getElementById('avg-cave-length')) {
   }
   
   // Find maximum water depth
-  const cavesWithWater = statsCaves.filter(cave =>
-    (cave.waterDepth || cave.water) &&
+  const cavesWithWater = caveDataStore.filter(cave => 
+    (cave.waterDepth || cave.water) && 
     !isNaN(parseFloat(cave.waterDepth || cave.water)));
   let maxWaterDepth = 0;
   let deepestWaterCave = { name: 'None' };
@@ -5063,20 +5028,6 @@ function loadFcsDatabaseTable() {
         if ([...importStateSelect.options].some(o => o.value === previousImportValue)) {
           importStateSelect.value = previousImportValue;
         }
-      }
-
-      // Statistics tab's state filter - also not part of a cascade (no
-      // paired county select). Restricted to allowedStates like the other
-      // pickers above, so a scoped member can only filter down to states
-      // they're actually granted.
-      const statsFilterSelect = document.getElementById('stats-filter-state');
-      if (statsFilterSelect) {
-        const previousStatsValue = statsFilterSelect.value || 'all';
-        populateStateSelect(statsFilterSelect, { includeAllOption: true, restrictToCodes });
-        statsFilterSelect.value = [...statsFilterSelect.options].some(o => o.value === previousStatsValue)
-          ? previousStatsValue
-          : 'all';
-        statsStateFilter = statsFilterSelect.value;
       }
     }
 
