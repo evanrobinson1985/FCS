@@ -6831,130 +6831,36 @@ window.addEventListener('error', function(e) {
     }
 
     function downloadUpdatedCaveDataWithProperFormat(data) {
-      let formattedData = "const caveDatabase = [\n";
+      // Builds each cave with the same "readable" key order as before, but
+      // serializes every value through JSON.stringify instead of hand-built
+      // template strings. The old hand-built version only escaped double
+      // quotes, so any cave whose notes/name/etc. contained a literal
+      // newline (as merged multi-line notes now do) or an unescaped
+      // backslash produced broken, unparseable JS - silently truncating or
+      // scrambling everything after it in the downloaded file.
+      const orderedKeys = [
+        'id', 'name', 'county', 'type', 'latitude', 'longitude',
+        'elevation', 'locationAccuracy', 'entranceType', 'fieldIndication',
+        'entryStatus', 'ownerInfo', 'mapType', 'mapStatus', 'geology',
+        'topoProvince', 'length', 'vertical', 'waterDepth', 'pitch',
+        'reporterName', 'reporterNSS', 'notes', 'equipment', 'exploration',
+        'hazards', 'entrances', 'lastUpdated', 'updatedBy'
+      ];
 
-      data.forEach(cave => {
-        formattedData += "  {\n";
-        
-        // Process properties in a specific order for better readability
-        const orderedKeys = [
-          'id', 'name', 'county', 'type', 'latitude', 'longitude', 
-          'elevation', 'locationAccuracy', 'entranceType', 'fieldIndication', 
-          'entryStatus', 'ownerInfo', 'mapType', 'mapStatus', 'geology', 
-          'topoProvince', 'length', 'vertical', 'waterDepth', 'pitch', 
-          'reporterName', 'reporterNSS', 'notes', 'equipment', 'exploration', 
-          'hazards', 'entrances', 'lastUpdated', 'updatedBy'
-        ];
-        
-        // First process ordered keys
+      const orderedCaves = data.map(cave => {
+        const ordered = {};
         orderedKeys.forEach(key => {
-          if (cave.hasOwnProperty(key)) {
-            const value = cave[key];
-            
-            // Skip if property is undefined
-            if (value === undefined) return;
-            
-            // Format arrays as arrays (without quotes)
-            if (Array.isArray(value)) {
-              formattedData += `    ${key}: [${value.map(v => typeof v === "string" ? `"${v}"` : v).join(', ')}],\n`;
-            }
-            // Format hazards object with proper structure
-            else if (key === 'hazards' && typeof value === 'object' && value !== null) {
-              formattedData += `    ${key}: {\n`;
-              for (const hazardKey in value) {
-                if (typeof value[hazardKey] === "string") {
-                  formattedData += `      ${hazardKey}: "${value[hazardKey]}",\n`;
-                } else if (typeof value[hazardKey] === "boolean") {
-                  formattedData += `      ${hazardKey}: ${value[hazardKey]},\n`;
-                }
-              }
-              formattedData += "    },\n";
-            }
-            // Format entrances array with proper structure
-            else if (key === 'entrances' && Array.isArray(value)) {
-              formattedData += `    ${key}: [\n`;
-              value.forEach((entrance, i) => {
-                formattedData += "      {\n";
-                for (const eKey in entrance) {
-                  if (typeof entrance[eKey] === "string") {
-                    formattedData += `        ${eKey}: "${entrance[eKey]}",\n`;
-                  } else if (typeof entrance[eKey] === "number") {
-                    formattedData += `        ${eKey}: ${entrance[eKey]},\n`;
-                  } else if (entrance[eKey] === null) {
-                    formattedData += `        ${eKey}: null,\n`;
-                  } else if (typeof entrance[eKey] === "boolean") {
-                    formattedData += `        ${eKey}: ${entrance[eKey]},\n`;
-                  }
-                }
-                formattedData += "      }";
-                if (i < value.length - 1) formattedData += ",";
-                formattedData += "\n";
-              });
-              formattedData += "    ],\n";
-            }
-            // Keep numbers as numbers (no quotes)
-            else if (typeof value === "number") {
-              formattedData += `    ${key}: ${value},\n`;
-            }
-            // Format strings with quotes
-            else if (typeof value === "string") {
-              // Escape quotes in the string value
-              const escapedValue = value.replace(/"/g, '\\"');
-              formattedData += `    ${key}: "${escapedValue}",\n`;
-            }
-            // Format booleans properly
-            else if (typeof value === "boolean") {
-              formattedData += `    ${key}: ${value},\n`;
-            }
-            // Format null values
-            else if (value === null) {
-              formattedData += `    ${key}: null,\n`;
-            }
-          }
+          if (cave.hasOwnProperty(key) && cave[key] !== undefined) ordered[key] = cave[key];
         });
-        
-        // Now add any remaining properties that weren't in our ordered list
         for (const key in cave) {
-          if (!orderedKeys.includes(key) && key !== 'lat' && key !== 'lng') {
-            const value = cave[key];
-            
-            // Skip if property is undefined
-            if (value === undefined) continue;
-            
-            // Skip nested objects like 'hazards' that we've already handled
-            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-              continue;
-            }
-            
-            // Format arrays as arrays (without quotes)
-            if (Array.isArray(value)) {
-              formattedData += `    ${key}: [${value.map(v => typeof v === "string" ? `"${v}"` : v).join(', ')}],\n`;
-            }
-            // Keep numbers as numbers (no quotes)
-            else if (typeof value === "number") {
-              formattedData += `    ${key}: ${value},\n`;
-            }
-            // Format strings with quotes
-            else if (typeof value === "string") {
-              // Escape quotes in the string value
-              const escapedValue = value.replace(/"/g, '\\"');
-              formattedData += `    ${key}: "${escapedValue}",\n`;
-            }
-            // Format booleans properly
-            else if (typeof value === "boolean") {
-              formattedData += `    ${key}: ${value},\n`;
-            }
-            // Format null values
-            else if (value === null) {
-              formattedData += `    ${key}: null,\n`;
-            }
+          if (!orderedKeys.includes(key) && key !== 'lat' && key !== 'lng' && cave[key] !== undefined) {
+            ordered[key] = cave[key];
           }
         }
-        
-        formattedData += "  },\n";
+        return ordered;
       });
 
-      formattedData += "];\n";
+      const formattedData = `const caveDatabase = ${JSON.stringify(orderedCaves, null, 2)};\n`;
 
       const blob = new Blob([formattedData], { type: 'text/javascript' });
       const url = URL.createObjectURL(blob);
