@@ -19,6 +19,12 @@
 <!-- External CSS Libraries -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-compass@1.5.6/src/leaflet-compass.css">
+<!-- Self-hosted, not loaded from a CDN - same reasoning as leaflet-heat.js
+     below: a small, stable library (1.5.3, unchanged for years), so
+     self-hosting removes a whole class of "feature silently breaks because
+     a CDN flaked for one visitor" failure for no real downside. -->
+<link rel="stylesheet" href="css/vendor/MarkerCluster.css">
+<link rel="stylesheet" href="css/vendor/MarkerCluster.Default.css">
  <link rel="stylesheet" href="styles.css?v=10">
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
@@ -1507,6 +1513,11 @@
      downside - no CDN caching benefit was worth keeping for a file this
      small anyway. -->
 <script src="js/vendor/leaflet-heat.js"></script>
+<!-- Self-hosted for the same reason, and clusters the cave markers on the
+     Interactive Map so thousands of them don't all sit in the DOM as
+     individual markers at once (the thing that made the map laggy once
+     the database grew past a couple thousand caves). -->
+<script src="js/vendor/leaflet.markercluster.js"></script>
 
 <!-- GeoTIFF Support -->
 <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
@@ -2215,9 +2226,19 @@
         console.error("Error adding satellite layer:", error);
       }
       
-      // Create a layer for caves
+      // Create a layer for caves. A clustering group rather than a plain
+      // layerGroup - at full scale (thousands of caves) putting every one
+      // of them in the DOM as its own marker is what made the map
+      // noticeably laggy; clustering groups nearby pins into a single
+      // bubble until you're zoomed in close enough that they're not
+      // overlapping. Same addLayer/clearLayers/eachLayer/getLayers API as
+      // layerGroup (it's built on top of L.FeatureGroup), so every other
+      // call site that touches cavesLayer keeps working unchanged.
       try {
-        cavesLayer = L.layerGroup().addTo(map);
+        cavesLayer = L.markerClusterGroup({
+          maxClusterRadius: 60,
+          spiderfyOnMaxZoom: true,
+        }).addTo(map);
         console.log("Caves layer created and added to map");
       } catch (error) {
         console.error("Error creating caves layer:", error);
