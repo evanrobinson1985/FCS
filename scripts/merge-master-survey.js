@@ -29,8 +29,19 @@
 // left completely untouched.
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const XLSX = require("xlsx");
+
+// Plesk's "Run Node.js commands" tool execs node directly rather than
+// through a shell, so a leading "~" in a path (as in the usage examples
+// above) never gets expanded to the home directory the way it would on a
+// normal command line - it's passed through literally and fails with
+// "File not found: ~/...". Expand it ourselves.
+function expandHome(p) {
+  if (p && p.startsWith("~")) return path.join(os.homedir(), p.slice(1));
+  return p;
+}
 
 function parseArgs(argv) {
   const positional = [];
@@ -45,8 +56,8 @@ function parseArgs(argv) {
 }
 
 const { positional, dataDir: dataDirArg, write: writeArg } = parseArgs(process.argv.slice(2));
-const masterPath = positional[0] || process.env.MERGE_MASTER_FILE;
-const dataDir = dataDirArg || process.env.DATA_DIR;
+const masterPath = expandHome(positional[0] || process.env.MERGE_MASTER_FILE);
+const dataDir = expandHome(dataDirArg || process.env.DATA_DIR);
 const doWrite = writeArg || process.env.MERGE_WRITE === "true";
 
 if (!masterPath || !dataDir) {

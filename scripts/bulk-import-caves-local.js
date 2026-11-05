@@ -19,8 +19,19 @@
 // check the report first on a big file before committing to the real write.
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const XLSX = require("xlsx");
+
+// Plesk's "Run Node.js commands" tool execs node directly rather than
+// through a shell, so a leading "~" in a path (as in the usage example
+// above) never gets expanded to the home directory the way it would on a
+// normal command line - it's passed through literally and fails with
+// "File not found: ~/...". Expand it ourselves.
+function expandHome(p) {
+  if (p && p.startsWith("~")) return path.join(os.homedir(), p.slice(1));
+  return p;
+}
 
 const CAVE_IMPORT_COLUMNS = [
   { header: "County", field: "county" },
@@ -102,9 +113,9 @@ function main() {
   // already applies the app's own configured env vars like DATA_DIR) that
   // may not offer a convenient way to pass command-line arguments. Set
   // IMPORT_FILE / IMPORT_STATE / IMPORT_DRY_RUN there instead if so.
-  const xlsxPath = positional[0] || process.env.IMPORT_FILE;
+  const xlsxPath = expandHome(positional[0] || process.env.IMPORT_FILE);
   const stateCode = positional[1] || process.env.IMPORT_STATE;
-  const dataDir = dataDirArg || process.env.DATA_DIR;
+  const dataDir = expandHome(dataDirArg || process.env.DATA_DIR);
   const dryRun = dryRunArg || process.env.IMPORT_DRY_RUN === "true";
 
   if (!xlsxPath || !stateCode || !dataDir) {
