@@ -4324,15 +4324,21 @@ function createEquipmentChart(caveData) {
     'X': 'Special Equipment'
   };
   
-  // Count how many caves need each type of equipment
+  // Count how many caves need each type of equipment. cave.equipment isn't
+  // always an array - the bulk importer (used for the Alabama import)
+  // copies the spreadsheet's "Equipment Needed" cell straight across as a
+  // raw string (e.g. "HD"), not an array, so .forEach() on it threw and
+  // blocked every chart/card function called after this one in the same
+  // synchronous updateStatistics() pass.
   caveData.forEach(cave => {
-    if (cave.equipment) {
-      cave.equipment.forEach(code => {
-        if (equipmentCounts.hasOwnProperty(code)) {
-          equipmentCounts[code]++;
-        }
-      });
-    }
+    const codes = Array.isArray(cave.equipment)
+      ? cave.equipment
+      : (typeof cave.equipment === 'string' ? cave.equipment.split('') : []);
+    codes.forEach(code => {
+      if (equipmentCounts.hasOwnProperty(code)) {
+        equipmentCounts[code]++;
+      }
+    });
   });
   
   // Convert to array for Chart.js
