@@ -799,9 +799,11 @@
 <input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="25"/>
 </div>
 
-<!-- Waypoints Visibility -->
+<!-- Waypoints Visibility + Size -->
 <div class="control-block">
 <label><input id="toggle-waypoints" type="checkbox" checked/> Show Waypoints</label>
+<label for="waypoint-size">Marker Size: <span id="waypoint-size-value">7</span></label>
+<input class="slider" id="waypoint-size" max="16" min="3" type="range" value="7"/>
 </div>
 
 <!-- Waypoints Heatmap + Transparency -->
@@ -2068,7 +2070,14 @@
         color: '#d53e4f'
       }
     };
-    
+
+    // Radius (px) every cave marker is drawn at - adjustable via the
+    // "Marker Size" slider under Show Waypoints. Read by every spot that
+    // creates an L.circleMarker for a cave, and applied live to markers
+    // already on the map (see the waypoint-size slider listener below)
+    // rather than requiring a full reload.
+    let waypointMarkerRadius = 7;
+
     // Initialize the Leaflet map
     function initializeMap() {
       console.log("Initializing map...");
@@ -2250,6 +2259,25 @@
       if (waypointsCheckbox) {
         waypointsCheckbox.addEventListener('change', function() {
           toggleWaypoints(this.checked);
+        });
+      }
+
+      // Resizes every cave marker already on the map live, instead of
+      // reloading them, by calling setRadius() directly on each
+      // L.circleMarker in cavesLayer - cheap even with thousands of
+      // markers, and new markers created afterward already pick up
+      // waypointMarkerRadius at creation time.
+      const waypointSizeSlider = document.getElementById('waypoint-size');
+      const waypointSizeValue = document.getElementById('waypoint-size-value');
+      if (waypointSizeSlider) {
+        waypointSizeSlider.addEventListener('input', function() {
+          waypointMarkerRadius = parseInt(this.value, 10);
+          if (waypointSizeValue) waypointSizeValue.textContent = waypointMarkerRadius;
+          if (cavesLayer) {
+            cavesLayer.eachLayer(function(layer) {
+              if (typeof layer.setRadius === 'function') layer.setRadius(waypointMarkerRadius);
+            });
+          }
         });
       }
 
@@ -2730,7 +2758,7 @@
 
         // Create marker
         const marker = L.circleMarker([lat, lng], {
-          radius: 7,
+          radius: waypointMarkerRadius,
           fillColor: markerColor,
           color: '#000000',
           weight: 1,
@@ -7037,7 +7065,7 @@ window.addEventListener('error', function(e) {
 
         // Create marker
         const marker = L.circleMarker([lat, lng], {
-          radius: 7,
+          radius: waypointMarkerRadius,
           fillColor: markerColor,
           color: '#000000',
           weight: 1,
