@@ -235,6 +235,12 @@
                 <option value="terrain">Natural terrain colours</option>
               </select></label>
             <label data-names-row style="display:block;"><input data-names type="checkbox" checked> Show cave names</label>
+            <div data-heat-row>
+              <label style="display:block;"><input data-heat-on type="checkbox"> Heatmap</label>
+              <label style="display:block;">Heatmap opacity
+                <input data-heat-opacity type="range" min="0" max="100" step="5" value="50" style="vertical-align:middle;width:130px;">
+                <span data-heat-opacity-val>50%</span></label>
+            </div>
             <label style="display:block;"><input data-contour-on type="checkbox"> Contour lines</label>
             <label style="display:block;">Contour interval
               <input data-contour type="range" min="1" max="21" step="1" value="10" style="vertical-align:middle;width:130px;">
@@ -537,6 +543,66 @@
     }
     const markerPos = new Float32Array(mk.length ? mk : [0, 0, 0]);
 
+    // ---- Heatmap texture: cave density, draped over the terrain the same
+    // way basemap imagery is (same v_uv, same mkTex()). Built once here
+    // (positions don't change during the session) rather than per frame.
+    // Each cave draws a soft radial blob that accumulates (brighter where
+    // caves cluster, same idea as the 2D map's Waypoints Heatmap), then the
+    // accumulated alpha is colourised through a blue -> red gradient; the
+    // alpha itself becomes each pixel's blend weight in the shader, so
+    // empty ground stays fully transparent regardless of opacity.
+    function buildHeatCanvas() {
+      // Power-of-two in both dimensions, like texNrm/texAlb above (via the
+      // same pot() helper) - mkTex() below calls generateMipmap(), which
+      // WebGL1 silently fails on a non-power-of-two texture, leaving it
+      // "mipmap incomplete" and sampling as solid black.
+      const HW = pot(512), HH = pot(Math.max(2, Math.round(512 * sizeZ / sizeX)));
+      const canvas = document.createElement('canvas');
+      canvas.width = HW; canvas.height = HH;
+      const ctx = canvas.getContext('2d');
+      if (!pins.length) return canvas; // blank/transparent - nothing to show
+      const r = Math.max(8, Math.max(HW, HH) * 0.035);
+      const blob = document.createElement('canvas');
+      blob.width = blob.height = r * 2;
+      const bctx = blob.getContext('2d');
+      const grad = bctx.createRadialGradient(r, r, 0, r, r, r);
+      grad.addColorStop(0, 'rgba(0,0,0,1)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      bctx.fillStyle = grad;
+      bctx.fillRect(0, 0, r * 2, r * 2);
+      ctx.globalAlpha = 0.5;
+      for (const p of pins) {
+        const px = (p.x + cx) / sizeX * HW, py = (p.z + cz) / sizeZ * HH;
+        ctx.drawImage(blob, px - r, py - r);
+      }
+      ctx.globalAlpha = 1;
+      // Blue -> cyan -> lime -> yellow -> red, matching the 2D heatmap's
+      // default gradient.
+      const stops = [[0.0, 0, 0, 255], [0.4, 0, 0, 255], [0.6, 0, 255, 255], [0.7, 0, 255, 0], [0.8, 255, 255, 0], [1.0, 255, 0, 0]];
+      const lut = new Uint8Array(256 * 3);
+      for (let i = 0; i < 256; i++) {
+        const t = i / 255;
+        let s0 = stops[0], s1 = stops[stops.length - 1];
+        for (let k = 0; k < stops.length - 1; k++) {
+          if (t >= stops[k][0] && t <= stops[k + 1][0]) { s0 = stops[k]; s1 = stops[k + 1]; break; }
+        }
+        const f = Math.min(1, Math.max(0, (t - s0[0]) / Math.max(1e-6, s1[0] - s0[0])));
+        lut[i * 3] = s0[1] + (s1[1] - s0[1]) * f;
+        lut[i * 3 + 1] = s0[2] + (s1[2] - s0[2]) * f;
+        lut[i * 3 + 2] = s0[3] + (s1[3] - s0[3]) * f;
+      }
+      const img = ctx.getImageData(0, 0, HW, HH);
+      const data = img.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (!a) continue;
+        data[i] = lut[a * 3]; data[i + 1] = lut[a * 3 + 1]; data[i + 2] = lut[a * 3 + 2];
+      }
+      ctx.putImageData(img, 0, 0);
+      return canvas;
+    }
+    const texHeat = mkTex(buildHeatCanvas());
+
     // Cave-name labels (the MAX_LABELS pins nearest the middle of the box)
     const labelLayer = q('[data-labels]');
     const labeled = pins.filter(p => p.label).sort((a, b2) => Math.hypot(a.x, a.z) - Math.hypot(b2.x, b2.z)).slice(0, MAX_LABELS);
@@ -585,9 +651,10 @@
       }`;
     const fs = `${derivExt ? '#extension GL_OES_standard_derivatives : enable\n' : ''}precision mediump float;
       varying vec2 v_uv; varying float v_dist; varying float v_elevFt;
-      uniform sampler2D u_nrm; uniform sampler2D u_alb;
+      uniform sampler2D u_nrm; uniform sampler2D u_alb; uniform sampler2D u_heat;
       uniform vec3 u_sun; uniform float u_nScale; uniform float u_flat; uniform vec3 u_flatColor; uniform float u_fogFar; uniform float u_img;
       uniform float u_contourOn; uniform float u_contourInterval; uniform vec3 u_contourColor;
+      uniform float u_heatOn; uniform float u_heatOpacity;
       void main() {
         if (u_flat > 0.5) { gl_FragColor = vec4(u_flatColor, 1.0); return; }
         vec3 n = texture2D(u_nrm, v_uv).xyz * 2.0 - 1.0;
@@ -599,6 +666,14 @@
         // Draped map imagery already has its own colours (and, for aerial
         // photos, shadows), so the relief shading is applied more gently.
         vec3 c = u_img > 0.5 ? alb * mix(1.0, light / 0.9, 0.6) : alb * light;
+        // Heatmap sits above the terrain/draped basemap but below the cave
+        // pins and labels (those are drawn in later passes/as HTML, on top
+        // of this one) - blended before contour lines so the lines stay
+        // crisp on top of the colour wash rather than tinted by it.
+        if (u_heatOn > 0.5) {
+          vec4 heat = texture2D(u_heat, v_uv);
+          c = mix(c, heat.rgb, heat.a * u_heatOpacity);
+        }
         if (u_contourOn > 0.5) {
           float m = mod(v_elevFt, u_contourInterval);
           float distToLine = min(m, u_contourInterval - m);
@@ -622,8 +697,9 @@
     const bPos = mkBuf(pos), bUv = mkBuf(uv), bIdx = mkBuf(idx, gl.ELEMENT_ARRAY_BUFFER), bMk = mkBuf(markerPos);
     const uMvp = uni('u_mvp'), uZ = uni('u_zScale'), uNScale = uni('u_nScale'), uEye = uni('u_eye'), uSun = uni('u_sun'),
       uFlat = uni('u_flat'), uFlatColor = uni('u_flatColor'), uFog = uni('u_fogFar'), uPt = uni('u_pointSize'), uImg = uni('u_img'),
-      uMinZ = uni('u_minZ'), uContourOn = uni('u_contourOn'), uContourInterval = uni('u_contourInterval'), uContourColor = uni('u_contourColor');
-    gl.uniform1i(uni('u_nrm'), 0); gl.uniform1i(uni('u_alb'), 1);
+      uMinZ = uni('u_minZ'), uContourOn = uni('u_contourOn'), uContourInterval = uni('u_contourInterval'), uContourColor = uni('u_contourColor'),
+      uHeatOn = uni('u_heatOn'), uHeatOpacity = uni('u_heatOpacity');
+    gl.uniform1i(uni('u_nrm'), 0); gl.uniform1i(uni('u_alb'), 1); gl.uniform1i(uni('u_heat'), 2);
     gl.uniform1f(uMinZ, minZ);
     gl.enable(gl.DEPTH_TEST);
     gl.clearColor(0.55, 0.62, 0.72, 1); // hazy sky, matching the fog
@@ -674,6 +750,18 @@
 
     let sunAz = 315;
     sunEl.addEventListener('input', () => { sunAz = parseFloat(sunEl.value); q('[data-sun-val]').textContent = sunAz + '°'; });
+
+    // Heatmap: on/off switch plus an opacity slider, same idea as the 2D
+    // map's Waypoints Heatmap. Nothing to show without at least one cave
+    // in the box, same as the "Show cave names" row above.
+    const heatOnEl = q('[data-heat-on]'), heatOpacityEl = q('[data-heat-opacity]'), heatOpacityValEl = q('[data-heat-opacity-val]');
+    let heatOn = false, heatOpacityVal = parseInt(heatOpacityEl.value, 10) / 100;
+    if (!pins.length) q('[data-heat-row]').style.display = 'none';
+    heatOnEl.addEventListener('change', () => { heatOn = heatOnEl.checked; });
+    heatOpacityEl.addEventListener('input', () => {
+      heatOpacityVal = parseInt(heatOpacityEl.value, 10) / 100;
+      heatOpacityValEl.textContent = heatOpacityEl.value + '%';
+    });
 
     // Contour lines: on/off switch plus an interval slider, same foot
     // intervals as the 2D map's contour control for a consistent feel.
@@ -958,11 +1046,14 @@
       gl.uniform1f(uContourOn, contourOn ? 1 : 0);
       gl.uniform1f(uContourInterval, contourIntervalFt);
       gl.uniform3fv(uContourColor, CONTOUR_COLOR);
+      gl.uniform1f(uHeatOn, heatOn ? 1 : 0);
+      gl.uniform1f(uHeatOpacity, heatOpacityVal);
 
       // Terrain
       gl.uniform1f(uFlat, 0); gl.uniform1f(uPt, 1);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texNrm);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, useImg && texImg ? texImg : texAlb);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texHeat);
       gl.uniform1f(uImg, useImg && texImg ? 1 : 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, bPos); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, bUv); gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
