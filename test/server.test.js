@@ -183,6 +183,63 @@ describe("route protection", () => {
   });
 });
 
+// A JWT's role/status claims are a snapshot from login time, trusted for up
+// to 8 hours unless re-checked. authenticateToken re-verifies against the
+// live account on every request so a webmaster cutting someone off takes
+// effect immediately, not whenever that person's existing token happens to
+// expire.
+describe("an account's existing session is revoked the moment it's disabled, deleted, or demoted", () => {
+  test("disabling an account immediately invalidates its already-issued token", async () => {
+    await seedUser({ username: "revoke-on-disable", password: "RevokeOnDisablePass123!", role: "member" });
+    const victimToken = await login("revoke-on-disable", "RevokeOnDisablePass123!");
+    const before = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(before.status, 200);
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const disable = await request(app)
+      .post("/api/toggle-user-status")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "revoke-on-disable", isActive: false });
+    assert.equal(disable.status, 200);
+
+    const after = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(after.status, 401);
+  });
+
+  test("deleting an account immediately invalidates its already-issued token", async () => {
+    await seedUser({ username: "revoke-on-delete", password: "RevokeOnDeletePass123!", role: "member" });
+    const victimToken = await login("revoke-on-delete", "RevokeOnDeletePass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const del = await request(app)
+      .delete("/api/delete-user")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "revoke-on-delete" });
+    assert.equal(del.status, 200);
+
+    const after = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(after.status, 401);
+  });
+
+  test("a role change takes effect on the account's existing token immediately, not just on future logins", async () => {
+    await seedUser({ username: "promote-live", password: "PromoteLivePass123!", role: "member" });
+    const promotedToken = await login("promote-live", "PromoteLivePass123!");
+    const before = await request(app).get("/api/users").set("Authorization", `Bearer ${promotedToken}`);
+    assert.equal(before.status, 403); // still a member's token, per the stale JWT role claim
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const promote = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "promote-live", newRole: "webmaster" });
+    assert.equal(promote.status, 200);
+
+    // Same token string as `before` - only the live account's role changed.
+    const after = await request(app).get("/api/users").set("Authorization", `Bearer ${promotedToken}`);
+    assert.equal(after.status, 200);
+  });
+});
+
 // Webmaster accounts sit at the top of the permission ladder and never hold
 // any other role - the Account Management UI doesn't offer a role/status/
 // delete control for webmaster rows at all, and these routes enforce the

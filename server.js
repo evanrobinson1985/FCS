@@ -1648,16 +1648,26 @@ function authenticateToken(req, res, next) {
     if (decoded.pending2FA) {
       return res.status(401).json({ error: "Two-factor verification required." });
     }
-    req.user = decoded;
+    // The JWT's role/status claims are a snapshot from login time and are
+    // trusted for up to 8 hours (the token's lifetime) unless re-checked
+    // against the live account here. Without this lookup, a webmaster
+    // disabling, deleting, or demoting an account wouldn't actually cut off
+    // an already-issued session until it naturally expired - re-verify
+    // against the current record on every request instead, same live-lookup
+    // pattern requireDuesManager already uses below.
+    const liveUser = loadUsers().find((u) => u.username === decoded.username);
+    if (!liveUser || liveUser.status !== "active") {
+      return res.status(401).json({ error: "Your account is no longer active. Please log in again or contact a webmaster." });
+    }
+    req.user = { ...decoded, role: liveUser.role };
     // Dues access switch (Account Management, off by default): a member
     // whose recorded membership has expired can only reach the few routes
     // needed to see their status, pay, and get back in. Never applies to
     // admins/webmasters, or to members with no payment recorded.
-    if (siteConfig.duesEnforcement && decoded.role === "member") {
+    if (siteConfig.duesEnforcement && liveUser.role === "member") {
       const p = (req.originalUrl || "").split("?")[0];
       if (!DUES_EXPIRED_ALLOWED_PATHS.has(p)) {
-        const user = loadUsers().find((u) => u.username === decoded.username);
-        if (user && dues.duesStatus(user, { reminderDays: siteConfig.duesReminderDays }).state === "expired") {
+        if (dues.duesStatus(liveUser, { reminderDays: siteConfig.duesReminderDays }).state === "expired") {
           return res.status(403).json({
             error: "Your membership has expired. Please pay your yearly dues to regain access.",
             duesExpired: true,
