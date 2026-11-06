@@ -711,10 +711,7 @@
 <div class="map-title">
 <h3>Florida Cave Survey Interactive Map</h3>
 <div class="map-options">
-<!-- State + County Filter -->
-<select class="filter-select" id="map-filter-state">
-<option value="all">All States</option>
-</select>
+<!-- County Filter -->
 <select class="filter-select" id="map-filter-county">
 <option value="all">All Counties</option>
 </select>
@@ -2694,7 +2691,6 @@
       cavesLayer.clearLayers();
       
       // Get filter values
-      const stateFilter = document.getElementById('map-filter-state')?.value || 'all';
       const countyFilter = document.getElementById('map-filter-county').value;
       const typeFilter = document.getElementById('map-filter-type').value;
       const statusFilter = document.getElementById('map-filter-status').value;
@@ -2705,10 +2701,6 @@
       if (activeSubmissionId) {
         // Filter by active submission if one is selected
         filteredCaves = filteredCaves.filter(cave => cave.submissionId === activeSubmissionId);
-      }
-
-      if (stateFilter !== 'all') {
-        filteredCaves = filteredCaves.filter(cave => resolveCaveStateAndCounty(cave).state === stateFilter);
       }
 
       if (countyFilter !== 'all') {
@@ -3028,8 +3020,7 @@
       activeSubmissionId = null;
       
       // Reset filters
-      document.getElementById('map-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -3054,8 +3045,7 @@
       activeSubmissionId = submissionId;
       
       // Reset other filters
-      document.getElementById('map-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -3069,8 +3059,7 @@
       activeSubmissionId = null;
       
       // Reset filters
-      document.getElementById('map-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       
@@ -4975,7 +4964,6 @@ function loadFcsDatabaseTable() {
       }
 
       const pairs = [
-        { stateId: 'map-filter-state', countyId: 'map-filter-county', includeAllOption: true, onChange: () => { if (typeof applyMapFilters === 'function' && map) applyMapFilters(); } },
         { stateId: 'database-filter-state', countyId: 'database-filter-county', includeAllOption: true, onChange: () => { if (typeof filterDatabase === 'function') filterDatabase(); } },
         { stateId: 'edit-state', countyId: 'edit-county', includeAllOption: false, onChange: null },
       ];
@@ -5014,6 +5002,18 @@ function loadFcsDatabaseTable() {
         if ([...importStateSelect.options].some(o => o.value === previousImportValue)) {
           importStateSelect.value = previousImportValue;
         }
+      }
+
+      // The Interactive Map's county filter isn't part of a state/county
+      // cascade (there's no state picker next to it - this site only ever
+      // covers Florida) - just populate it with Florida's counties directly.
+      const mapCountySelect = document.getElementById('map-filter-county');
+      if (mapCountySelect) {
+        const previousMapCountyValue = mapCountySelect.value || 'all';
+        populateCountySelect(mapCountySelect, 'FL', { includeAllOption: true });
+        mapCountySelect.value = [...mapCountySelect.options].some(o => o.value === previousMapCountyValue)
+          ? previousMapCountyValue
+          : 'all';
       }
     }
 
@@ -7299,8 +7299,7 @@ window.addEventListener('error', function(e) {
       }
       
       // Reset other filters to show all results
-      document.getElementById('map-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       activeSubmissionId = null;
@@ -7580,8 +7579,7 @@ window.addEventListener('error', function(e) {
       document.getElementById('cave-search').value = '';
       
       // Reset filters and reload all caves
-      document.getElementById('map-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('map-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
       activeSubmissionId = null;
