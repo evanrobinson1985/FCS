@@ -743,7 +743,7 @@
 <button class="basemap-btn active" id="satellite-basemap">Satellite Imagery</button>
 <button class="basemap-btn" id="topo-basemap">USGS Topo Map</button>
 <button class="basemap-btn" id="hillshade-basemap">USGS DEM Hillshade</button>
-<button class="basemap-btn" id="osm-basemap">OpenStreetMap</button>
+<button class="basemap-btn" id="osm-basemap">Street Map</button>
 </div>
 </div>
 
@@ -2167,18 +2167,19 @@
           pane: 'basemapPane' // Use our custom pane
         });
 
-        // tile.openstreetmap.org itself is explicitly off-limits here - its
-        // tile usage policy (operations.osmfoundation.org/policies/tiles/)
-        // exists for light evaluation use only and blocks (HTTP 403, "App
-        // is not following the tile usage policy") any production site/app
-        // that embeds it directly, which is exactly what this returned the
-        // first time this pointed there. CARTO's basemap service serves
-        // the same OpenStreetMap data, styled, and is free with no API key
-        // for this kind of use - see carto.com/basemaps.
-        osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
-          attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-          maxZoom: 20,
-          subdomains: 'abcd',
+        // Street-map basemap. tile.openstreetmap.org's own tile usage
+        // policy blocks any production site/app embedding it directly
+        // (HTTP 403, "App is not following the tile usage policy"), and
+        // CARTO's basemap service - the first replacement tried here -
+        // started requiring a free API key in August 2026 (keyless
+        // requests now come back watermarked "API KEY REQUIRED"). Esri's
+        // World Street Map is the same free, keyless ArcGIS Online service
+        // as satelliteLayer above, just a different layer - already proven
+        // to work on this site with no API key, no account, and no usage
+        // policy blocking direct embedding.
+        osmLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+          attribution: '© Esri',
+          maxZoom: 19,
           pane: 'basemapPane' // Use our custom pane
         });
 
@@ -2311,7 +2312,7 @@
             },
             // Basemaps that can be draped over the 3D terrain
             getBasemaps: function() {
-              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer], ['OpenStreetMap', osmLayer]]
+              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer], ['Street Map', osmLayer]]
                 .filter(function(pair) { return pair[1] && pair[1]._url; })
                 .map(function(pair) {
                   return { label: pair[0], url: pair[1]._url, options: pair[1].options, active: map.hasLayer(pair[1]) };
