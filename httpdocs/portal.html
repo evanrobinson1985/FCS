@@ -2217,12 +2217,21 @@
       // NEW CODE: Initialize heatmap after map and terrain controls are set up
       setTimeout(function() {
         initializeHeatmap();
-        
+
         // If checkbox is checked on page load, show the heatmap
         const heatmapCheckbox = document.getElementById('waypoints-heatmap');
         if (heatmapCheckbox && heatmapCheckbox.checked) {
           toggleHeatmap(true);
         }
+
+        // Apply this account's saved display settings (basemap, waypoint
+        // visibility/size, hillshade/heatmap/contour toggles and
+        // opacities, label size/transparency) now that every layer those
+        // settings touch has actually been created above - doing this any
+        // earlier would silently no-op on whichever layer isn't ready yet
+        // (multiAngleHillshadeLayer in particular has no lazy-init of its
+        // own, unlike the heatmap).
+        loadMapPreferences();
       }, 1000);
 
       // Attach filter change events to re-apply filters when dropdowns are changed
@@ -2647,17 +2656,20 @@
         const heatmapCheckbox = document.getElementById('waypoints-heatmap');
         if (heatmapCheckbox && heatmapCheckbox.checked) {
           heatmapLayer.addTo(map);
-          
-          // Apply current opacity setting
-          const transparencySlider = document.getElementById('heatmap-opacity');
-          if (transparencySlider) {
-            const transparencyValue = parseInt(transparencySlider.value, 10);
-            const opacityValue = (100 - transparencyValue) / 100;
-            heatmapLayer.setOpacity(opacityValue);
-          }
+
+          // Reuses the same opacity-applying logic the opacity slider
+          // itself uses (setHeatmapOpacity()'s multi-method fallback
+          // chain, since L.heatLayer has no native setOpacity()) instead
+          // of duplicating it here with an unguarded, inverted
+          // calculation that threw and aborted this function before it
+          // ever reached applyMapFilters() below - silently breaking
+          // marker refresh any time this ran with the heatmap already
+          // checked (e.g. right after logging back in with it saved as
+          // part of this account's map display preferences).
+          updateHeatmapOpacity();
         }
       }
-      
+
       // Apply current filters and add markers to the map
       applyMapFilters();
     }
@@ -6767,6 +6779,158 @@ window.addEventListener('error', function(e) {
       }
     }
 
+    // ---- Interactive Map display settings (basemap, waypoints, hillshade,
+    // heatmap, contour, labels) - saved on the account itself (not just the
+    // browser/localStorage) so they're the same the next time this member
+    // logs in, on any device. Mirrors the Statistics tab's
+    // /api/stats-preferences pattern. Deliberately does NOT include the
+    // cave filters (county/type/entry-status/map-status) or search term -
+    // those are a one-off "what am I looking at right now" query, not a
+    // display preference, so they reset to "all" on every fresh load like
+    // they always have.
+    let mapPreferencesLoaded = false;
+
+    function currentBasemapType() {
+      if (document.getElementById('topo-basemap')?.classList.contains('active')) return 'topo';
+      if (document.getElementById('hillshade-basemap')?.classList.contains('active')) return 'hillshade';
+      return 'satellite';
+    }
+
+    function readMapPreferencesFromControls() {
+      const getChecked = (id) => { const el = document.getElementById(id); return el ? el.checked : undefined; };
+      const getNumber = (id) => { const el = document.getElementById(id); return el ? parseInt(el.value, 10) : undefined; };
+      const getString = (id) => { const el = document.getElementById(id); return el ? el.value : undefined; };
+      return {
+        basemap: currentBasemapType(),
+        multiAngleHillshade: getChecked('multi-angle-hillshade'),
+        hillshadeOpacity: getNumber('hillshade-opacity'),
+        showWaypoints: getChecked('toggle-waypoints'),
+        waypointSize: getNumber('waypoint-size'),
+        waypointsHeatmap: getChecked('waypoints-heatmap'),
+        heatmapOpacity: getNumber('heatmap-opacity'),
+        contourInterval: getNumber('contour-slider'),
+        contourColor: getString('contour-color'),
+        labelSize: getNumber('label-size'),
+        labelOpacity: getNumber('label-opacity'),
+      };
+    }
+
+    let saveMapPreferencesTimer = null;
+    function scheduleSaveMapPreferences() {
+      // Don't let applying a just-loaded preference set immediately
+      // re-save itself (every control below is set programmatically by
+      // loadMapPreferences(), which fires the same input/change events a
+      // real user interaction would).
+      if (!mapPreferencesLoaded) return;
+      clearTimeout(saveMapPreferencesTimer);
+      // Debounced well past a slider drag's rapid-fire 'input' events, so
+      // dragging doesn't send a request per pixel - only once the user
+      // settles on a value.
+      saveMapPreferencesTimer = setTimeout(saveMapPreferences, 800);
+    }
+
+    async function saveMapPreferences() {
+      try {
+        await fetch('/api/map-preferences', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+            'X-CSRF-Token': getCSRFToken()
+          },
+          body: JSON.stringify(readMapPreferencesFromControls())
+        });
+      } catch (error) {
+        console.error('Error saving map preferences:', error);
+      }
+    }
+
+    // Applies one saved value to a control and fires the same event its
+    // own listener is wired to, so loading a preference re-uses that
+    // control's existing apply logic instead of duplicating it here.
+    function applyMapPreferenceSlider(id, value) {
+      if (typeof value !== 'number' || isNaN(value)) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    function applyMapPreferenceCheckbox(id, value) {
+      if (typeof value !== 'boolean') return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.checked = value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function loadMapPreferences() {
+      try {
+        const response = await fetch('/api/map-preferences', {
+          headers: {
+            'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+            'X-CSRF-Token': getCSRFToken()
+          }
+        });
+        if (!response.ok) return;
+        const prefs = await response.json();
+        if (!prefs || typeof prefs !== 'object') return;
+
+        if (prefs.basemap && typeof switchBasemap === 'function') {
+          switchBasemap(prefs.basemap);
+        }
+
+        applyMapPreferenceSlider('hillshade-opacity', prefs.hillshadeOpacity);
+        applyMapPreferenceCheckbox('multi-angle-hillshade', prefs.multiAngleHillshade);
+
+        applyMapPreferenceSlider('waypoint-size', prefs.waypointSize);
+        applyMapPreferenceCheckbox('toggle-waypoints', prefs.showWaypoints);
+
+        applyMapPreferenceSlider('heatmap-opacity', prefs.heatmapOpacity);
+        applyMapPreferenceCheckbox('waypoints-heatmap', prefs.waypointsHeatmap);
+
+        if (typeof prefs.contourColor === 'string') {
+          const el = document.getElementById('contour-color');
+          if (el) {
+            el.value = prefs.contourColor;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+        applyMapPreferenceSlider('contour-slider', prefs.contourInterval);
+
+        applyMapPreferenceSlider('label-size', prefs.labelSize);
+        applyMapPreferenceSlider('label-opacity', prefs.labelOpacity);
+      } catch (error) {
+        console.error('Error loading map preferences:', error);
+      } finally {
+        // Only now does a user's own change start triggering auto-save -
+        // see the guard at the top of scheduleSaveMapPreferences().
+        mapPreferencesLoaded = true;
+      }
+    }
+
+    // Wire every persistable control to auto-save (debounced) on change.
+    // Deferred to DOMContentLoaded, same as loadCaveCounterBanner() above,
+    // rather than assumed-safe at this script's own parse time.
+    document.addEventListener('DOMContentLoaded', function attachMapPreferencesAutoSave() {
+      const ids = [
+        'multi-angle-hillshade', 'hillshade-opacity',
+        'toggle-waypoints', 'waypoint-size',
+        'waypoints-heatmap', 'heatmap-opacity',
+        'contour-slider', 'contour-color',
+        'label-size', 'label-opacity',
+      ];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const eventType = el.type === 'checkbox' ? 'change' : 'input';
+        el.addEventListener(eventType, scheduleSaveMapPreferences);
+      });
+      ['satellite-basemap', 'topo-basemap', 'hillshade-basemap'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', scheduleSaveMapPreferences);
+      });
+    });
+
     // New function that directly modifies the heat layer
     function setHeatmapOpacity(opacity) {
       if (!heatmapLayer || !map || !map.hasLayer(heatmapLayer)) return;
@@ -8506,8 +8670,15 @@ window.addEventListener('error', function(e) {
         originalCave.lastUpdated = new Date().toISOString();
       }
 
-      // Re-render markers with new coordinates
+      // Re-render markers with new coordinates. loadCavesToMap() ->
+      // applyMapFilters() always re-fits the view to every visible cave
+      // (or zooms to a single remaining one) once it's done rendering,
+      // which would throw away the exact spot just picked here - so
+      // re-center on the new location, at the zoom level already in use,
+      // right after.
+      const zoomBeforeRefresh = map.getZoom();
       loadCavesToMap();
+      map.setView([lat, lng], zoomBeforeRefresh);
 
       // Save the updated coordinates to the server
       saveUpdatedCaveData();

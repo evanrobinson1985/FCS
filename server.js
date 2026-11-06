@@ -5324,6 +5324,75 @@ app.post("/api/stats-preferences", authenticateToken, express.json(), (req, res)
   }
 });
 
+// A personal display preference, not an admin action - any logged-in
+// account can save how they like the Interactive Map tab set up (basemap,
+// waypoint visibility/size, hillshade/heatmap/contour toggles and
+// opacities, cave-label size/transparency) and have it restored the same
+// way on their next login, on any device. Saved on the account itself,
+// same pattern as /api/stats-preferences above. Deliberately does NOT
+// include the cave filters, search term, or map viewport (center/zoom) -
+// those reset to their defaults on every fresh load, same as always.
+function isPercent(n) {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 100;
+}
+
+app.get("/api/map-preferences", authenticateToken, (req, res) => {
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.user.username);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  res.json(user.mapPreferences || {});
+});
+
+app.post("/api/map-preferences", authenticateToken, express.json(), (req, res) => {
+  try {
+    const prefs = req.body;
+    if (typeof prefs !== "object" || prefs === null || Array.isArray(prefs)) {
+      return res.status(400).json({ error: "Preferences must be an object." });
+    }
+
+    // Allowlist every known key/type, same spirit as KNOWN_STATS_CARD_IDS -
+    // never let a user's own record end up holding arbitrary attacker-
+    // controlled keys or values. Any field missing/invalid is just left
+    // out, rather than rejecting the whole save.
+    const sanitized = {};
+    if (["satellite", "topo", "hillshade"].includes(prefs.basemap)) {
+      sanitized.basemap = prefs.basemap;
+    }
+    if (typeof prefs.multiAngleHillshade === "boolean") sanitized.multiAngleHillshade = prefs.multiAngleHillshade;
+    if (isPercent(prefs.hillshadeOpacity)) sanitized.hillshadeOpacity = prefs.hillshadeOpacity;
+    if (typeof prefs.showWaypoints === "boolean") sanitized.showWaypoints = prefs.showWaypoints;
+    if (typeof prefs.waypointSize === "number" && prefs.waypointSize >= 3 && prefs.waypointSize <= 16) {
+      sanitized.waypointSize = prefs.waypointSize;
+    }
+    if (typeof prefs.waypointsHeatmap === "boolean") sanitized.waypointsHeatmap = prefs.waypointsHeatmap;
+    if (isPercent(prefs.heatmapOpacity)) sanitized.heatmapOpacity = prefs.heatmapOpacity;
+    if (typeof prefs.contourInterval === "number" && prefs.contourInterval >= 0 && prefs.contourInterval <= 21) {
+      sanitized.contourInterval = prefs.contourInterval;
+    }
+    if (typeof prefs.contourColor === "string" && /^#[0-9a-fA-F]{6}$/.test(prefs.contourColor)) {
+      sanitized.contourColor = prefs.contourColor;
+    }
+    if (typeof prefs.labelSize === "number" && prefs.labelSize >= 0 && prefs.labelSize <= 16) {
+      sanitized.labelSize = prefs.labelSize;
+    }
+    if (isPercent(prefs.labelOpacity)) sanitized.labelOpacity = prefs.labelOpacity;
+
+    const users = loadUsers();
+    const user = users.find((u) => u.username === req.user.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    user.mapPreferences = sanitized;
+    saveUsers(users);
+    res.json({ success: true, mapPreferences: user.mapPreferences });
+  } catch (error) {
+    console.error("Error saving map preferences:", error);
+    res.status(500).json({ error: "Failed to save map preferences" });
+  }
+});
+
 // Every real Florida cave ID predating multi-state support looks like this:
 // a single "F", exactly 2 letters (the county code), then digits. Used only
 // as a fallback for records written before the explicit state/county fields

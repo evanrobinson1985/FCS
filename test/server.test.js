@@ -528,6 +528,85 @@ describe("statistics card preferences (GET/POST /api/stats-preferences)", () => 
   });
 });
 
+describe("interactive map display preferences (GET/POST /api/map-preferences)", () => {
+  test("defaults to an empty object before anything is ever saved", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {});
+  });
+
+  test("a member (not just admin/webmaster) can save and read back their own settings", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const prefs = {
+      basemap: "topo",
+      multiAngleHillshade: true,
+      hillshadeOpacity: 40,
+      showWaypoints: false,
+      waypointSize: 10,
+      waypointsHeatmap: true,
+      heatmapOpacity: 75,
+      contourInterval: 9,
+      contourColor: "#AABBCC",
+      labelSize: 12,
+      labelOpacity: 60,
+    };
+    const saveRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send(prefs);
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(getRes.status, 200);
+    assert.deepEqual(getRes.body, prefs);
+  });
+
+  test("one account's saved settings don't affect another's", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ basemap: "hillshade" });
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+    assert.notEqual(res.body.basemap, "hillshade");
+  });
+
+  test("silently drops unrecognized/invalid fields instead of rejecting the save", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        basemap: "not-a-real-basemap",
+        waypointSize: 999,
+        contourColor: "javascript:alert(1)",
+        showWaypoints: true,
+      });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.mapPreferences, { showWaypoints: true });
+  });
+
+  test("rejects a non-object body", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send([1, 2, 3]);
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects an unauthenticated request on both routes", async () => {
+    const getRes = await request(app).get("/api/map-preferences");
+    assert.equal(getRes.status, 401);
+    const postRes = await request(app).post("/api/map-preferences").send({});
+    assert.equal(postRes.status, 401);
+  });
+});
+
 describe("change password", () => {
   before(async () => {
     await seedUser({ username: "changepassuser", password: "OldPassword123!", role: "member" });
