@@ -1448,9 +1448,9 @@ if (process.env.NODE_ENV !== "test") {
 }
 app.runDuesReminders = runDuesReminders; // for the test suite
 // for the test suite - the legacy lettered-suffix-sibling collapsing logic
-// used by /api/cave-count and /api/cave-database/state-counts is easiest
-// to verify directly against plain objects, since the public API doesn't
-// offer a way to create a cave with a specific (suffixed) ID.
+// used by /api/cave-count is easiest to verify directly against plain
+// objects, since the public API doesn't offer a way to create a cave with
+// a specific (suffixed) ID.
 app.caveBaseId = caveBaseId;
 app.countDistinctCaves = countDistinctCaves;
 app.countTotalEntrances = countTotalEntrances;
@@ -2007,29 +2007,6 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
   }
 
   res.json(caveDatabase.filter((cave) => allowed.includes(resolveCaveStateAndCounty(cave).state)));
-});
-
-// Per-state and nationwide cave *counts* - deliberately NOT scoped by the
-// requesting user's allowedStates (unlike GET /api/cave-database above).
-// A state-scoped member can already see everything about their own
-// state's caves; this just adds a single aggregate number per other state
-// plus a nationwide total, so they have a sense of the whole survey's
-// scale without exposing any individual cave's location, name, or other
-// details for a state they aren't granted - only a count.
-app.get("/api/cave-database/state-counts", authenticateToken, (req, res) => {
-  const byState = {};
-  caveDatabase.forEach((cave) => {
-    const state = resolveCaveStateAndCounty(cave).state;
-    if (!state) return;
-    if (!byState[state]) byState[state] = [];
-    byState[state].push(cave);
-  });
-
-  const states = statesConfig
-    .map((s) => ({ code: s.code, name: s.name, count: byState[s.code] ? countDistinctCaves(byState[s.code]) : 0 }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-
-  res.json({ total: countDistinctCaves(caveDatabase), states });
 });
 
 // Public Florida cave count for the "X caves and counting" banner shown on
@@ -5297,8 +5274,10 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
 // data-card-id attributes and card.dataset.cardId assignments) - the
 // allowlist a saved layout's hidden/order arrays are validated against
 // below, so a user's own record can never end up holding arbitrary strings.
-// "recent-activity" is a retired card (removed from the page) - kept here
-// only so layouts saved while it existed still validate.
+// "recent-activity", "nationwide", and "states" are retired cards (removed
+// from the page - the latter two along with the rest of the site's
+// multi-state machinery, since this site only ever hosts Florida data) -
+// kept here only so layouts saved while they existed still validate.
 const KNOWN_STATS_CARD_IDS = new Set([
   "summary", "nationwide", "access-status", "cave-types", "states", "counties",
   "entry-status", "equipment", "recent-activity", "dimensions",

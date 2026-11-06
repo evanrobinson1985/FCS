@@ -814,64 +814,16 @@ describe("cave database storage", () => {
   });
 });
 
-// Uses Wyoming throughout (untouched by any other test in this file) so the
-// per-state count for it can be asserted exactly.
-describe("nationwide cave counts", () => {
-  before(async () => {
-    await seedUser({ username: "wyscopedmember", password: "WyScopedPass123!", role: "member", allowedStates: ["WY"] });
-
-    const token = await login("webmaster1", WEBMASTER_PASSWORD);
-    for (const name of ["Wyoming Cave One", "Wyoming Cave Two"]) {
-      const res = await request(app)
-        .post("/api/save-cave-database")
-        .set("Authorization", `Bearer ${token}`)
-        .send({ action: "createNew", cave: { state: "WY", county: "AL", name } });
-      assert.equal(res.status, 200);
-    }
-  });
-
-  test("requires authentication", async () => {
-    const res = await request(app).get("/api/cave-database/state-counts");
-    assert.equal(res.status, 401);
-  });
-
-  test("reports Wyoming's count and includes it in the nationwide total", async () => {
+// The "Nationwide Overview"/"Caves by State" cards (and the
+// GET /api/cave-database/state-counts route that backed them) were removed
+// along with the rest of the site's multi-state machinery - this site only
+// ever hosts Florida data, so a nationwide/per-state breakdown no longer
+// has a purpose.
+describe("nationwide cave counts have been removed", () => {
+  test("GET /api/cave-database/state-counts no longer exists", async () => {
     const token = await login("webmaster1", WEBMASTER_PASSWORD);
     const res = await request(app).get("/api/cave-database/state-counts").set("Authorization", `Bearer ${token}`);
-    assert.equal(res.status, 200);
-    assert.equal(typeof res.body.total, "number");
-    assert.ok(Array.isArray(res.body.states));
-    assert.equal(res.body.states.length, 50);
-
-    const wyoming = res.body.states.find((s) => s.code === "WY");
-    assert.ok(wyoming, "Wyoming must be present even with a nonzero count");
-    assert.equal(wyoming.name, "Wyoming");
-    assert.equal(wyoming.count, 2);
-
-    const sumOfStates = res.body.states.reduce((sum, s) => sum + s.count, 0);
-    assert.equal(sumOfStates, res.body.total, "per-state counts must add up to the nationwide total");
-  });
-
-  test("is NOT scoped by allowedStates - a Wyoming-only member still sees every state's count and the same nationwide total", async () => {
-    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
-    const webmasterRes = await request(app)
-      .get("/api/cave-database/state-counts")
-      .set("Authorization", `Bearer ${webmasterToken}`);
-
-    const memberToken = await login("wyscopedmember", "WyScopedPass123!");
-    const memberRes = await request(app)
-      .get("/api/cave-database/state-counts")
-      .set("Authorization", `Bearer ${memberToken}`);
-
-    assert.equal(memberRes.status, 200);
-    assert.equal(memberRes.body.total, webmasterRes.body.total);
-    assert.equal(memberRes.body.states.length, webmasterRes.body.states.length);
-
-    // Confirm the scoped member can see a state they are NOT granted (e.g.
-    // Florida, seeded elsewhere in this file) in this breakdown - unlike
-    // GET /api/cave-database, which would hide it entirely.
-    const floridaViaMember = memberRes.body.states.find((s) => s.code === "FL");
-    assert.ok(floridaViaMember, "a Wyoming-only member must still see Florida's count here");
+    assert.equal(res.status, 404);
   });
 });
 

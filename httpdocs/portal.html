@@ -990,22 +990,6 @@
 </div>
 </div>
 </div>
-<div class="stats-card" data-card-id="nationwide">
-<div class="stats-card-header">
-<h4>Nationwide Overview</h4>
-</div>
-<div class="stats-card-body">
-<div class="stat-item">
-<span class="stat-label">Total Caves (All States):</span>
-<span class="stat-value" id="nationwide-total-caves">0</span>
-</div>
-<div class="stat-item">
-<span class="stat-label">States With Data:</span>
-<span class="stat-value" id="nationwide-states-count">0</span>
-</div>
-<p style="margin: 8px 0 0; font-size: 0.85em; color: #666;">Always shows every state's total, regardless of which states your account can browse in detail.</p>
-</div>
-</div>
 <div class="stats-card" data-card-id="access-status">
 <div class="stats-card-header">
 <h4>Access Status</h4>
@@ -1036,14 +1020,6 @@
 </div>
 <div class="stats-card-body">
 <div class="chart-container" id="cave-types-chart"></div>
-</div>
-</div>
-<div class="stats-card chart-card" data-card-id="states">
-<div class="stats-card-header">
-<h4>Caves by State</h4>
-</div>
-<div class="stats-card-body">
-<div class="chart-container" id="states-chart"></div>
 </div>
 </div>
 <div class="stats-card chart-card" data-card-id="counties">
@@ -3925,14 +3901,6 @@ function updateStatistics() {
 
   console.log("Updating statistics with cave data...");
 
-  // Nationwide totals/breakdown come from their own endpoint rather than
-  // caveDataStore - a state-scoped member's caveDataStore only ever holds
-  // the states they're granted (see GET /api/cave-database's allowedStates
-  // filtering), but this card is deliberately unscoped (see
-  // GET /api/cave-database/state-counts in server.js) so everyone can see
-  // the whole survey's scale.
-  loadNationwideCaveStats();
-
   // Basic counts. "Total Caves" is distinct caves - it collapses the
   // legacy lettered-suffix sibling records some older multi-entrance caves
   // are still stored as (see countDistinctCaves above) so it isn't
@@ -4096,10 +4064,8 @@ if (!document.getElementById('avg-cave-length')) {
 // conflict with the create-once-then-refresh pattern every card above uses.
 const STATS_CARD_TITLES = {
   'summary': 'Database Summary',
-  'nationwide': 'Nationwide Overview',
   'access-status': 'Access Status',
   'cave-types': 'Cave Types Distribution',
-  'states': 'Caves by State',
   'counties': 'Caves by County',
   'entry-status': 'Caves by Entry Status',
   'equipment': 'Equipment Requirements',
@@ -4118,7 +4084,7 @@ const STATS_CARD_TITLES = {
 // in a saved order (new cards added later, or before a layout is ever
 // customized/saved) and what "Reset to Default" restores.
 const STATS_CARD_DEFAULT_ORDER = [
-  'summary', 'nationwide', 'access-status', 'cave-types', 'states', 'counties',
+  'summary', 'access-status', 'cave-types', 'counties',
   'entry-status', 'equipment', 'dimensions', 'geology',
   'hazards', 'elevation', 'historical-timeline', 'documentation-coverage',
   'top-contributors', 'map-status', 'submission-funnel',
@@ -4464,74 +4430,6 @@ function createCountiesChart(caveData) {
             minRotation: 45
           }
         },
-        y: {
-          beginAtZero: true,
-          ticks: {
-            stepSize: 1
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          display: false
-        }
-      }
-    }
-  });
-}
-
-// Fetches the nationwide cave counts (GET /api/cave-database/state-counts,
-// deliberately not scoped by the logged-in user's allowedStates - see the
-// server-side comment on that route) and updates the "Nationwide Overview"
-// card plus the "Caves by State" chart. Independent of caveDataStore, which
-// for a state-scoped member only ever holds their own granted states.
-async function loadNationwideCaveStats() {
-  try {
-    const response = await fetch('/api/cave-database/state-counts');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-
-    const totalEl = document.getElementById('nationwide-total-caves');
-    const statesCountEl = document.getElementById('nationwide-states-count');
-    if (totalEl) totalEl.textContent = data.total;
-    if (statesCountEl) statesCountEl.textContent = data.states.filter(s => s.count > 0).length;
-
-    createStatesChart(data.states);
-  } catch (error) {
-    console.error('Error loading nationwide cave stats:', error);
-  }
-}
-
-// Create the caves-by-state bar chart. Only states with at least one cave
-// are plotted (data.states is already sorted by count descending, see the
-// server route) - a bar for every one of the 50 states, most at zero,
-// would just be noise.
-function createStatesChart(states) {
-  const withData = states.filter(s => s.count > 0);
-
-  const statesCtx = document.createElement('canvas');
-  statesCtx.id = 'states-canvas';
-  statesCtx.height = 220;
-  const container = document.getElementById('states-chart');
-  if (!container) return;
-  container.innerHTML = '';
-  container.appendChild(statesCtx);
-
-  new Chart(statesCtx, {
-    type: 'bar',
-    data: {
-      labels: withData.map(s => s.name),
-      datasets: [{
-        label: 'Caves per State',
-        data: withData.map(s => s.count),
-        backgroundColor: '#4b86b4',
-        borderWidth: 1
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
         y: {
           beginAtZero: true,
           ticks: {
