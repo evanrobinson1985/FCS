@@ -727,6 +727,10 @@
 <option value="R">R - Permission required</option>
 <option value="W">W - Waiver required</option>
 </select>
+<select class="filter-select" id="map-filter-map-status">
+<option value="all">All Map Status</option>
+<option value="unmapped">Needs a Map (Unmapped)</option>
+</select>
 <!-- Add this right after the map filter dropdowns in the map-options div -->
 <div class="search-bar" style="margin-top: 10px;">
 <input id="cave-search" placeholder="Search by cave name..." style="width: 70%; padding: 5px;" type="text"/>
@@ -2225,6 +2229,7 @@
       document.getElementById('map-filter-county').addEventListener('change', applyMapFilters);
       document.getElementById('map-filter-type').addEventListener('change', applyMapFilters);
       document.getElementById('map-filter-status').addEventListener('change', applyMapFilters);
+      document.getElementById('map-filter-map-status').addEventListener('change', applyMapFilters);
 
       // Show/hide every cave marker at once, independent of the heatmap -
       // cavesLayer keeps all its markers either way (clearLayers/addLayer
@@ -2675,6 +2680,7 @@
       const countyFilter = document.getElementById('map-filter-county').value;
       const typeFilter = document.getElementById('map-filter-type').value;
       const statusFilter = document.getElementById('map-filter-status').value;
+      const mapStatusFilter = document.getElementById('map-filter-map-status').value;
 
       // Filter the cave data
       let filteredCaves = [...caveDataStore]; // Create a copy to avoid modifying the original
@@ -2701,7 +2707,15 @@
         // Filter by entry status
         filteredCaves = filteredCaves.filter(cave => cave.entryStatus === statusFilter);
       }
-      
+
+      if (mapStatusFilter === 'unmapped') {
+        // No map on file yet - either explicitly marked 'U' (Unmapped) or
+        // never given a map type at all. Same definition as the
+        // Statistics page's "Unmapped Caves" count, plus caves that have
+        // no mapType set, since those need surveying just as much.
+        filteredCaves = filteredCaves.filter(cave => !cave.mapType || cave.mapType === 'U');
+      }
+
       // Add filtered caves to the map
       filteredCaves.forEach(cave => {
         // Determine marker color based on cave type and entry status
@@ -3004,6 +3018,7 @@
       document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
+      document.getElementById('map-filter-map-status').value = 'all';
       
       // Clear and reload map markers
       loadCavesToMap();
@@ -3029,6 +3044,7 @@
       document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
+      document.getElementById('map-filter-map-status').value = 'all';
       
       // Apply filters to show only caves from this submission
       applyMapFilters();
@@ -3043,6 +3059,7 @@
       document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
+      document.getElementById('map-filter-map-status').value = 'all';
       
       // Clear and reload map markers
       loadCavesToMap();
@@ -6926,6 +6943,7 @@ window.addEventListener('error', function(e) {
       document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
+      document.getElementById('map-filter-map-status').value = 'all';
       activeSubmissionId = null;
       
       // Clear existing markers
@@ -7206,6 +7224,7 @@ window.addEventListener('error', function(e) {
       document.getElementById('map-filter-county').value = 'all';
       document.getElementById('map-filter-type').value = 'all';
       document.getElementById('map-filter-status').value = 'all';
+      document.getElementById('map-filter-map-status').value = 'all';
       activeSubmissionId = null;
       
       // Reload all caves
