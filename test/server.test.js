@@ -546,6 +546,7 @@ describe("interactive map display preferences (GET/POST /api/map-preferences)", 
       waypointSize: 10,
       waypointsHeatmap: true,
       heatmapOpacity: 75,
+      heatmapGradient: "vivid",
       contourInterval: 9,
       contourColor: "#AABBCC",
       labelSize: 12,
@@ -570,6 +571,23 @@ describe("interactive map display preferences (GET/POST /api/map-preferences)", 
       .send({ basemap: "osm" });
     assert.equal(res.status, 200);
     assert.equal(res.body.mapPreferences.basemap, "osm");
+  });
+
+  test("accepts classic and vivid as the only valid heatmap gradient styles", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const classicRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ heatmapGradient: "classic" });
+    assert.equal(classicRes.status, 200);
+    assert.equal(classicRes.body.mapPreferences.heatmapGradient, "classic");
+
+    const invalidRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ heatmapGradient: "rainbow" });
+    assert.equal(invalidRes.status, 200);
+    assert.equal(invalidRes.body.mapPreferences.heatmapGradient, undefined);
   });
 
   test("one account's saved settings don't affect another's", async () => {

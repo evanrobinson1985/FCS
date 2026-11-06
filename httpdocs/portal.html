@@ -816,6 +816,11 @@
 <label><input id="waypoints-heatmap" type="checkbox"/> Waypoints Heatmap</label>
 <label for="heatmap-opacity">Opacity: <span id="heatmap-opacity-value">50%</span></label>
 <input class="slider" id="heatmap-opacity" max="100" min="0" type="range" value="50"/>
+<label for="heatmap-gradient-style" style="margin-top: 5px;">Color Style:</label>
+<select id="heatmap-gradient-style" style="padding: 4px;">
+<option value="classic">Classic (blue/cyan/lime/yellow/red)</option>
+<option value="vivid">Vivid (blue/violet/cyan/orange/red)</option>
+</select>
 </div>
 
 <!-- Contour Lines -->
@@ -1523,17 +1528,31 @@
 
     // Heatmap layer variable
     let heatmapLayer = null;
-    // Single source of truth for the waypoints heatmap's color stops, used by
-    // both initializeHeatmap() (initial creation) and resetHeatmapGradient()
-    // (re-applied every time the heatmap is toggled on) so the rendered
-    // colors never drift between the two code paths.
-    const HEATMAP_GRADIENT = {
-      0.1: '#0000FF', // Blue (low)
-      0.4: '#FF00FF', // Violet
-      0.7: '#00FFFF', // Cyan
-      0.8: '#FF8000', // Orange
-      1.0: '#FF0000'  // Red (high)
+    // The waypoints heatmap's color stops. Two named styles are offered via
+    // the "Color Style" dropdown next to the heatmap toggle; both
+    // initializeHeatmap() (initial creation) and resetHeatmapGradient()
+    // (re-applied every time the heatmap is toggled on) read the gradient
+    // through getHeatmapGradient() below so they never drift apart again.
+    const HEATMAP_GRADIENTS = {
+      classic: {
+        0.0: 'blue',
+        0.25: 'cyan',
+        0.5: 'lime',
+        0.75: 'yellow',
+        1.0: 'red'
+      },
+      vivid: {
+        0.1: '#0000FF', // Blue (low)
+        0.4: '#FF00FF', // Violet
+        0.7: '#00FFFF', // Cyan
+        0.8: '#FF8000', // Orange
+        1.0: '#FF0000'  // Red (high)
+      }
     };
+    let heatmapGradientStyle = 'classic';
+    function getHeatmapGradient() {
+      return HEATMAP_GRADIENTS[heatmapGradientStyle] || HEATMAP_GRADIENTS.classic;
+    }
 
     // Move Waypoints layer variable
     let moveTargetCaveId = null;
@@ -1636,6 +1655,15 @@
         heatmapCheckbox.addEventListener('change', function() {
           console.log("Heatmap checkbox toggled:", this.checked);
           toggleHeatmap(this.checked);
+        });
+      }
+
+      // When user switches the heatmap's color style
+      const heatmapGradientSelect = document.getElementById('heatmap-gradient-style');
+      if (heatmapGradientSelect) {
+        heatmapGradientSelect.addEventListener('change', function() {
+          heatmapGradientStyle = this.value;
+          resetHeatmapGradient();
         });
       }
 
@@ -6747,7 +6775,7 @@ window.addEventListener('error', function(e) {
           max: 2.0, // Lower max value makes it easier to reach the red end of the spectrum
           minOpacity: 0.4,  // <-- allows lower transparency
           opacity: initialOpacity, // Set initial opacity
-          gradient: HEATMAP_GRADIENT,
+          gradient: getHeatmapGradient(),
           pane: 'heatmapPane'  // This is the key line
 
         });
@@ -6865,6 +6893,7 @@ window.addEventListener('error', function(e) {
         waypointSize: getNumber('waypoint-size'),
         waypointsHeatmap: getChecked('waypoints-heatmap'),
         heatmapOpacity: getNumber('heatmap-opacity'),
+        heatmapGradient: getString('heatmap-gradient-style'),
         contourInterval: getNumber('contour-slider'),
         contourColor: getString('contour-color'),
         labelSize: getNumber('label-size'),
@@ -6943,6 +6972,11 @@ window.addEventListener('error', function(e) {
         applyMapPreferenceCheckbox('toggle-waypoints', prefs.showWaypoints);
 
         applyMapPreferenceSlider('heatmap-opacity', prefs.heatmapOpacity);
+        if (prefs.heatmapGradient === 'classic' || prefs.heatmapGradient === 'vivid') {
+          heatmapGradientStyle = prefs.heatmapGradient;
+          const el = document.getElementById('heatmap-gradient-style');
+          if (el) el.value = prefs.heatmapGradient;
+        }
         applyMapPreferenceCheckbox('waypoints-heatmap', prefs.waypointsHeatmap);
 
         if (typeof prefs.contourColor === 'string') {
@@ -6972,14 +7006,14 @@ window.addEventListener('error', function(e) {
       const ids = [
         'multi-angle-hillshade', 'hillshade-opacity',
         'toggle-waypoints', 'waypoint-size',
-        'waypoints-heatmap', 'heatmap-opacity',
+        'waypoints-heatmap', 'heatmap-opacity', 'heatmap-gradient-style',
         'contour-slider', 'contour-color',
         'label-size', 'label-opacity',
       ];
       ids.forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
-        const eventType = el.type === 'checkbox' ? 'change' : 'input';
+        const eventType = (el.type === 'checkbox' || el.tagName === 'SELECT') ? 'change' : 'input';
         el.addEventListener(eventType, scheduleSaveMapPreferences);
       });
       ['satellite-basemap', 'topo-basemap', 'hillshade-basemap', 'osm-basemap'].forEach(id => {
@@ -7033,7 +7067,7 @@ window.addEventListener('error', function(e) {
         // the heatmap off and back on never changes its colors.
         // Apply the gradient - different methods depending on implementation
         if (typeof heatmapLayer.setOptions === 'function') {
-          heatmapLayer.setOptions({ gradient: HEATMAP_GRADIENT });
+          heatmapLayer.setOptions({ gradient: getHeatmapGradient() });
         }
         
         // If it's using the standard Leaflet.heat implementation

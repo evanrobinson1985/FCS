@@ -5368,6 +5368,7 @@ app.post("/api/map-preferences", authenticateToken, express.json(), (req, res) =
     }
     if (typeof prefs.waypointsHeatmap === "boolean") sanitized.waypointsHeatmap = prefs.waypointsHeatmap;
     if (isPercent(prefs.heatmapOpacity)) sanitized.heatmapOpacity = prefs.heatmapOpacity;
+    if (["classic", "vivid"].includes(prefs.heatmapGradient)) sanitized.heatmapGradient = prefs.heatmapGradient;
     if (typeof prefs.contourInterval === "number" && prefs.contourInterval >= 0 && prefs.contourInterval <= 21) {
       sanitized.contourInterval = prefs.contourInterval;
     }
