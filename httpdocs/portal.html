@@ -816,11 +816,6 @@
 <label><input id="waypoints-heatmap" type="checkbox"/> Waypoints Heatmap</label>
 <label for="heatmap-opacity">Opacity: <span id="heatmap-opacity-value">50%</span></label>
 <input class="slider" id="heatmap-opacity" max="100" min="0" type="range" value="50"/>
-<label for="heatmap-gradient-style" style="margin-top: 5px;">Color Style:</label>
-<select id="heatmap-gradient-style" style="padding: 4px;">
-<option value="classic">Classic (blue/cyan/lime/yellow/red)</option>
-<option value="vivid">Vivid (blue/violet/cyan/orange/red)</option>
-</select>
 </div>
 
 <!-- Contour Lines -->
@@ -833,7 +828,7 @@
 </div>
 </div>
 </div>
-<!-- Label Size and Label Transparency (place ABOVE the map container) -->
+<!-- Label Size, Label Transparency, and Heatmap Color Style (place ABOVE the map container) -->
 <div class="label-control-row">
 <div class="control-block">
 <label for="label-size">Label Size: <span id="label-size-value">10px</span></label>
@@ -842,6 +837,13 @@
 <div class="control-block">
 <label for="label-opacity">Label Transparency: <span id="label-opacity-value">30%</span></label>
 <input class="slider" id="label-opacity" max="100" min="0" type="range" value="30"/>
+</div>
+<div class="control-block">
+<label for="heatmap-gradient-style">Heatmap Color Style:</label>
+<select id="heatmap-gradient-style" style="padding: 4px;">
+<option value="classic">Classic (blue/cyan/lime/yellow/red)</option>
+<option value="vivid">Vivid (blue/violet/cyan/orange/red)</option>
+</select>
 </div>
 </div>
 <div id="map-container"></div>

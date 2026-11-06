@@ -862,7 +862,13 @@ input[type="file"] {
 
     .control-bar-horizontal {
       display: flex;
-      gap: 40px;
+      /* Column gap stays wide so controls read as distinct groups; row gap
+         is much smaller since it's pure wrapped-flex-item spacing, not
+         separation between groups - a 40px row gap on top of columns of
+         uneven height (e.g. one with an extra dropdown) left a large dead
+         zone before the next wrapped row. */
+      column-gap: 40px;
+      row-gap: 16px;
       flex-wrap: wrap;
       margin-bottom: 10px;
       align-items: flex-start;
@@ -870,7 +876,8 @@ input[type="file"] {
 
     .label-control-row {
       display: flex;
-      gap: 40px;
+      column-gap: 40px;
+      row-gap: 16px;
       margin-bottom: 10px;
       flex-wrap: wrap;
     }
