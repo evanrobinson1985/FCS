@@ -20,7 +20,6 @@ const submissionsFile = process.env.SUBMISSIONS_FILE
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
-const XLSX = require("xlsx");
 const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
