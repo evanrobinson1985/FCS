@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 // Imports a filled-in cave spreadsheet straight into cave-database.json on
 // disk - no HTTP request involved at all, so nothing in front of the web
-// server (Cloudflare, Apache, a WAF) can block it. Mirrors the validation
-// and cave-ID-assignment logic of POST /api/cave-database/import in
-// server.js exactly, so caves imported this way are indistinguishable from
-// ones imported through the website. Run this ON the server (e.g. via
-// Plesk's SSH Terminal), not from a laptop - it needs direct access to the
-// real data directory.
+// server (Cloudflare, Apache, a WAF) can block it. Validates rows and
+// assigns cave IDs the same way the rest of the app does, so caves
+// imported this way are indistinguishable from ones added any other way.
+// Run this ON the server (e.g. via Plesk's SSH Terminal), not from a
+// laptop - it needs direct access to the real data directory.
 //
 // Usage:
 //   node scripts/bulk-import-caves-local.js <path-to-xlsx> <stateCode> --data-dir=/path/to/data [--dry-run]

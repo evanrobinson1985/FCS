@@ -102,11 +102,3 @@ make that possible - relevant if you're looking at `cave-database.json` or
   anyone to. There is no account-creation or Account Management UI for it
   any more.
 
-**Bulk-importing a new state's existing spreadsheet:** a webmaster/admin
-can download a per-state `.xlsx` template and upload a filled-in version
-from the Cave Database tab's "Import Caves from Spreadsheet" panel (backed
-by `GET /api/cave-database/import-template` and
-`POST /api/cave-database/import` in `server.js`). Each row is validated and
-reported on independently - a bad row doesn't block the rest of the file
-from importing - and IDs are assigned the same way as any other new cave
-(state-prefixed, numbered sequentially per state+county).

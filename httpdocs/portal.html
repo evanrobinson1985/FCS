@@ -928,23 +928,6 @@
 <button class="btn-warning" onclick="downloadUpdatedCaveData()" style="margin-left:10px;">Download Updated Database</button>
 </div>
 </div>
-<!-- Bulk import: onboards a new state's existing spreadsheet as its cave
-     database. Admin/webmaster only (enforced server-side too - see
-     POST /api/cave-database/import in server.js); hidden for members by
-     toggleCaveImportSectionVisibility(), called from completeLogin(). -->
-<div id="cave-import-section" style="display: none; margin: 15px 0; padding: 12px; border: 1px solid #ccc; background: #f9f9f9;">
-<h4 style="margin-top: 0;">Import Caves from Spreadsheet</h4>
-<p style="margin-bottom: 10px;">Pick a state, download its template, fill it in, then upload it here. Each row is validated independently - a report below will show which rows imported and which need fixing.</p>
-<div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
-<select id="import-state-select" style="padding: 8px;"><option value="">Select a state</option></select>
-<button class="btn-success" onclick="downloadImportTemplate()">Download Template</button>
-</div>
-<div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-<input type="file" id="cave-import-file" accept=".xlsx,.xls,.csv">
-<button class="btn-warning" id="cave-import-upload-btn" onclick="uploadCaveImport()">Upload &amp; Import</button>
-</div>
-<div id="cave-import-report" style="margin-top: 10px;"></div>
-</div>
 <!-- Outside the scrollable wrapper below on purpose - pagination controls
      need to stay visible regardless of how far the table itself is
      scrolled, horizontally or vertically. -->
@@ -4984,20 +4967,6 @@ function loadFcsDatabaseTable() {
         populateCountySelect(countySelect, stateSelect.value, { includeAllOption });
       });
 
-      // The bulk-import state picker isn't part of a state/county cascade
-      // (county validity is checked per-row, server-side, against whatever
-      // state is chosen here) - just keep it in sync with the reference
-      // config. The section itself is admin/webmaster-only (see
-      // toggleCaveImportSectionVisibility()), so it's never restricted.
-      const importStateSelect = document.getElementById('import-state-select');
-      if (importStateSelect) {
-        const previousImportValue = importStateSelect.value;
-        populateStateSelect(importStateSelect, { includeAllOption: false });
-        if ([...importStateSelect.options].some(o => o.value === previousImportValue)) {
-          importStateSelect.value = previousImportValue;
-        }
-      }
-
       // The Interactive Map's county filter isn't part of a state/county
       // cascade (there's no state picker next to it - this site only ever
       // covers Florida) - just populate it with Florida's counties directly.
@@ -5009,18 +4978,6 @@ function loadFcsDatabaseTable() {
           ? previousMapCountyValue
           : 'all';
       }
-    }
-
-    // Shows the bulk-import UI for webmaster only, hides it for everyone
-    // else - it's meant for seeding a state's initial survey data in one
-    // shot, not an ongoing admin tool (enforced server-side by POST
-    // /api/cave-database/import's requireRole check; this is just so
-    // non-webmasters don't see a control that would just 403).
-    function toggleCaveImportSectionVisibility() {
-      const section = document.getElementById('cave-import-section');
-      if (!section) return;
-      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
-      section.style.display = (currentRole === 'webmaster') ? 'block' : 'none';
     }
 
     // ---- Website Management: maintenance mode + notification banner ----
@@ -5403,8 +5360,7 @@ function loadFcsDatabaseTable() {
     }
 
     // Direct navigation (not fetch()) so the browser's native download
-    // handling takes over from the Content-Disposition header - same
-    // withAuthToken() pattern as downloadImportTemplate().
+    // handling takes over from the Content-Disposition header.
     function downloadBackupNow() {
       window.location.href = withAuthToken('/api/backup-now');
     }
@@ -5666,258 +5622,6 @@ function loadFcsDatabaseTable() {
       }
     }
     document.addEventListener('DOMContentLoaded', () => { loadCaveCounterBanner(); });
-
-    // Triggers a browser download of the fill-in-the-blanks template for
-    // the state selected in #import-state-select. This is a direct
-    // navigation (not fetch()), so it needs withAuthToken() to carry the
-    // session - see the fetch-wrapper comment at the top of this file for
-    // why GETs like this can't just rely on the Authorization header.
-    function downloadImportTemplate() {
-      const stateCode = document.getElementById('import-state-select').value;
-      if (!stateCode) {
-        alert('Please select a state first.');
-        return;
-      }
-      window.location.href = withAuthToken(`/api/cave-database/import-template?state=${encodeURIComponent(stateCode)}`);
-    }
-
-    // Uploads the filled-in spreadsheet for the selected state in batches
-    // (instead of one request for the whole file) so caves show up in the
-    // Cave Database list as they import, rather than all at once at the
-    // end. Each batch is parsed out client-side with the SheetJS (XLSX)
-    // library already loaded on this page, re-packaged as its own mini
-    // spreadsheet, and POSTed through the same /api/cave-database/import
-    // route a normal single-file upload would use - the server doesn't
-    // know or care that it's one piece of a larger file.
-    const CAVE_IMPORT_BATCH_SIZE = 250;
-
-    async function uploadCaveImport() {
-      const stateCode = document.getElementById('import-state-select').value;
-      const input = document.getElementById('cave-import-file');
-      const reportEl = document.getElementById('cave-import-report');
-      const uploadBtn = document.getElementById('cave-import-upload-btn');
-
-      if (!stateCode) {
-        alert('Please select a state first.');
-        return;
-      }
-      if (!input || !input.files || input.files.length === 0) {
-        alert('Please choose a spreadsheet file first.');
-        return;
-      }
-
-      let rows;
-      try {
-        const buffer = await input.files[0].arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      } catch (err) {
-        alert('Could not read that file as a spreadsheet: ' + err.message);
-        return;
-      }
-      if (rows.length === 0) {
-        alert('That file has no data rows.');
-        return;
-      }
-
-      if (uploadBtn) uploadBtn.disabled = true;
-
-      // Point the Cave Database tab's own filter at the state being
-      // imported, so newly added caves actually appear in the visible
-      // list as each batch lands instead of being hidden behind whatever
-      // filter was last selected.
-      const dbStateFilter = document.getElementById('database-filter-state');
-      if (dbStateFilter) {
-        dbStateFilter.value = stateCode;
-        populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
-      }
-
-      const startedAt = Date.now();
-      const combinedReport = [];
-      let combinedImported = 0;
-      let batchError = null;
-      // TEMP DEBUG - diagnosing a production hang on this upload. Remove
-      // currentStage, logImportDebug(), serverDebugEntries, and
-      // pollServerDebugLog() once resolved - see the matching
-      // pushImportDebug()/GET /api/diagnostics/import-debug-log in
-      // server.js, removed together with this.
-      let currentStage = 'starting';
-      const logImportDebug = (msg) => console.log(`[IMPORT-DEBUG] +${Date.now() - startedAt}ms ${msg}`);
-      let serverDebugEntries = [];
-      let pollStatus = 'not checked yet';
-      let pollInFlight = false;
-      let pollSentAt = null;
-      const pollServerDebugLog = async () => {
-        // If a poll never comes back, that alone is a finding (it means
-        // the whole Node process is wedged, not just this one request) -
-        // so track whether one is still outstanding instead of letting
-        // overlapping polls hide that.
-        if (pollInFlight) {
-          pollStatus = `poll sent ${Math.floor((Date.now() - pollSentAt) / 1000)}s ago, still waiting (server may be fully unresponsive)`;
-          renderProgress();
-          return;
-        }
-        pollInFlight = true;
-        pollSentAt = Date.now();
-        try {
-          const r = await fetch('/api/diagnostics/import-debug-log');
-          if (r.ok) {
-            const data = await r.json();
-            serverDebugEntries = data.entries || [];
-            pollStatus = `ok, responded in ${Date.now() - pollSentAt}ms, ${serverDebugEntries.length} entries total`;
-          } else {
-            pollStatus = `server responded with HTTP ${r.status}`;
-          }
-        } catch (e) {
-          pollStatus = `poll FAILED: ${e.message}`;
-        } finally {
-          pollInFlight = false;
-          renderProgress();
-        }
-      };
-      const serverDebugPollTimer = setInterval(pollServerDebugLog, 1500);
-      pollServerDebugLog();
-
-      const renderProgress = () => {
-        if (!reportEl) return;
-        const seconds = Math.floor((Date.now() - startedAt) / 1000);
-        const recentServerLines = serverDebugEntries.slice(-10)
-          .map(e => `+${((e.t - startedAt) / 1000).toFixed(1)}s ${e.msg}`)
-          .join('\n');
-        reportEl.innerHTML = `<p><span class="inline-spinner"></span>Importing - ` +
-          `${combinedImported} of ${rows.length} caves imported so far` +
-          (seconds > 0 ? ` (${seconds}s)...` : '...') +
-          `<br><small>(${currentStage})</small></p>` +
-          `<pre style="background:#111;color:#0f0;font-size:11px;padding:8px;max-height:180px;overflow:auto;white-space:pre-wrap;">` +
-          `Server log (temp debug) - poll status: ${pollStatus}\n${recentServerLines || '(no server log entries yet)'}</pre>`;
-      };
-      renderProgress();
-      const progressTimer = setInterval(renderProgress, 1000);
-
-      try {
-        for (let start = 0; start < rows.length; start += CAVE_IMPORT_BATCH_SIZE) {
-          const batchNum = Math.floor(start / CAVE_IMPORT_BATCH_SIZE) + 1;
-          currentStage = `building batch ${batchNum} file`;
-          logImportDebug(currentStage);
-          const batchRows = rows.slice(start, start + CAVE_IMPORT_BATCH_SIZE);
-          const batchSheet = XLSX.utils.json_to_sheet(batchRows);
-          const batchWorkbook = XLSX.utils.book_new();
-          XLSX.utils.book_append_sheet(batchWorkbook, batchSheet, 'Import Template');
-          const batchArrayBuffer = XLSX.write(batchWorkbook, { type: 'array', bookType: 'xlsx' });
-          const batchBlob = new Blob([batchArrayBuffer], {
-            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          });
-
-          const formData = new FormData();
-          formData.append('importFile', batchBlob, 'batch.xlsx');
-          formData.append('state', stateCode);
-
-          currentStage = `uploading batch ${batchNum} (${batchRows.length} rows, waiting on server)`;
-          logImportDebug(currentStage);
-          const response = await fetch('/api/cave-database/import', { method: 'POST', body: formData });
-          logImportDebug(`batch ${batchNum} response received, status ${response.status}`);
-          currentStage = `reading batch ${batchNum} response`;
-          const rawResponseText = await response.text();
-          let result;
-          try {
-            result = JSON.parse(rawResponseText);
-          } catch (parseErr) {
-            // TEMP DEBUG - our own server always returns JSON, so a
-            // non-JSON body here means something in front of Node
-            // (a WAF, the reverse proxy, etc.) intercepted this request
-            // before it ever reached our app. Show the raw body so its
-            // reason/rule ID is visible instead of a bare parse error.
-            logImportDebug(`batch ${batchNum} response was not JSON - first 500 chars: ${rawResponseText.slice(0, 500)}`);
-            throw new Error(
-              `Server returned a non-JSON response (HTTP ${response.status}), likely blocked before reaching the app. ` +
-              `Raw response: ${rawResponseText.slice(0, 300)}`
-            );
-          }
-          if (!response.ok) {
-            throw new Error(result.error || 'Import failed');
-          }
-
-          combinedImported += result.imported || 0;
-          // Each batch's own row numbers are relative to its own
-          // mini-file (row 2 = its first data row) - offset them back to
-          // the original file's row numbers so the final report still
-          // matches what the user sees in their actual spreadsheet.
-          (result.report || []).forEach((r) => {
-            combinedReport.push(Object.assign({}, r, { row: r.row + start }));
-          });
-          renderProgress();
-
-          // Refresh what's loaded so caves imported in this batch actually
-          // show up now, not just once the whole file is done.
-          if (result.imported > 0 && typeof window.loadCaveDatabaseFromServer === 'function') {
-            currentStage = `batch ${batchNum} imported, refreshing map/list`;
-            logImportDebug(currentStage);
-            await window.loadCaveDatabaseFromServer();
-            if (typeof updateCaveDataStore === 'function') updateCaveDataStore();
-            const dbTab = document.getElementById('cave-database');
-            if (dbTab && dbTab.classList.contains('active')) {
-              const searchTerm = (document.getElementById('database-search')?.value || '').toLowerCase();
-              filterDatabase(searchTerm);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Cave import failed:', error);
-        batchError = error;
-      } finally {
-        clearInterval(progressTimer);
-        clearInterval(serverDebugPollTimer);
-        if (uploadBtn) uploadBtn.disabled = false;
-      }
-
-      if (batchError) {
-        if (reportEl) {
-          // batchError.message may contain a raw HTML block page (see the
-          // TEMP DEBUG non-JSON-response handling above) - escape it so it
-          // shows as visible text instead of being silently swallowed as
-          // markup by innerHTML.
-          const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => (
-            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-          ));
-          reportEl.innerHTML = `<p style="color:#b00;">Import failed partway through ` +
-            `(${combinedImported} of ${rows.length} caves were imported before the error): ` +
-            `${escapeHtml(batchError.message)}</p>`;
-        }
-      } else {
-        renderImportReport({
-          message: `Imported ${combinedImported} of ${rows.length} row(s).`,
-          imported: combinedImported,
-          total: rows.length,
-          report: combinedReport
-        });
-        input.value = '';
-      }
-    }
-
-    // Renders the { imported, total, report: [{row, status, reason, caveId, name}] }
-    // response from POST /api/cave-database/import as a simple table.
-    function renderImportReport(result) {
-      const reportEl = document.getElementById('cave-import-report');
-      if (!reportEl) return;
-
-      const rows = (result.report || []).map(r => {
-        const detail = r.status === 'success'
-          ? `Imported as <strong>${r.caveId}</strong>`
-          : `<span style="color:#b00;">${r.reason}</span>`;
-        return `<tr><td>${r.row}</td><td>${r.name || ''}</td><td>${detail}</td></tr>`;
-      }).join('');
-
-      reportEl.innerHTML = `
-        <p><strong>${result.message}</strong></p>
-        <div style="max-height: 300px; overflow-y: auto;">
-        <table class="cave-data-table">
-          <thead><tr><th>Row</th><th>Cave Name</th><th>Result</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-        </div>
-      `;
-    }
 
     // Get entry status name from code
     function getEntryStatusName(code) {
@@ -8150,7 +7854,6 @@ window.addEventListener('error', function(e) {
       }
     }
 
-    toggleCaveImportSectionVisibility();
     toggleWebsiteManagementTabVisibility();
 
     // Every role lands on the Interactive Map first after logging in,
