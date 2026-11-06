@@ -301,8 +301,9 @@ async function notifyNewSubmission(submission, req) {
 }
 
 // New self-registered account waiting for approval - notified to
-// webmasters only, matching POST /api/toggle-user-status's own
-// requireRole("webmaster") (admin can't activate an account). Same
+// webmasters and the Treasurer, the two roles that can actually approve
+// one (POST /api/dues/members/:username/status, gated by
+// requireDuesManager; admin can't activate an account). Same
 // error-swallowing contract as notifyNewSubmission above.
 // Legal first/last names (sign-up, webmaster-created accounts, and the
 // webmaster's Edit name). Letters in any language plus spaces, hyphens,
@@ -327,7 +328,14 @@ function nameFields(req, res) {
 
 async function notifyNewAccount(user, req) {
   try {
-    const recipients = getNotificationRecipients(["webmaster"]);
+    const webmasterEmails = getNotificationRecipients(["webmaster"]);
+    // isTreasurerAccount() (defined below - hoisted, same as every other
+    // function here) already excludes webmasters, so no risk of double-
+    // emailing one who's also flagged as Treasurer.
+    const treasurerEmails = loadUsers()
+      .filter((u) => isTreasurerAccount(u) && u.status === "active" && u.email)
+      .map((u) => u.email);
+    const recipients = [...new Set([...webmasterEmails, ...treasurerEmails])];
     const subject = "Florida Cave Survey - New Account Awaiting Approval";
     const text =
       "A new account has signed up and is waiting for approval.\n\n" +

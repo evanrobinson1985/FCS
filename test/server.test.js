@@ -332,9 +332,19 @@ describe("admin notification emails", () => {
       role: "webmaster",
       status: "pending",
     });
+    await seedUser({ username: "notifytreasurer", password: "NotifyTreasurerPass123!", role: "member" });
+    await seedUser({
+      username: "notifyinactivetreasurer",
+      password: "NotifyInactiveTreasurerPass123!",
+      role: "member",
+      status: "inactive",
+    });
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/users/notifytreasurer/treasurer").set(wm).send({ isTreasurer: true });
+    await request(app).post("/api/users/notifyinactivetreasurer/treasurer").set(wm).send({ isTreasurer: true });
   });
 
-  test("a new self-registration notifies active webmasters, not admins or inactive webmasters", async () => {
+  test("a new self-registration notifies active webmasters and the Treasurer, not admins or inactive accounts", async () => {
     const line = await captureNotificationLog(async () => {
       const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
         username: "notifytestaccount",
@@ -347,11 +357,17 @@ describe("admin notification emails", () => {
     assert.ok(line, "expected a [DEV] admin notification to be logged");
     assert.match(line, /New Account Awaiting Approval/);
     assert.match(line, /webmaster1@example\.com/);
+    assert.match(line, /notifytreasurer@example\.com/, "the Treasurer should be notified of a new account");
     assert.doesNotMatch(line, /notifyadmin@example\.com/, "admin should not be notified of a new account");
     assert.doesNotMatch(
       line,
       /notifypendingwebmaster@example\.com/,
       "a pending (not yet active) webmaster should not be notified"
+    );
+    assert.doesNotMatch(
+      line,
+      /notifyinactivetreasurer@example\.com/,
+      "an inactive Treasurer should not be notified"
     );
   });
 
