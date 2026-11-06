@@ -8482,6 +8482,7 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('sessionToken');
         sessionStorage.removeItem('twoFactorEnabled');
         sessionStorage.removeItem('isTreasurer');
+        stopSecurityLogsPolling();
         if (window.SiteUpdates) SiteUpdates.hide();
         if (window.Membership) Membership.hide();
         window.caveDatabase = undefined;
@@ -8505,6 +8506,12 @@ window.addEventListener('error', function(e) {
     // Tab switching functionality
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', function() {
+        // Stop here unconditionally; the account-management/webmaster
+        // branch below starts it back up if that's where we're headed.
+        // Covers leaving the tab for any other one, and avoids stacking a
+        // second interval on top of an existing one if it's re-clicked.
+        stopSecurityLogsPolling();
+
         // Remove active class from all tabs and content
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -8580,6 +8587,7 @@ window.addEventListener('error', function(e) {
           if (currentRole === 'webmaster') {
             if (window.Membership) Membership.showWebmasterView();
             loadAccountManagement();
+            startSecurityLogsPolling();
           } else if (sessionStorage.getItem('isTreasurer') === '1' && window.Membership) {
             Membership.showTreasurerView();
           } else {
@@ -11861,7 +11869,8 @@ async function loadSecurityLogs() {
 
     const logs = await response.json();
     const logsContainer = document.getElementById('security-logs');
-    
+    if (!logsContainer) return;
+
     if (logs.length === 0) {
       logsContainer.innerHTML = '<p>No security logs found.</p>';
       return;
@@ -11886,10 +11895,39 @@ async function loadSecurityLogs() {
         </div>
       `;
     });
-    
+
+    // Preserve scroll position across a background refresh - without this,
+    // a webmaster reading older entries would get yanked back to the top
+    // every time the poll below refreshes the list underneath them.
+    const scrollTop = logsContainer.scrollTop;
     logsContainer.innerHTML = html;
+    logsContainer.scrollTop = scrollTop;
   } catch (error) {
     console.error('Error loading security logs:', error);
+  }
+}
+
+// Live-updates the security log while the Account Management tab is open,
+// so a webmaster watching for suspicious activity (e.g. repeated failed
+// logins) doesn't have to manually switch tabs and back to refresh it.
+// Polls only loadSecurityLogs() itself - not the whole account list, which
+// would blow away an in-progress search or edit every tick. Paused while
+// the browser tab isn't visible, and stopped entirely on logout or when
+// navigating to any other tab (see the tab-click and logout handlers).
+let securityLogsPollInterval = null;
+const SECURITY_LOGS_POLL_MS = 10000;
+
+function startSecurityLogsPolling() {
+  stopSecurityLogsPolling();
+  securityLogsPollInterval = setInterval(() => {
+    if (document.visibilityState === 'visible') loadSecurityLogs();
+  }, SECURITY_LOGS_POLL_MS);
+}
+
+function stopSecurityLogsPolling() {
+  if (securityLogsPollInterval) {
+    clearInterval(securityLogsPollInterval);
+    securityLogsPollInterval = null;
   }
 }
 
