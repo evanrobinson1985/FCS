@@ -1523,6 +1523,17 @@
 
     // Heatmap layer variable
     let heatmapLayer = null;
+    // Single source of truth for the waypoints heatmap's color stops, used by
+    // both initializeHeatmap() (initial creation) and resetHeatmapGradient()
+    // (re-applied every time the heatmap is toggled on) so the rendered
+    // colors never drift between the two code paths.
+    const HEATMAP_GRADIENT = {
+      0.1: '#0000FF', // Blue (low)
+      0.4: '#FF00FF', // Violet
+      0.7: '#00FFFF', // Cyan
+      0.8: '#FF8000', // Orange
+      1.0: '#FF0000'  // Red (high)
+    };
 
     // Move Waypoints layer variable
     let moveTargetCaveId = null;
@@ -6725,15 +6736,6 @@ window.addEventListener('error', function(e) {
           map.removeLayer(heatmapLayer);
         }
         
-        // Use custom gradient with exact color stops
-        const customGradient = {
-          0.1: '#0000FF', // Blue (low)
-          0.4: '#FF00FF', // Violet
-          0.7: '#00FFFF', // Cyan
-          0.8: '#FF8000', // Orange
-          1.0: '#FF0000'  // Red (high)
-        };
-
         // FIX: Remove duplicate minOpacity and set initial opacity from slider
         const opacitySlider = document.getElementById('heatmap-opacity');
         const initialOpacity = opacitySlider ? parseInt(opacitySlider.value, 10) / 100 : 0.5;
@@ -6745,7 +6747,7 @@ window.addEventListener('error', function(e) {
           max: 2.0, // Lower max value makes it easier to reach the red end of the spectrum
           minOpacity: 0.4,  // <-- allows lower transparency
           opacity: initialOpacity, // Set initial opacity
-          gradient: customGradient,
+          gradient: HEATMAP_GRADIENT,
           pane: 'heatmapPane'  // This is the key line
 
         });
@@ -7027,18 +7029,11 @@ window.addEventListener('error', function(e) {
       if (!heatmapLayer || !map) return;
       
       try {
-        // Define the gradient again
-        const gradient = {
-          0.0: 'blue',
-          0.25: 'cyan',
-          0.5: 'lime',
-          0.75: 'yellow',
-          1.0: 'red'
-        };
-        
+        // Re-apply the same gradient initializeHeatmap() used, so toggling
+        // the heatmap off and back on never changes its colors.
         // Apply the gradient - different methods depending on implementation
         if (typeof heatmapLayer.setOptions === 'function') {
-          heatmapLayer.setOptions({ gradient: gradient });
+          heatmapLayer.setOptions({ gradient: HEATMAP_GRADIENT });
         }
         
         // If it's using the standard Leaflet.heat implementation
