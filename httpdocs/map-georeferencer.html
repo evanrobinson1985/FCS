@@ -1059,7 +1059,11 @@ const DEMHillshade = L.TileLayer.extend({
 const BASES={
   sat:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',opt:{maxZoom:24,maxNativeZoom:21,attribution:'Esri'}},
   lidar:{factory:()=>new DEMHillshade('',{maxZoom:24,maxNativeZoom:19,attribution:'USGS 3DEP (1 m LiDAR where available)'})},
-  street:{url:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',opt:{maxZoom:24,maxNativeZoom:19,attribution:'OSM'}},
+  // tile.openstreetmap.org's own tile usage policy blocks any production
+  // site/app embedding it directly (HTTP 403) - CARTO's basemap service
+  // serves the same OpenStreetMap data, styled, and allows this for free
+  // with no API key. See the matching comment in portal.html.
+  street:{url:'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',opt:{maxZoom:24,maxNativeZoom:20,attribution:'© OpenStreetMap contributors © CARTO',subdomains:'abcd'}},
   topo:{url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',opt:{maxZoom:24,maxNativeZoom:17,attribution:'OpenTopoMap'}}
 };
 

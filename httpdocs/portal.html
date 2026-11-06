@@ -2167,10 +2167,18 @@
           pane: 'basemapPane' // Use our custom pane
         });
 
-        osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap contributors',
-          maxZoom: 19,
-          subdomains: 'abc',
+        // tile.openstreetmap.org itself is explicitly off-limits here - its
+        // tile usage policy (operations.osmfoundation.org/policies/tiles/)
+        // exists for light evaluation use only and blocks (HTTP 403, "App
+        // is not following the tile usage policy") any production site/app
+        // that embeds it directly, which is exactly what this returned the
+        // first time this pointed there. CARTO's basemap service serves
+        // the same OpenStreetMap data, styled, and is free with no API key
+        // for this kind of use - see carto.com/basemaps.
+        osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
+          attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+          maxZoom: 20,
+          subdomains: 'abcd',
           pane: 'basemapPane' // Use our custom pane
         });
 
