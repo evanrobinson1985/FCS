@@ -240,7 +240,6 @@ describe("password hashing", () => {
       username: "newmember",
       email: "newmember@example.com",
       password: "SomeStrongPass123!",
-      states: ["FL"],
     });
     assert.equal(res.status, 200);
 
@@ -261,26 +260,6 @@ describe("password hashing", () => {
     assert.equal(res.status, 400);
   });
 
-  test("rejects self-registration with no state selected", async () => {
-    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
-      username: "nostateuser",
-      email: "nostateuser@example.com",
-      password: "SomeStrongPass123!",
-      states: [],
-    });
-    assert.equal(res.status, 400);
-  });
-
-  test("rejects self-registration with an unrecognized state code", async () => {
-    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
-      username: "badstateuser",
-      email: "badstateuser@example.com",
-      password: "SomeStrongPass123!",
-      states: ["ZZ"],
-    });
-    assert.equal(res.status, 400);
-  });
-
   // Regression test for a stored-XSS chain: this route is unauthenticated,
   // and username/email are later rendered in the webmaster's Account
   // Management table - a username containing HTML/script syntax must never
@@ -291,7 +270,6 @@ describe("password hashing", () => {
       username: '<img src=x onerror=alert(1)>',
       email: "xssattempt@example.com",
       password: "SomeStrongPass123!",
-      states: ["FL"],
     });
     assert.equal(res.status, 400);
 
@@ -304,23 +282,8 @@ describe("password hashing", () => {
       username: "emailxssattempt",
       email: '"><script>alert(1)</script>@example.com',
       password: "SomeStrongPass123!",
-      states: ["FL"],
     });
     assert.equal(res.status, 400);
-  });
-
-  test("stores the selected states as allowedStates on the new account", async () => {
-    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
-      username: "twostateuser",
-      email: "twostateuser@example.com",
-      password: "SomeStrongPass123!",
-      states: ["FL", "GA"],
-    });
-    assert.equal(res.status, 200);
-
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
-    const created = users.find((u) => u.username === "twostateuser");
-    assert.deepEqual(created.allowedStates, ["FL", "GA"]);
   });
 
   test("a freshly hashed password actually verifies on login", async () => {
@@ -328,7 +291,6 @@ describe("password hashing", () => {
       username: "roundtrip",
       email: "roundtrip@example.com",
       password: "RoundTripPass123!",
-      states: ["FL"],
     });
     // Activate the pending account directly (no client-facing endpoint
     // creates an already-active account other than webmaster-managed ones).
@@ -378,7 +340,6 @@ describe("admin notification emails", () => {
         username: "notifytestaccount",
         email: "notifytestaccount@example.com",
         password: "SomeStrongPass123!",
-        states: ["FL"],
       });
       assert.equal(res.status, 200);
     });
@@ -1192,43 +1153,20 @@ describe("cave database Excel import", () => {
   });
 });
 
-describe("allowed states (member state scoping)", () => {
+// This site only ever hosts Florida data, so there is nothing left to
+// restrict any account to - every user, regardless of role or whatever
+// may be stored in their own allowedStates field, is unrestricted (see
+// getAllowedStatesForUser in server.js). There is no longer a route to
+// set a per-user restriction (POST /api/change-user-states was removed
+// along with the Account Management/account-creation UI that drove it).
+describe("every account is unrestricted (this site only hosts Florida)", () => {
   before(async () => {
-    await seedUser({ username: "scopeduser", password: "ScopedPass123!", role: "member", allowedStates: ["FL"] });
+    // Even a user record that still has a leftover allowedStates array
+    // (e.g. from data predating this change) must come back unrestricted.
+    await seedUser({ username: "leftoverscopeduser", password: "ScopedPass123!", role: "member", allowedStates: ["FL"] });
   });
 
-  test("a non-webmaster cannot change another user's allowed states", async () => {
-    const memberToken = await login("member1", MEMBER_PASSWORD);
-    const res = await request(app)
-      .post("/api/change-user-states")
-      .set("Authorization", `Bearer ${memberToken}`)
-      .send({ username: "scopeduser", allowedStates: ["FL", "GA"] });
-    assert.equal(res.status, 403);
-  });
-
-  test("webmaster can grant an additional state to a member", async () => {
-    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
-    const res = await request(app)
-      .post("/api/change-user-states")
-      .set("Authorization", `Bearer ${webmasterToken}`)
-      .send({ username: "scopeduser", allowedStates: ["FL", "GA"] });
-    assert.equal(res.status, 200);
-
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
-    const updated = users.find((u) => u.username === "scopeduser");
-    assert.deepEqual(updated.allowedStates, ["FL", "GA"]);
-  });
-
-  test("rejects an unrecognized state code", async () => {
-    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
-    const res = await request(app)
-      .post("/api/change-user-states")
-      .set("Authorization", `Bearer ${webmasterToken}`)
-      .send({ username: "scopeduser", allowedStates: ["ZZ"] });
-    assert.equal(res.status, 400);
-  });
-
-  test("GET /api/users reports null (unrestricted) for admin/webmaster and the real array for members", async () => {
+  test("GET /api/users reports null (unrestricted) for every account", async () => {
     const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
     const res = await request(app).get("/api/users").set("Authorization", `Bearer ${webmasterToken}`);
     assert.equal(res.status, 200);
@@ -1236,8 +1174,24 @@ describe("allowed states (member state scoping)", () => {
     const wm = res.body.find((u) => u.username === "webmaster1");
     assert.equal(wm.allowedStates, null);
 
-    const scoped = res.body.find((u) => u.username === "scopeduser");
-    assert.deepEqual(scoped.allowedStates, ["FL", "GA"]);
+    const leftover = res.body.find((u) => u.username === "leftoverscopeduser");
+    assert.equal(leftover.allowedStates, null);
+  });
+
+  test("POST /api/change-user-states no longer exists", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-states")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ username: "leftoverscopeduser", allowedStates: ["FL", "GA"] });
+    assert.equal(res.status, 404);
+  });
+
+  test("a member with a leftover allowedStates array can still see every cave", async () => {
+    const memberToken = await login("leftoverscopeduser", "ScopedPass123!");
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${memberToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
   });
 });
 
@@ -1621,14 +1575,15 @@ describe("pending submissions", () => {
   });
 });
 
-describe("cave-data routes enforce allowedStates", () => {
+describe("cave-data routes are unrestricted (no per-user state scoping)", () => {
   let gaCaveId;
 
   before(async () => {
     await seedUser({ username: "flonlymember", password: "FlOnlyPass123!", role: "member", allowedStates: ["FL"] });
 
-    // Seed one Florida cave and one Georgia cave so filtering has something
-    // real to prove/disprove.
+    // Seed one Florida cave and one "other state" cave - even though this
+    // site only ever hosts Florida data in practice, nothing should choke
+    // on a stray non-FL record, and a member must be able to see it.
     const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
     await request(app)
       .post("/api/save-cave-database")
@@ -1641,23 +1596,15 @@ describe("cave-data routes enforce allowedStates", () => {
     gaCaveId = gaRes.body.caveId;
   });
 
-  test("GET /api/cave-database hides other states' caves from a scoped member", async () => {
+  test("GET /api/cave-database returns every cave to every account, regardless of their own allowedStates", async () => {
     const token = await login("flonlymember", "FlOnlyPass123!");
-    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
-    assert.equal(res.status, 200);
-    assert.ok(res.body.some((c) => c.name === "Scoping Test FL Cave"), "should see the Florida cave");
-    assert.ok(!res.body.some((c) => c.name === "Scoping Test GA Cave"), "should NOT see the Georgia cave");
-  });
-
-  test("GET /api/cave-database is unrestricted for webmaster regardless of state", async () => {
-    const token = await login("webmaster1", WEBMASTER_PASSWORD);
     const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
     assert.equal(res.status, 200);
     assert.ok(res.body.some((c) => c.name === "Scoping Test FL Cave"));
     assert.ok(res.body.some((c) => c.name === "Scoping Test GA Cave"));
   });
 
-  test("a scoped member cannot submit a proposal for a state they aren't granted", async () => {
+  test("a member can submit a proposal for any state, not just their own stored allowedStates", async () => {
     const token = await login("flonlymember", "FlOnlyPass123!");
     const res = await request(app)
       .post("/api/pending-submissions")
@@ -1667,77 +1614,17 @@ describe("cave-data routes enforce allowedStates", () => {
         caveId: "GATEMP2",
         state: "GA",
         county: "SC",
-        proposedData: { name: "Should Be Rejected Cave", state: "GA", county: "SC" },
-      });
-    assert.equal(res.status, 403);
-  });
-
-  test("a scoped member can still submit for a state they are granted", async () => {
-    const token = await login("flonlymember", "FlOnlyPass123!");
-    const res = await request(app)
-      .post("/api/pending-submissions")
-      .set("Authorization", `Bearer ${token}`)
-      .send({
-        type: "new_cave",
-        caveId: "FLTEMP2",
-        state: "FL",
-        county: "CA",
-        proposedData: { name: "Allowed Florida Submission", state: "FL", county: "CA" },
+        proposedData: { name: "No Longer Rejected Cave", state: "GA", county: "SC" },
       });
     assert.equal(res.status, 200);
   });
 
-  test("GET /api/pending-submissions hides another state's submissions from a scoped member", async () => {
-    const memberToken = await login("member1", MEMBER_PASSWORD); // has FL + GA
-    const submitRes = await request(app)
-      .post("/api/pending-submissions")
-      .set("Authorization", `Bearer ${memberToken}`)
-      .send({
-        type: "new_cave",
-        caveId: "GATEMP3",
-        state: "GA",
-        county: "SC",
-        proposedData: { name: "GA Submission For Visibility Test", state: "GA", county: "SC" },
-      });
-    assert.equal(submitRes.status, 200);
-
-    const flOnlyToken = await login("flonlymember", "FlOnlyPass123!");
-    const res = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${flOnlyToken}`);
-    assert.equal(res.status, 200);
-    assert.ok(!res.body.some((s) => s.caveId === "GATEMP3"), "FL-only member should not see the GA submission");
-
-    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
-    const wmRes = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${webmasterToken}`);
-    assert.ok(wmRes.body.some((s) => s.caveId === "GATEMP3"), "webmaster should see every state's submissions");
-  });
-
-  // Regression test for an IDOR: an edit_cave submission's authorization
-  // used to trust the client-supplied `state` field rather than the target
-  // cave's real, resolved state - so a member could edit (and read back,
-  // via the pending-submissions "enhance with current cave data" step) a
-  // cave in a state they were never granted, just by lying about the state
-  // in the request body.
-  test("a scoped member cannot submit an edit_cave proposal for another state's real cave by lying about the state", async () => {
-    const token = await login("flonlymember", "FlOnlyPass123!");
-    const res = await request(app)
-      .post("/api/pending-submissions")
-      .set("Authorization", `Bearer ${token}`)
-      .send({
-        type: "edit_cave",
-        caveId: gaCaveId, // a real Georgia cave - flonlymember is FL-only
-        state: "FL", // the lie: claiming FL so the allowedStates check passes
-        county: "SC",
-        proposedData: { name: "Should Be Rejected Edit" },
-      });
-    assert.equal(res.status, 403, "must be rejected based on the cave's REAL state (GA), not the claimed one (FL)");
-  });
-
+  // edit_cave submission state is still resolved from the real cave server-
+  // side, never trusted from the client - unrelated to allowedStates (there
+  // is no longer any restriction to bypass), this just confirms the stored
+  // submission accurately records which cave it's actually for.
   test("edit_cave submission state is resolved from the real cave, ignoring a mismatched client-supplied state", async () => {
-    // member1 has both FL and GA (see the top-level seedUser call) - submits
-    // an edit for the real Georgia cave while claiming state: "FL" in the
-    // body. This must still succeed (member1 IS allowed GA), and the stored
-    // submission must record the cave's real state, not the claimed one.
-    const token = await login("member1", MEMBER_PASSWORD);
+    const token = await login("flonlymember", "FlOnlyPass123!");
     const res = await request(app)
       .post("/api/pending-submissions")
       .set("Authorization", `Bearer ${token}`)

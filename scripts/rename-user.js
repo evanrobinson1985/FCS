@@ -1,8 +1,8 @@
 // Renames an existing account's username in place, leaving everything else
 // (passwordHash, role, email, id, etc.) untouched. The app has no
 // self-service "change username" feature - only change-password,
-// change-user-role, change-user-states, toggle-user-status - so this is the
-// escape hatch, same pattern as scripts/create-user.js.
+// change-user-role, toggle-user-status - so this is the escape hatch, same
+// pattern as scripts/create-user.js.
 //
 // Usage:
 //   node scripts/rename-user.js <oldUsername> <newUsername> [--data-dir=/path]

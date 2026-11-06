@@ -95,11 +95,12 @@ make that possible - relevant if you're looking at `cave-database.json` or
   code should never rely on that fallback; always read/write the explicit
   fields.
 
-- **User records** gained an `allowedStates` field: `null`/absent means
-  unrestricted (always true for `admin` and `webmaster` roles), an array of
-  state codes means a member can only see/submit for those states. Set at
-  account creation, editable afterward by a webmaster via the Account
-  Management tab (`POST /api/change-user-states`).
+- **User records** may still carry a leftover `allowedStates` field from
+  before this site was retired to Florida-only. It's no longer read:
+  `getAllowedStatesForUser()` in `server.js` always returns `null`
+  (unrestricted) for every account, since there's nothing left to restrict
+  anyone to. There is no account-creation or Account Management UI for it
+  any more.
 
 **Bulk-importing a new state's existing spreadsheet:** a webmaster/admin
 can download a per-state `.xlsx` template and upload a filled-in version

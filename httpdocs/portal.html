@@ -220,11 +220,6 @@
         <input id="confirm-password" placeholder="Confirm your password" type="password" required/>
       </div>
       <div class="form-group">
-        <label for="new-account-states">State(s) you're a member for: <span class="required-mark" aria-hidden="true">*</span></label>
-        <select id="new-account-states" multiple size="6" required></select>
-        <small>Hold Ctrl/Cmd to select more than one. A webmaster can grant you access to additional states later.</small>
-      </div>
-      <div class="form-group">
         <button onclick="handleCreateAccount()">Create Account</button>
         <button type="button" onclick="showLogin()">Back to Login</button>
       </div>
@@ -402,7 +397,7 @@
       <p style="margin-bottom: 10px;">
         Creates a normal member account immediately (active, no pending approval needed) - unlike the public
         "Create New Account" link on the login page, which always starts pending until a webmaster approves it.
-        Grant states and change role from the table below once it's created.
+        Change its role from the table below once it's created.
       </p>
       <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
         <label>Username<br>
@@ -445,7 +440,6 @@
               <th>Role</th>
               <th>Status</th>
               <th>Dues</th>
-              <th>States</th>
               <th>2FA</th>
               <th>Last Login</th>
               <th>Login IPs</th>
@@ -11397,16 +11391,13 @@ function showCreateAccount() {
   document.getElementById('forgot-password-form').style.display = 'none';
   document.getElementById('set-new-password-form').style.display = 'none';
   document.getElementById('two-factor-form').style.display = 'none';
-  populateAccountCreationStates();
 }
 
-// GET /api/states is public (no login token needed - see server.js), which
-// is exactly why the create-account form can call it: nobody filling that
-// out has a session yet. Fetched once and cached for the rest of the page's
-// life (same 50 states either way) - every other place that needs the
-// state/county reference data (Account Management's per-member state
-// editor, and more once the map/database/edit-cave tabs become state-aware)
-// should call this same cached loader rather than fetching it again.
+// GET /api/states is public (no login token needed - see server.js).
+// Fetched once and cached for the rest of the page's life (same reference
+// data either way) - every place that needs the state/county reference
+// data (the database/edit-cave/bulk-import tabs' state pickers) should
+// call this same cached loader rather than fetching it again.
 window.statesConfigCache = null;
 async function loadStatesConfig() {
   if (window.statesConfigCache) return window.statesConfigCache;
@@ -11414,18 +11405,6 @@ async function loadStatesConfig() {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   window.statesConfigCache = (await response.json()).slice().sort((a, b) => a.name.localeCompare(b.name));
   return window.statesConfigCache;
-}
-
-async function populateAccountCreationStates() {
-  const select = document.getElementById('new-account-states');
-  if (!select || select.options.length > 0) return;
-  try {
-    const states = await loadStatesConfig();
-    select.innerHTML = states.map(s => `<option value="${s.code}">${s.name}</option>`).join('');
-  } catch (error) {
-    console.error('Failed to load states for account creation:', error);
-    select.innerHTML = '<option value="FL">Florida</option>';
-  }
 }
 
 function showForgotPassword() {
@@ -11581,14 +11560,12 @@ async function handleCreateAccount() {
   const email = document.getElementById('new-email').value.trim();
   const password = document.getElementById('new-password').value;
   const confirmPassword = document.getElementById('confirm-password').value;
-  const states = Array.from(document.getElementById('new-account-states').selectedOptions).map(o => o.value);
 
   // Every field is required: outline any that are empty, focus the first,
   // and say which ones are missing
   const required = [
     ['new-first-name', 'First name'], ['new-last-name', 'Last name'], ['new-username', 'Username'],
     ['new-email', 'Email'], ['new-password', 'Password'], ['confirm-password', 'Confirm Password'],
-    ['new-account-states', 'State(s)'],
   ];
   const missing = [];
   required.forEach(([id, label]) => {
@@ -11621,11 +11598,6 @@ async function handleCreateAccount() {
     return;
   }
 
-  if (states.length === 0) {
-    alert('Please select at least one state you are a member for.');
-    return;
-  }
-
   try {
     const response = await fetch('/api/create-account', {
       method: 'POST',
@@ -11638,8 +11610,7 @@ async function handleCreateAccount() {
         lastName: lastName,
         username: username,
         email: email,
-        password: password,
-        states: states
+        password: password
       })
     });
 
@@ -11655,7 +11626,6 @@ async function handleCreateAccount() {
       document.getElementById('new-email').value = '';
       document.getElementById('new-password').value = '';
       document.getElementById('confirm-password').value = '';
-      document.getElementById('new-account-states').selectedIndex = -1;
     } else {
       throw new Error(result.error || 'Account creation failed');
     }
@@ -11758,19 +11728,16 @@ let lastLoadedUsers = [];
 
 async function loadAccountManagement() {
   try {
-    const [response, allStates] = await Promise.all([
-      fetch('/api/users', {
-        headers: {
-          'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
-          'X-CSRF-Token': getCSRFToken()
-        }
-      }),
-      loadStatesConfig()
-    ]);
+    const response = await fetch('/api/users', {
+      headers: {
+        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
+        'X-CSRF-Token': getCSRFToken()
+      }
+    });
 
     const users = await response.json();
     lastLoadedUsers = users;
-    displayUsers(users, allStates);
+    displayUsers(users);
     loadSecurityLogs();
   } catch (error) {
     console.error('Error loading account management:', error);
@@ -11780,7 +11747,7 @@ async function loadAccountManagement() {
 function searchUserAccounts() {
   const term = document.getElementById('user-account-search').value.trim().toLowerCase();
   if (!term) {
-    displayUsers(lastLoadedUsers, lastLoadedAllStates);
+    displayUsers(lastLoadedUsers);
     return;
   }
   const filtered = lastLoadedUsers.filter(u =>
@@ -11790,22 +11757,16 @@ function searchUserAccounts() {
     (u.firstName && u.firstName.toLowerCase().includes(term)) ||
     (u.lastName && u.lastName.toLowerCase().includes(term))
   );
-  displayUsers(filtered, lastLoadedAllStates);
+  displayUsers(filtered);
 }
 
 function clearUserAccountSearch() {
   document.getElementById('user-account-search').value = '';
-  displayUsers(lastLoadedUsers, lastLoadedAllStates);
+  displayUsers(lastLoadedUsers);
 }
 
 // Display users in the table
-// Cached so grantAllStatesToUser() (called from a button's onclick, not
-// from displayUsers' own closure) can reach the full state list without
-// needing it threaded back through the DOM.
-let lastLoadedAllStates = [];
-
-function displayUsers(users, allStates) {
-  lastLoadedAllStates = allStates;
+function displayUsers(users) {
   const tableBody = document.getElementById('user-list-table');
   tableBody.innerHTML = '';
 
@@ -11832,11 +11793,6 @@ function displayUsers(users, allStates) {
       '<span style="color: green;">🔒 On</span>' :
       '<span style="color: #999;">Off</span>';
 
-    // allowedStates is null for admin/webmaster (see getAllowedStatesForUser
-    // in server.js) - they're always unrestricted, so there's nothing to
-    // edit for them. Members get a multi-select the webmaster can use to
-    // grant/revoke states on the spot.
-    //
     // username/email come straight from POST /api/create-account, which is
     // unauthenticated and doesn't restrict their charset - so both must be
     // escaped everywhere they're interpolated here, exactly like any other
@@ -11854,35 +11810,6 @@ function displayUsers(users, allStates) {
     const safeUsername = escapeStatsHtml(user.username);
     const safeEmail = escapeStatsHtml(user.email);
     const jsUsername = escapeStatsHtml(JSON.stringify(user.username));
-    const jsAllowedStates = escapeStatsHtml(JSON.stringify(user.allowedStates || []));
-
-    const grantedStates = user.allowedStates || [];
-    const stateName = (code) => (allStates.find(s => s.code === code) || {}).name || code;
-    const ungranted = allStates.filter(s => !grantedStates.includes(s.code));
-
-    const chips = grantedStates.length
-      ? grantedStates.map(code => `
-          <span style="background: #e0e0e0; border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 0.85em; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;">
-            ${escapeStatsHtml(stateName(code))}
-            <button type="button" onclick="removeUserState(${jsUsername}, ${jsAllowedStates}, '${code}')" title="Remove ${escapeStatsHtml(stateName(code))}"
-                    style="border: none; background: none; cursor: pointer; font-weight: bold; padding: 0 4px; line-height: 1.4; border-radius: 50%;">×</button>
-          </span>`).join('')
-      : '<em style="font-size: 0.85em; color: #888;">No states granted</em>';
-
-    const statesCell = user.allowedStates === null
-      ? '<em>All states</em>'
-      : `<div style="min-width: 180px;">
-          <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px;">${chips}</div>
-          ${ungranted.length ? `
-          <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
-            <select style="padding: 3px; font-size: 0.85em;">
-              <option value="">+ Add a state...</option>
-              ${ungranted.map(s => `<option value="${s.code}">${s.name}</option>`).join('')}
-            </select>
-            <button type="button" onclick="addUserState(${jsUsername}, ${jsAllowedStates}, this.previousElementSibling)" class="btn-success" style="padding: 2px 6px; font-size: 0.8em;">Add</button>
-            <button type="button" onclick="grantAllStatesToUser(${jsUsername})" class="btn-success" style="padding: 2px 6px; font-size: 0.8em;">Grant All</button>
-          </div>` : ''}
-        </div>`;
 
     row.innerHTML = `
       <td>${safeUsername}</td>
@@ -11894,7 +11821,6 @@ function displayUsers(users, allStates) {
         </label>`}</td>
       <td>${statusBadge}</td>
       <td>${window.Membership ? Membership.duesCellHtml(user) : ''}</td>
-      <td>${statesCell}</td>
       <td>${twoFactorBadge}</td>
       <td>${lastLogin}</td>
       <td style="font-size: 0.9em;">${ips}</td>
@@ -11950,61 +11876,6 @@ async function changeUserRole(username, newRole) {
     alert('Error changing user role: ' + error.message);
     location.reload();
   }
-}
-
-// Grant/revoke which states a member can see and submit for. Webmaster-only
-// server-side (see POST /api/change-user-states) - this button is only ever
-// shown to a webmaster in the first place, since only they see the Account
-// Management tab. One shared POST so add/remove/grant-all only differ in
-// what list of codes they compute, not in how it's sent or how errors are
-// handled.
-async function postUserStates(username, allowedStates) {
-  try {
-    const response = await fetch('/api/change-user-states', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + sessionStorage.getItem('sessionToken'),
-        'X-CSRF-Token': getCSRFToken()
-      },
-      body: JSON.stringify({ username, allowedStates })
-    });
-
-    const result = await response.json();
-    if (result.success) {
-      loadAccountManagement(); // Refresh so the change is confirmed from the server
-    } else {
-      throw new Error(result.error);
-    }
-  } catch (error) {
-    alert('Error changing allowed states: ' + error.message);
-    location.reload();
-  }
-}
-
-// Adds the state picked in the adjacent <select> to this user's granted
-// list - pick one, it's saved immediately (the select resets to "+ Add a
-// state..." on the refreshed table, ready to add another), rather than
-// requiring every state to be selected at once in a single control.
-function addUserState(username, currentStates, selectEl) {
-  const code = selectEl.value;
-  if (!code) return;
-  postUserStates(username, [...currentStates, code]);
-}
-
-function removeUserState(username, currentStates, code) {
-  postUserStates(username, currentStates.filter(c => c !== code));
-}
-
-// Grants every state that exists, in one click, rather than adding them
-// one at a time - the broad-access equivalent of promoting to admin/
-// webmaster (who are always unrestricted), but for a member who still
-// needs the states list to exist (see getAllowedStatesForUser in
-// server.js - member access is always an explicit array, never the
-// null/unrestricted admin-webmaster convention).
-function grantAllStatesToUser(username) {
-  if (!confirm(`Grant ${username} access to every state?`)) return;
-  postUserStates(username, lastLoadedAllStates.map(s => s.code));
 }
 
 // Toggle user status
