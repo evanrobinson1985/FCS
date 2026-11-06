@@ -4377,8 +4377,8 @@ function createCountiesChart(caveData) {
     countyCounts[key] = (countyCounts[key] || 0) + 1;
   });
 
-  // Convert to arrays for Chart.js
-  const keys = Object.keys(countyCounts);
+  // Convert to arrays for Chart.js, highest count first.
+  const keys = Object.keys(countyCounts).sort((a, b) => countyCounts[b] - countyCounts[a]);
   const counts = keys.map(key => countyCounts[key]);
 
   // Map state+county keys to display labels via the shared reference config
