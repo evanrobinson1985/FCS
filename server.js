@@ -5357,7 +5357,7 @@ app.post("/api/map-preferences", authenticateToken, express.json(), (req, res) =
     // controlled keys or values. Any field missing/invalid is just left
     // out, rather than rejecting the whole save.
     const sanitized = {};
-    if (["satellite", "topo", "hillshade"].includes(prefs.basemap)) {
+    if (["satellite", "topo", "hillshade", "osm"].includes(prefs.basemap)) {
       sanitized.basemap = prefs.basemap;
     }
     if (typeof prefs.multiAngleHillshade === "boolean") sanitized.multiAngleHillshade = prefs.multiAngleHillshade;

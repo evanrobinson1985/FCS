@@ -331,6 +331,7 @@ input[type="file"] {
 
     .basemap-options {
       display: flex;
+      flex-wrap: wrap;
       gap: 10px;
       margin-bottom: 10px;
     }
@@ -641,6 +642,7 @@ input[type="file"] {
 
       .basemap-options {
         display: flex;
+        flex-wrap: wrap;
         gap: 10px;
         margin-bottom: 15px;
       }

@@ -743,6 +743,7 @@
 <button class="basemap-btn active" id="satellite-basemap">Satellite Imagery</button>
 <button class="basemap-btn" id="topo-basemap">USGS Topo Map</button>
 <button class="basemap-btn" id="hillshade-basemap">USGS DEM Hillshade</button>
+<button class="basemap-btn" id="osm-basemap">OpenStreetMap</button>
 </div>
 </div>
 
@@ -1513,6 +1514,7 @@
     let satelliteLayer = null;
     let topoLayer = null;
     let hillshadeLayer = null;
+    let osmLayer = null;
 
     // Global variables for hillshade layers
     let multiAngleHillshadeLayer = null;
@@ -2165,6 +2167,13 @@
           pane: 'basemapPane' // Use our custom pane
         });
 
+        osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors',
+          maxZoom: 19,
+          subdomains: 'abc',
+          pane: 'basemapPane' // Use our custom pane
+        });
+
         console.log("Base layers created successfully");
       } catch (error) {
         console.error("Error creating base layers:", error);
@@ -2179,6 +2188,7 @@
         document.getElementById('satellite-basemap').classList.add('active');
         document.getElementById('topo-basemap').classList.remove('active');
         document.getElementById('hillshade-basemap').classList.remove('active');
+        document.getElementById('osm-basemap').classList.remove('active');
       } catch (error) {
         console.error("Error adding satellite layer:", error);
       }
@@ -2293,7 +2303,7 @@
             },
             // Basemaps that can be draped over the 3D terrain
             getBasemaps: function() {
-              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer]]
+              return [['Satellite Imagery', satelliteLayer], ['USGS Topo Map', topoLayer], ['USGS DEM Hillshade', hillshadeLayer], ['OpenStreetMap', osmLayer]]
                 .filter(function(pair) { return pair[1] && pair[1]._url; })
                 .map(function(pair) {
                   return { label: pair[0], url: pair[1]._url, options: pair[1].options, active: map.hasLayer(pair[1]) };
@@ -2503,25 +2513,32 @@
         const satelliteBtn = document.getElementById('satellite-basemap');
         const topoBtn = document.getElementById('topo-basemap');
         const hillshadeBtn = document.getElementById('hillshade-basemap');
-        
+        const osmBtn = document.getElementById('osm-basemap');
+
         if (satelliteBtn) {
           satelliteBtn.addEventListener('click', function() {
             switchBasemap('satellite');
           });
         }
-        
+
         if (topoBtn) {
           topoBtn.addEventListener('click', function() {
             switchBasemap('topo');
           });
         }
-        
+
         if (hillshadeBtn) {
           hillshadeBtn.addEventListener('click', function() {
             switchBasemap('hillshade');
           });
         }
-        
+
+        if (osmBtn) {
+          osmBtn.addEventListener('click', function() {
+            switchBasemap('osm');
+          });
+        }
+
         console.log("Basemap switcher event listeners attached");
       } catch (error) {
         console.error("Error attaching basemap switcher event listeners:", error);
@@ -2551,6 +2568,7 @@
         if (map.hasLayer(satelliteLayer)) map.removeLayer(satelliteLayer);
         if (map.hasLayer(topoLayer)) map.removeLayer(topoLayer);
         if (map.hasLayer(hillshadeLayer)) map.removeLayer(hillshadeLayer);
+        if (map.hasLayer(osmLayer)) map.removeLayer(osmLayer);
       } catch (error) {
         console.error("Error removing existing layers:", error);
       }
@@ -2563,7 +2581,8 @@
             document.getElementById('satellite-basemap').classList.add('active');
             document.getElementById('topo-basemap').classList.remove('active');
             document.getElementById('hillshade-basemap').classList.remove('active');
-            
+            document.getElementById('osm-basemap').classList.remove('active');
+
             // If multi-angle hillshade was enabled, keep it enabled with the custom opacity
             if (wasHillshadeActivelyEnabled && multiAngleHillshadeCheckbox) {
               multiAngleHillshadeCheckbox.checked = true;
@@ -2584,7 +2603,8 @@
             document.getElementById('satellite-basemap').classList.remove('active');
             document.getElementById('topo-basemap').classList.add('active');
             document.getElementById('hillshade-basemap').classList.remove('active');
-            
+            document.getElementById('osm-basemap').classList.remove('active');
+
             // If multi-angle hillshade was enabled, keep it enabled with the custom opacity
             if (wasHillshadeActivelyEnabled && multiAngleHillshadeCheckbox) {
               multiAngleHillshadeCheckbox.checked = true;
@@ -2605,7 +2625,8 @@
             document.getElementById('satellite-basemap').classList.remove('active');
             document.getElementById('topo-basemap').classList.remove('active');
             document.getElementById('hillshade-basemap').classList.add('active');
-            
+            document.getElementById('osm-basemap').classList.remove('active');
+
             // When switching to hillshade, ENABLE multi-angle hillshade by default with higher opacity
             if (multiAngleHillshadeCheckbox) {
               multiAngleHillshadeCheckbox.checked = true;
@@ -2617,7 +2638,29 @@
             }
             console.log("Switched to hillshade layer");
             break;
-            
+
+          case 'osm':
+            osmLayer.addTo(map);
+            document.getElementById('satellite-basemap').classList.remove('active');
+            document.getElementById('topo-basemap').classList.remove('active');
+            document.getElementById('hillshade-basemap').classList.remove('active');
+            document.getElementById('osm-basemap').classList.add('active');
+
+            // If multi-angle hillshade was enabled, keep it enabled with the custom opacity
+            if (wasHillshadeActivelyEnabled && multiAngleHillshadeCheckbox) {
+              multiAngleHillshadeCheckbox.checked = true;
+              if (map.hasLayer(multiAngleHillshadeLayer)) {
+                multiAngleHillshadeLayer.setOpacity(opacityValue);
+              } else {
+                toggleMultiAngleHillshade(true); // This will apply the correct opacity
+              }
+            } else if (multiAngleHillshadeCheckbox) {
+              multiAngleHillshadeCheckbox.checked = false;
+              toggleMultiAngleHillshade(false);
+            }
+            console.log("Switched to OSM layer");
+            break;
+
           default:
             console.error("Unknown basemap type:", type);
             // Fall back to satellite as default
@@ -2625,6 +2668,7 @@
             document.getElementById('satellite-basemap').classList.add('active');
             document.getElementById('topo-basemap').classList.remove('active');
             document.getElementById('hillshade-basemap').classList.remove('active');
+            document.getElementById('osm-basemap').classList.remove('active');
         }
         
         // Reapply contour lines if they were enabled
@@ -6256,6 +6300,7 @@ function loadFcsDatabaseTable() {
         console.log("Map has satellite layer:", map.hasLayer(satelliteLayer));
         console.log("Map has topo layer:", map.hasLayer(topoLayer));
         console.log("Map has hillshade layer:", map.hasLayer(hillshadeLayer));
+        console.log("Map has OSM layer:", map.hasLayer(osmLayer));
       }
       
       // Check layers
@@ -6349,7 +6394,7 @@ function loadFcsDatabaseTable() {
       }
       
       // Make sure a base layer is active
-      if (!map.hasLayer(satelliteLayer) && !map.hasLayer(topoLayer) && !map.hasLayer(hillshadeLayer)) {
+      if (!map.hasLayer(satelliteLayer) && !map.hasLayer(topoLayer) && !map.hasLayer(hillshadeLayer) && !map.hasLayer(osmLayer)) {
         console.log("No base layer active, adding satellite layer");
         satelliteLayer.addTo(map);
         document.getElementById('satellite-basemap').classList.add('active');
@@ -6793,6 +6838,7 @@ window.addEventListener('error', function(e) {
     function currentBasemapType() {
       if (document.getElementById('topo-basemap')?.classList.contains('active')) return 'topo';
       if (document.getElementById('hillshade-basemap')?.classList.contains('active')) return 'hillshade';
+      if (document.getElementById('osm-basemap')?.classList.contains('active')) return 'osm';
       return 'satellite';
     }
 
@@ -6925,7 +6971,7 @@ window.addEventListener('error', function(e) {
         const eventType = el.type === 'checkbox' ? 'change' : 'input';
         el.addEventListener(eventType, scheduleSaveMapPreferences);
       });
-      ['satellite-basemap', 'topo-basemap', 'hillshade-basemap'].forEach(id => {
+      ['satellite-basemap', 'topo-basemap', 'hillshade-basemap', 'osm-basemap'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('click', scheduleSaveMapPreferences);
       });

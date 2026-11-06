@@ -562,6 +562,16 @@ describe("interactive map display preferences (GET/POST /api/map-preferences)", 
     assert.deepEqual(getRes.body, prefs);
   });
 
+  test("accepts osm as a valid basemap", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ basemap: "osm" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.mapPreferences.basemap, "osm");
+  });
+
   test("one account's saved settings don't affect another's", async () => {
     const memberToken = await login("member1", MEMBER_PASSWORD);
     await request(app)
