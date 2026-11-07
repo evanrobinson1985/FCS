@@ -1,0 +1,127 @@
+[
+  {
+    "id": "2026-11-03-large-file-controls",
+    "date": "2026-11-03",
+    "title": "Photo display fix and a new large-file control",
+    "changes": [
+      "Fixed a bug that kept uploaded narrative photos from ever showing up on the site.",
+      "Webmasters can now temporarily turn off uploading and viewing/downloading photos and cave map files site-wide from Website Management, for use while server storage is being set up."
+    ]
+  },
+  {
+    "id": "2026-11-03-membership-dues",
+    "date": "2026-11-03",
+    "title": "Membership dues tracking",
+    "changes": [
+      "Next to your name at the top of the page you can now see how long your membership has left before yearly dues are due again.",
+      "You'll get a reminder email 30 days before your membership expires, with a link to pay your dues through PayPal.",
+      "Paying early adds a full year on top of the time you have left."
+    ]
+  },
+  {
+    "id": "2026-11-02-donate-button",
+    "date": "2026-11-02",
+    "title": "Donate to the Florida Cave Survey",
+    "changes": [
+      "New Donate button at the top of every page. It opens PayPal's secure donation page for the Florida Cave Survey in a new tab."
+    ]
+  },
+  {
+    "id": "2026-11-02-feedback-buttons",
+    "date": "2026-11-02",
+    "title": "Request features and report bugs",
+    "changes": [
+      "The Site Updates tab now has \"Request a feature\" and \"Report a bug\" buttons. What you send goes straight to the webmasters.",
+      "See your own requests and reports on the same tab, with their status (New, Planned, In progress, Done or Won't do) and any reply from the webmasters."
+    ]
+  },
+  {
+    "id": "2026-11-02-hillshade-default",
+    "date": "2026-11-02",
+    "title": "Multi-Angle Hillshade starts at 25% transparency",
+    "changes": [
+      "On the Interactive Map, the Multi-Angle Hillshade now starts at 25% transparency, so the relief shows more strongly. (Before, it started at 80% while the label wrongly said 20%.)"
+    ]
+  },
+  {
+    "id": "2026-11-02-3d-terrain-view",
+    "date": "2026-11-02",
+    "title": "3D terrain view on the Interactive Map",
+    "changes": [
+      "New 3D button under the map's zoom buttons. View the whole map area in 3D, or drag a box on the map to choose an area.",
+      "Shows USGS bare-earth elevation (1 m detail for areas up to about 2 × 2 km) with the caves on the map as coloured, named pins.",
+      "Move around like a web map: drag to move, right-drag or two fingers to rotate and tilt, scroll or pinch to zoom, with on-screen buttons and a compass.",
+      "Choose a Surface: natural terrain colours, or lay the Satellite, USGS Topo or Hillshade basemap over the 3D ground.",
+      "New \"What's new\" card after you log in, and this Site Updates page listing every change."
+    ]
+  },
+  {
+    "id": "2026-11-01-cave-database-filters",
+    "date": "2026-11-01",
+    "title": "Cave Database and Statistics improvements",
+    "changes": [
+      "New Entrance Type filter on the Cave Database tab.",
+      "A Show All option for the Cave Database table's pages.",
+      "Fixed nine Statistics cards that appeared in the wrong section.",
+      "Narrative link previews show real YouTube video titles."
+    ]
+  },
+  {
+    "id": "2026-10-28-email-and-imports",
+    "date": "2026-10-28",
+    "title": "Email reliability and data safety",
+    "changes": [
+      "Faster, clearer failures when the mail server doesn't respond, plus email diagnostics for webmasters.",
+      "Fixed a problem that could make Forgot Password and sign-up hang.",
+      "Tools to restore the cave database from its automatic backups."
+    ]
+  },
+  {
+    "id": "2026-10-27-notifications-and-tabs",
+    "date": "2026-10-27",
+    "title": "Approval emails and tab controls",
+    "changes": [
+      "Admins and webmasters are emailed when a new submission or account needs approval.",
+      "Everyone now lands on the Interactive Map after logging in; members no longer see Pending Submissions.",
+      "Webmasters can hide dashboard tabs site-wide while a feature is being worked on.",
+      "Bulk cave import is limited to webmasters."
+    ]
+  },
+  {
+    "id": "2026-10-26-usability",
+    "date": "2026-10-26",
+    "title": "Mobile layout, accounts and faster loading",
+    "changes": [
+      "Fixed layout overflow on phones across every tab.",
+      "Cave markers on the Interactive Map are easier to tap.",
+      "The Cave Database table is split into pages, and the site loads faster.",
+      "Hide and reorder Statistics cards; your layout is saved to your account.",
+      "Change your own username, password and two-factor settings from the settings (cog) menu.",
+      "Webmasters can create member accounts and search the user list.",
+      "Bulk cave imports show live progress and add caves as they go.",
+      "Fixed a security issue in map popups."
+    ]
+  },
+  {
+    "id": "2026-09-22-georeferencer",
+    "date": "2026-09-22",
+    "title": "Map Georeferencer",
+    "changes": [
+      "New Map Georeferencer tool (linked from the cave maps section) turns a scanned or PDF cave map into a georeferenced GeoTIFF or shapefile.",
+      "It can open maps straight from the cave maps collection."
+    ]
+  },
+  {
+    "id": "2026-09-04-portal-launch",
+    "date": "2026-09-04",
+    "title": "Portal rebuilt: security, multi-state support and site management",
+    "changes": [
+      "Security hardening across the site, with automatic data backups.",
+      "Real password reset by email, self-service password change and optional two-factor sign-in.",
+      "Full review workflow for member cave submissions.",
+      "Support for caves in multiple states, including per-member state access and Excel import for a new state's caves.",
+      "New Statistics cards: documentation coverage, contributors, map status and the review funnel.",
+      "Website Management for webmasters: maintenance mode, a notification banner, read-only mode, scheduled maintenance and login lockout settings."
+    ]
+  }
+]
