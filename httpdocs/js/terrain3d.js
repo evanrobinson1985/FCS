@@ -24,7 +24,15 @@
   'use strict';
 
   const ELEVATION_URL = 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage';
-  const CELL_BUDGET = 4e6;   // elevation cells downloaded per view (~16 MB as floats)
+  // Cell count, not box size, is what's capped - a small box always gets
+  // full 1 m detail (MIN_RES below), a bigger one gets coarser per-cell
+  // spacing to stay inside this budget (see planGrid). Raising this gives
+  // every box size finer detail at the cost of a bigger download and more
+  // browser memory for the raw elevation array (~36 MB as floats at 9e6,
+  // up from ~16 MB at the old 4e6) - see the matching maxGrid bump below,
+  // which is what actually lets the extra detail reach the rendered mesh
+  // instead of just being resampled back down.
+  const CELL_BUDGET = 9e6;   // elevation cells downloaded per view
   const MIN_RES = 1;         // 3DEP's best is 1 m LiDAR; finer is pointless
   const TILE = 1000;         // pixels per side of each download request
   const PARALLEL = 4;        // requests in flight at once
@@ -383,8 +391,9 @@
       return out;
     }
 
-    // ---- Mesh: up to 1024 x 1024 vertices ----
-    const maxGrid = uintExt ? 1024 : 255;
+    // ---- Mesh: up to 1536 x 1536 vertices (255 without 32-bit indices,
+    // which every browser that still gets a 3D view at all supports) ----
+    const maxGrid = uintExt ? 1536 : 255;
     const ms = Math.max(1, Math.max(RW, RH) / maxGrid);
     const gw = Math.max(2, Math.round(RW / ms)), gh = Math.max(2, Math.round(RH / ms));
     const meshZ = resample(gw, gh);
