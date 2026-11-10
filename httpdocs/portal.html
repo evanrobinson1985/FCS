@@ -426,7 +426,7 @@
     <div class="control-section">
       <h4>User Accounts</h4>
       <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
-        <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
+        <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" autocomplete="off" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
         <button type="button" class="btn-success" onclick="searchUserAccounts()">Search</button>
         <button type="button" class="btn-warning" onclick="clearUserAccountSearch()">Clear</button>
       </div>
