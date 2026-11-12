@@ -2242,20 +2242,187 @@ function writeCaveDatabase(caves, res, successPayload) {
     });
 }
 
+// ---- Member proposal validation ---------------------------------------------
+// A member's proposal (POST /api/pending-submissions) is written into the
+// real cave database when a reviewer approves it, so it is reduced to the
+// known cave fields, each with the right type, before it is stored and
+// again before it is applied. Anything else in the request is dropped.
+// This is what guarantees the reviewer's card (which lists every one of
+// these fields that would change) shows the whole change, and that no field
+// can carry a value of an unexpected shape into the database.
+const PROPOSAL_TEXT_FIELDS = { name: 200, type: 50, ownerInfo: 1000, reporterName: 200, reporterNSS: 50, notes: 10000 };
+const PROPOSAL_CODE_FIELDS = [
+  "entranceType", "fieldIndication", "entryStatus", "locationAccuracy",
+  "mapType", "mapStatus", "geology", "topoProvince",
+];
+// The same measurement is stored under more than one name (see
+// saveEditedCave() in portal.html). All names in a group always get the
+// same value, so a proposal can't change one of them unseen.
+const PROPOSAL_MEASURE_GROUPS = [
+  ["length", "caveLength"],
+  ["vertical", "verticalExtent"],
+  ["waterDepth", "water", "maxWaterDepth"],
+  ["pitch", "deepestPitch"],
+  ["elevation"],
+];
+const PROPOSAL_CODE_RE = /^[A-Za-z0-9 _.\/-]{0,20}$/;
+const PROPOSAL_MEASURE_RE = /^[^<>\u0000-\u001f]{0,40}$/;
+
+function isPlainObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isCoordinate(v, limit) {
+  return typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= limit;
+}
+
+function isMeasure(v) {
+  return (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && PROPOSAL_MEASURE_RE.test(v));
+}
+
+function firstPresent(obj, keys) {
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return undefined;
+}
+
+// Returns { data } with the cleaned proposal, or { error } naming the
+// first field that isn't acceptable.
+function sanitizeProposedCave(raw) {
+  if (!isPlainObject(raw)) return { error: "proposedData must be an object." };
+  const out = {};
+  const bad = (field) => ({ error: `The value for "${field}" is not valid.` });
+
+  for (const [field, max] of Object.entries(PROPOSAL_TEXT_FIELDS)) {
+    const v = raw[field];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string" || v.length > max) return bad(field);
+    out[field] = v;
+  }
+  for (const field of PROPOSAL_CODE_FIELDS) {
+    const v = raw[field];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string" || !PROPOSAL_CODE_RE.test(v)) return bad(field);
+    out[field] = v;
+  }
+  for (const group of PROPOSAL_MEASURE_GROUPS) {
+    const v = firstPresent(raw, group);
+    if (v === undefined) continue;
+    if (!isMeasure(v)) return bad(group[0]);
+    group.forEach((field) => { out[field] = v; });
+  }
+
+  const lat = firstPresent(raw, ["lat", "latitude"]);
+  const lng = firstPresent(raw, ["lng", "longitude"]);
+  if (lat !== undefined) {
+    if (!isCoordinate(lat, 90)) return bad("latitude");
+    out.lat = out.latitude = lat;
+  }
+  if (lng !== undefined) {
+    if (!isCoordinate(lng, 180)) return bad("longitude");
+    out.lng = out.longitude = lng;
+  }
+
+  if (raw.state !== undefined && raw.state !== null && raw.state !== "") {
+    if (typeof raw.state !== "string" || !/^[A-Z]{2}$/.test(raw.state)) return bad("state");
+    out.state = raw.state;
+  }
+  if (raw.county !== undefined && raw.county !== null && raw.county !== "") {
+    if (typeof raw.county !== "string" || raw.county.length > 100) return bad("county");
+    out.county = raw.county; // checked against the state's real county list by the caller
+  }
+
+  for (const field of ["equipment", "exploration"]) {
+    const v = raw[field];
+    if (v === undefined || v === null) continue;
+    if (!Array.isArray(v) || v.length > 20 || v.some((c) => typeof c !== "string" || !/^[A-Z]$/.test(c))) return bad(field);
+    out[field] = [...new Set(v)];
+  }
+
+  if (raw.hazards !== undefined && raw.hazards !== null) {
+    const h = raw.hazards;
+    if (!isPlainObject(h)) return bad("hazards");
+    const hazards = {};
+    for (const flag of ["badAir", "unstable", "casualties"]) {
+      if (h[flag] === undefined || h[flag] === null) continue;
+      if (typeof h[flag] !== "boolean") return bad("hazards");
+      hazards[flag] = h[flag];
+    }
+    if (h.notes !== undefined && h.notes !== null) {
+      if (typeof h.notes !== "string" || h.notes.length > 2000) return bad("hazards");
+      hazards.notes = h.notes;
+    }
+    out.hazards = hazards;
+  }
+
+  if (raw.entrances !== undefined && raw.entrances !== null) {
+    if (!Array.isArray(raw.entrances) || raw.entrances.length > 50) return bad("entrances");
+    const entrances = [];
+    for (const e of raw.entrances) {
+      if (!isPlainObject(e)) return bad("entrances");
+      const entrance = {};
+      if (e.name !== undefined && e.name !== null) {
+        if (typeof e.name !== "string" || e.name.length > 200) return bad("entrances");
+        entrance.name = e.name;
+      }
+      for (const field of ["entranceType", "fieldIndication", "entryStatus", "locationAccuracy"]) {
+        if (e[field] === undefined || e[field] === null) continue;
+        if (typeof e[field] !== "string" || !PROPOSAL_CODE_RE.test(e[field])) return bad("entrances");
+        entrance[field] = e[field];
+      }
+      for (const [field, limit] of [["latitude", 90], ["longitude", 180]]) {
+        if (e[field] === undefined) continue;
+        if (e[field] !== null && !isCoordinate(e[field], limit)) return bad("entrances");
+        entrance[field] = e[field];
+      }
+      if (e.elevation !== undefined && e.elevation !== null) {
+        if (!isMeasure(e.elevation)) return bad("entrances");
+        entrance.elevation = e.elevation;
+      }
+      entrances.push(entrance);
+    }
+    out.entrances = entrances;
+  }
+
+  return { data: out };
+}
+
 // Applies proposedData from an approved submission onto the live cave
 // database, normalizing lat/lng key aliases the way every other write path
 // does. Returns the array of caves (mutated in place for new_cave) so the
 // caller can persist it; throws with a { status, message } shape on
 // validation failure so the route can turn it into the right HTTP response.
 function applyApprovedSubmission(submission, caves) {
+  // Cleaned again here, not only when it was submitted, so a proposal that
+  // was already waiting in the queue before this check existed can't be
+  // applied with fields the reviewer wasn't shown.
+  const cleaned = sanitizeProposedCave(submission.proposedData);
+  if (cleaned.error) {
+    throw { status: 400, message: `This submission can't be applied. ${cleaned.error} Reject it instead.` };
+  }
+  const proposed = cleaned.data;
+  const now = new Date().toISOString();
+  // Who changed the record and when come from the submission itself, never
+  // from the proposal's own contents.
+  const stamp = { lastUpdated: now, updatedBy: submission.submittedBy || "unknown" };
+
   if (submission.type === "new_cave") {
-    const stateCode = submission.state || submission.proposedData?.state || DEFAULT_STATE_CODE;
-    const countyCode = submission.county || submission.proposedData?.county;
+    const stateCode = submission.state || proposed.state || DEFAULT_STATE_CODE;
+    const countyCode = submission.county || proposed.county;
     if (!countyCode) {
       throw { status: 400, message: "Submission is missing a county code; cannot assign a cave ID." };
     }
     const uniqueId = generateNextCaveId(stateCode, countyCode, caves);
-    const newCave = { ...submission.proposedData, id: uniqueId, state: stateCode, county: countyCode };
+    const newCave = {
+      ...proposed,
+      id: uniqueId,
+      state: stateCode,
+      county: countyCode,
+      createdDate: now,
+      createdBy: stamp.updatedBy,
+      ...stamp,
+    };
     if (newCave.lat !== undefined) {
       newCave.latitude = newCave.lat;
     } else if (newCave.latitude !== undefined) {
@@ -2273,7 +2440,7 @@ function applyApprovedSubmission(submission, caves) {
     if (caveIndex === -1) {
       throw { status: 404, message: `Cave with ID ${submission.caveId} no longer exists.` };
     }
-    const merged = { ...caves[caveIndex], ...submission.proposedData, id: caves[caveIndex].id };
+    const merged = { ...caves[caveIndex], ...proposed, ...stamp, id: caves[caveIndex].id };
     if (merged.lat !== undefined) {
       merged.latitude = merged.lat;
     } else if (merged.latitude !== undefined) {
@@ -2705,7 +2872,7 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
 // from the authenticated session, never trusted from the request body, so a
 // member can't submit a proposal under someone else's name.
 app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req, res) => {
-  const { type, caveId, caveName, state, county, proposedData } = req.body || {};
+  const { type, caveId, caveName, state, county } = req.body || {};
 
   if (!type || !["new_cave", "edit_cave"].includes(type)) {
     return res
@@ -2715,10 +2882,29 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req
   if (!caveId) {
     return res.status(400).json({ error: "Missing required field: caveId" });
   }
-  if (!proposedData || typeof proposedData !== "object") {
+  if (!isSafeRecordId(caveId)) {
+    return res.status(400).json({ error: "Invalid caveId." });
+  }
+  if (!req.body.proposedData || typeof req.body.proposedData !== "object") {
     return res
       .status(400)
       .json({ error: "Missing required field: proposedData" });
+  }
+  // Only known cave fields, each of the right type, are kept - see
+  // sanitizeProposedCave().
+  const cleaned = sanitizeProposedCave(req.body.proposedData);
+  if (cleaned.error) {
+    return res.status(400).json({ error: cleaned.error });
+  }
+  const proposedData = cleaned.data;
+  if (caveName !== undefined && caveName !== null && (typeof caveName !== "string" || caveName.length > 200)) {
+    return res.status(400).json({ error: "Invalid caveName." });
+  }
+  if (state !== undefined && state !== null && state !== "" && (typeof state !== "string" || !/^[A-Z]{2}$/.test(state))) {
+    return res.status(400).json({ error: "Invalid state." });
+  }
+  if (county !== undefined && county !== null && typeof county !== "string") {
+    return res.status(400).json({ error: "Invalid county." });
   }
   let targetCave = null;
   if (type === "edit_cave") {
@@ -3415,8 +3601,102 @@ function isSafeRecordId(id) {
   return typeof id === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(id);
 }
 
+// ---- Narrative photos: who uploaded what ------------------------------------
+// A narrative's "images" list decides which photo files the author may
+// delete (see /delete-narrative-image), so it can't be taken as sent. Each
+// upload is recorded here against the uploading account's id, and
+// /save-narrative only keeps entries for photos that account uploaded.
+const IMAGE_OWNERS_FILE = path.join(DATA_DIR, "narrative-image-owners.json");
+
+function loadImageOwners() {
+  try {
+    if (fs.existsSync(IMAGE_OWNERS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(IMAGE_OWNERS_FILE, "utf8"));
+      if (isPlainObject(data)) return data;
+    }
+  } catch (err) {
+    console.error("Error loading narrative image owners:", err);
+  }
+  return {};
+}
+
+function saveImageOwners(owners) {
+  fs.writeFileSync(IMAGE_OWNERS_FILE, JSON.stringify(owners, null, 2));
+}
+
+// The photo's file name from a /cave-pictures/ URL, or null if the URL
+// isn't one of this site's narrative photos.
+function narrativeImageFilename(url) {
+  if (typeof url !== "string" || url.length > 500) return null;
+  const marker = "/cave-pictures/";
+  const i = url.lastIndexOf(marker);
+  if (i === -1) return null;
+  const file = url.slice(i + marker.length).split(/[?#]/)[0];
+  if (!file || file.startsWith(".") || /[\/\\<>"'\u0000-\u001f]/.test(file) || file.length > 200) return null;
+  return file;
+}
+
+function readNarrativeFile(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (Array.isArray(data)) return data;
+    if (data && data.user) return [data];
+  } catch {
+    // unreadable or malformed - treated as no narratives
+  }
+  return [];
+}
+
+// True if any narrative other than the ones `skip` returns true for uses
+// this photo, in its images list or in its text.
+function isImageUsedByAnotherNarrative(file, skip) {
+  const needle = `/cave-pictures/${file}`;
+  let files;
+  try {
+    files = fs.readdirSync(NARRATIVE_DIR).filter((f) => f.endsWith(".json") && f !== "deletion-log.json");
+  } catch {
+    return false;
+  }
+  return files.some((f) => {
+    const caveId = f.slice(0, -5);
+    return readNarrativeFile(path.join(NARRATIVE_DIR, f)).some((n) => {
+      if (!n || skip(n, caveId)) return false;
+      const inImages = Array.isArray(n.images) && n.images.some((img) => img && typeof img.url === "string" && img.url.includes(needle));
+      return inImages || (typeof n.html === "string" && n.html.includes(needle));
+    });
+  });
+}
+
+// Reduces a client-sent images list to entries this account may attach:
+// photos it uploaded, photos already on the narrative being edited, and
+// (for photos uploaded before uploads were recorded) ones no other
+// member's narrative uses. Anything else is dropped.
+function sanitizeNarrativeImages(images, reqUser, alreadyAttached) {
+  if (!Array.isArray(images)) return [];
+  const owners = loadImageOwners();
+  const kept = [];
+  const seen = new Set();
+  for (const entry of images.slice(0, 100)) {
+    if (!isPlainObject(entry)) continue;
+    const file = narrativeImageFilename(entry.url);
+    if (!file || seen.has(file)) continue;
+    const owner = owners[file];
+    const allowed = owner
+      ? owner === reqUser.id
+      : alreadyAttached.has(file) || !isImageUsedByAnotherNarrative(file, (n) => n.user === reqUser.username);
+    if (!allowed) continue;
+    seen.add(file);
+    kept.push({
+      url: `/cave-pictures/${file}`,
+      alt: typeof entry.alt === "string" ? entry.alt.slice(0, 300) : "",
+      caption: typeof entry.caption === "string" ? entry.caption.slice(0, 300) : "",
+    });
+  }
+  return kept;
+}
+
 app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(), (req, res) => {
-  const { id, name, images, isEditing, originalTimestamp } = req.body;
+  const { id, isEditing, originalTimestamp } = req.body;
   // The author is always the authenticated user, never a client-supplied
   // value - otherwise anyone could save a narrative "as" another member.
   const user = req.user.username;
@@ -3427,6 +3707,15 @@ app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(
   if (!isSafeRecordId(id)) {
     return res.status(400).json({ error: "Invalid cave id" });
   }
+  if (typeof req.body.html !== "string") {
+    return res.status(400).json({ error: "Invalid narrative content" });
+  }
+  // The cave's name is shown in the narrative activity log, so it is kept
+  // as plain text of a sensible length.
+  if (req.body.name !== undefined && req.body.name !== null && (typeof req.body.name !== "string" || req.body.name.length > 200)) {
+    return res.status(400).json({ error: "Invalid cave name" });
+  }
+  const name = sanitizeHtml(req.body.name || "", { allowedTags: [], allowedAttributes: {} }).trim();
 
   const html = sanitizeHtml(req.body.html, NARRATIVE_SANITIZE_OPTIONS);
 
@@ -3458,12 +3747,16 @@ app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(
     );
 
     if (narrativeIndex !== -1) {
+      const previous = existingNarratives[narrativeIndex].images;
+      const alreadyAttached = new Set(
+        (Array.isArray(previous) ? previous : []).map((img) => narrativeImageFilename(img && img.url)).filter(Boolean)
+      );
       existingNarratives[narrativeIndex] = {
         id,
         name,
         html,
         user,
-        images: images || [],
+        images: sanitizeNarrativeImages(req.body.images, req.user, alreadyAttached),
         timestamp: existingNarratives[narrativeIndex].timestamp, // Keep original timestamp
         lastModified: timestamp,
       };
@@ -3475,7 +3768,7 @@ app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(
       name,
       html,
       user,
-      images: images || [],
+      images: sanitizeNarrativeImages(req.body.images, req.user, new Set()),
       timestamp: timestamp,
     };
     existingNarratives.push(newNarrative);
@@ -3979,6 +4272,15 @@ app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, requi
       return res.status(500).json({ error: "Failed to save image." });
     }
 
+    // Record who uploaded it (see sanitizeNarrativeImages)
+    try {
+      const owners = loadImageOwners();
+      owners[filename] = req.user.id;
+      saveImageOwners(owners);
+    } catch (ownerErr) {
+      console.error("Failed to record narrative image owner:", ownerErr);
+    }
+
     res.json({ imageUrl: `/cave-pictures/${filename}` });
   });
 });
@@ -4083,6 +4385,9 @@ app.delete("/delete-narrative-image", authenticateToken, requireNotReadOnly, exp
   if (!isSafeRecordId(caveId)) {
     return res.status(400).json({ error: "Invalid cave id" });
   }
+  if (typeof imageUrl !== "string" || !Number.isInteger(imageIndex) || imageIndex < 0) {
+    return res.status(400).json({ error: "Invalid image reference" });
+  }
 
   // Verify user permission
   if (narrativeUser !== currentUser && !isModerator) {
@@ -4162,13 +4467,26 @@ app.delete("/delete-narrative-image", authenticateToken, requireNotReadOnly, exp
           filename = urlParts[urlParts.length - 1];
         }
 
-        const imageFilePath = path.join(
-          CAVE_PICTURES_DIR,
-          path.basename(filename)
+        const baseFilename = path.basename(filename.split(/[?#]/)[0]);
+        const imageFilePath = path.join(CAVE_PICTURES_DIR, baseFilename);
+
+        // The file itself is only removed when no other narrative uses it,
+        // so taking a photo off one narrative can never break (or be used
+        // to destroy) a photo that belongs to someone else's.
+        const usedElsewhere = isImageUsedByAnotherNarrative(
+          baseFilename,
+          (n, otherCaveId) => otherCaveId === caveId && n.timestamp === narrativeTimestamp && n.user === narrativeUser
         );
 
-        if (fs.existsSync(imageFilePath)) {
+        if (usedElsewhere) {
+          console.log(`Image file kept (still used by another narrative): ${baseFilename}`);
+        } else if (fs.existsSync(imageFilePath)) {
           fs.unlinkSync(imageFilePath);
+          const owners = loadImageOwners();
+          if (owners[baseFilename]) {
+            delete owners[baseFilename];
+            saveImageOwners(owners);
+          }
           console.log(`Deleted image file: ${filename}`);
         } else {
           console.log(`Image file not found: ${imageFilePath}`);

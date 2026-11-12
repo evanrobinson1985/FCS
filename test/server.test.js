@@ -2893,3 +2893,244 @@ describe("email checks at sign-up", () => {
     assert.equal(res.status, 400);
   });
 });
+
+// A member's proposal is written into the cave database when a reviewer
+// approves it, and the reviewer's card can only show known cave fields - so
+// the server must keep only those fields, with the right types.
+describe("member proposals are reduced to known cave fields", () => {
+  async function submit(token, body) {
+    return request(app).post("/api/pending-submissions").set("Authorization", `Bearer ${token}`).send(body);
+  }
+
+  test("rejects markup in a coordinate instead of storing it for the review card", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FXSSLAT",
+      county: "AL",
+      proposedData: { name: "Lat Payload Cave", lat: '<img src=x onerror="alert(1)">', lng: -82.1 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects markup in a measurement field", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FXSSPITCH",
+      county: "AL",
+      proposedData: { name: "Pitch Payload Cave", lat: 29.1, lng: -82.1, pitch: "<img src=x onerror=alert(1)>" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a caveId that isn't a plain record id", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "<b>x</b>",
+      county: "AL",
+      proposedData: { name: "Bad Id Cave", lat: 29.1, lng: -82.1 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("drops unknown fields and keeps alternate names of one measurement in step", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FDROPTEMP",
+      county: "AL",
+      proposedData: {
+        name: "Dropped Fields Cave",
+        lat: 29.1,
+        lng: -82.1,
+        length: "100",
+        caveLength: "999999",
+        id: "FAKE001",
+        updatedBy: "someone-else",
+        surprise: "<script>alert(1)</script>",
+      },
+    });
+    assert.equal(res.status, 200);
+    const stored = res.body.submission.proposedData;
+    assert.equal(stored.surprise, undefined);
+    assert.equal(stored.id, undefined);
+    assert.equal(stored.updatedBy, undefined);
+    assert.equal(stored.length, "100");
+    assert.equal(stored.caveLength, "100");
+    assert.equal(stored.latitude, 29.1);
+  });
+
+  test("approving an edit applies only known fields, and records who made the change", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { name: "Known Fields Cave", county: "AL", lat: 29.4, lng: -82.4, notes: "before" } });
+    assert.equal(createRes.status, 200);
+    const caveId = createRes.body.caveId;
+
+    const submitRes = await submit(memberToken, {
+      type: "edit_cave",
+      caveId,
+      proposedData: { notes: "after", hidden: "x", updatedBy: "webmaster1" },
+    });
+    assert.equal(submitRes.status, 200);
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submitRes.body.submission.submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const cave = dbRes.body.find((c) => c.id === caveId);
+    assert.equal(cave.notes, "after");
+    assert.equal(cave.hidden, undefined);
+    assert.equal(cave.updatedBy, "member1");
+    assert.equal(cave.lat, 29.4); // untouched fields stay as they were
+  });
+
+  test("refuses to apply a queued proposal that holds a value of the wrong type", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    // As if it had been stored before proposals were checked on the way in
+    const file = process.env.SUBMISSIONS_FILE;
+    const submissions = JSON.parse(fs.readFileSync(file, "utf8"));
+    submissions.push({
+      submissionId: "legacy-bad-proposal",
+      type: "new_cave",
+      caveId: "FLEGACY",
+      state: "FL",
+      county: "AL",
+      proposedData: { name: "Legacy", lat: "<img src=x onerror=alert(1)>", lng: 1 },
+      submittedBy: "member1",
+      submittedAt: new Date().toISOString(),
+      status: "pending",
+    });
+    fs.writeFileSync(file, JSON.stringify(submissions, null, 2));
+
+    const res = await request(app)
+      .patch("/api/pending-submissions/legacy-bad-proposal")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(res.status, 400);
+    const rejectRes = await request(app)
+      .patch("/api/pending-submissions/legacy-bad-proposal")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "rejected" });
+    assert.equal(rejectRes.status, 200);
+  });
+});
+
+// The cave name saved with a narrative is shown in the activity log, and
+// its images list decides which photo files its author may delete.
+describe("narrative name and photo ownership", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("fake-png-body")]);
+
+  before(async () => {
+    await seedUser({ username: "photoowner", password: "PhotoOwnerPass123!", role: "member" });
+    await seedUser({ username: "photothief", password: "PhotoThiefPass123!", role: "member" });
+  });
+
+  async function uploadPhoto(token) {
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", PNG, { filename: "photo.png", contentType: "image/png" });
+    assert.equal(res.status, 200);
+    return res.body.imageUrl;
+  }
+
+  function photoExists(imageUrl) {
+    return fs.existsSync(path.join(process.env.CAVE_PICTURES_DIR, path.basename(imageUrl)));
+  }
+
+  test("stores the cave name as plain text", async () => {
+    const token = await login("photoowner", "PhotoOwnerPass123!");
+    const res = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "FNAME01", name: 'Fine Cave<img src=x onerror="alert(1)">', html: "<p>hi</p>", images: [] });
+    assert.equal(res.status, 200);
+    const logRes = await request(app).get("/get-all-narratives-log").set("Authorization", `Bearer ${token}`);
+    const entry = logRes.body.find((n) => n.caveId === "FNAME01");
+    assert.ok(entry);
+    assert.ok(!/[<>]/.test(entry.caveName), `name still holds markup: ${entry.caveName}`);
+  });
+
+  test("rejects a cave name that isn't text", async () => {
+    const token = await login("photoowner", "PhotoOwnerPass123!");
+    const res = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "FNAME02", name: { a: 1 }, html: "<p>hi</p>", images: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("a member cannot attach, and then delete, another member's photo", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const thiefToken = await login("photothief", "PhotoThiefPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ id: "FPHOTO01", name: "Owner Cave", html: `<p><img src="${imageUrl}"></p>`, images: [{ url: imageUrl }] });
+
+    const saveRes = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${thiefToken}`)
+      .send({ id: "FPHOTO02", name: "Thief Cave", html: "<p>x</p>", images: [{ url: imageUrl }] });
+    assert.equal(saveRes.status, 200);
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO02").set("Authorization", `Bearer ${thiefToken}`);
+    assert.deepEqual(getRes.body[0].images, []);
+
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${thiefToken}`)
+      .send({ caveId: "FPHOTO02", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photothief", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 404);
+    assert.ok(photoExists(imageUrl), "the owner's photo must still be on disk");
+  });
+
+  test("the uploader can attach their own photo and delete it", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({
+        id: "FPHOTO03",
+        name: "Own Photo Cave",
+        html: `<p><img src="${imageUrl}"></p>`,
+        images: [{ url: `http://localhost:3000${imageUrl}?token=abc`, alt: "entrance" }],
+      });
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO03").set("Authorization", `Bearer ${ownerToken}`);
+    assert.deepEqual(getRes.body[0].images, [{ url: imageUrl, alt: "entrance", caption: "" }]);
+
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ caveId: "FPHOTO03", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photoowner", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 200);
+    assert.ok(!photoExists(imageUrl));
+  });
+
+  test("a photo still used by another narrative is not removed from disk", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    for (const id of ["FPHOTO04", "FPHOTO05"]) {
+      await request(app)
+        .post("/save-narrative")
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .send({ id, name: "Shared Photo Cave", html: `<p><img src="${imageUrl}"></p>`, images: [{ url: imageUrl }] });
+    }
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO04").set("Authorization", `Bearer ${ownerToken}`);
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ caveId: "FPHOTO04", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photoowner", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 200);
+    assert.ok(photoExists(imageUrl), "still used by FPHOTO05");
+  });
+});

@@ -2942,13 +2942,13 @@
                 <p><strong>Type:</strong> ${safeType}</p>
                 <p><strong>State:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
-                  return resolved.state ? getStateName(resolved.state) : 'Unknown';
+                  return resolved.state ? escapeStatsHtml(getStateName(resolved.state)) : 'Unknown';
                 })()}</p>
                 <p><strong>County:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
-                  return resolved.county ? `${resolved.county} - ${getCountyName(resolved.state, resolved.county)}` : 'Unknown';
+                  return resolved.county ? escapeStatsHtml(`${resolved.county} - ${getCountyName(resolved.state, resolved.county)}`) : 'Unknown';
                 })()}</p>
-                <p><strong>Coordinates:</strong> ${cave.lat.toFixed(6)}, ${cave.lng.toFixed(6)}</p>
+                <p><strong>Coordinates:</strong> ${escapeStatsHtml(Number(cave.lat).toFixed(6))}, ${escapeStatsHtml(Number(cave.lng).toFixed(6))}</p>
                 <p><strong>Location Accuracy:</strong> ${(() => {
                   if (!cave.locationAccuracy) return 'Unknown';
                   const accuracyMap = {
@@ -2965,7 +2965,7 @@
                     'N': 'N - Mapped',
                     'U': 'U - Unknown'
                   };
-                  return accuracyMap[cave.locationAccuracy] || cave.locationAccuracy;
+                  return accuracyMap[cave.locationAccuracy] || escapeStatsHtml(cave.locationAccuracy);
                 })()}</p>
               </div>
 
@@ -2977,22 +2977,22 @@
 
               <!-- Physical Details -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Entrance Type:</strong> ${cave.entranceType ? `${cave.entranceType} - ${getEntranceTypeName(cave.entranceType)}` : 'N/A'}</p>
-                <p><strong>Field Indication:</strong> ${cave.fieldIndication ? `${cave.fieldIndication} - ${getFieldIndicationName(cave.fieldIndication)}` : 'N/A'}</p>
-                <p><strong>Elevation:</strong> ${cave.elevation || 'Unknown'} ft</p>
+                <p><strong>Entrance Type:</strong> ${cave.entranceType ? escapeStatsHtml(`${cave.entranceType} - ${getEntranceTypeName(cave.entranceType)}`) : 'N/A'}</p>
+                <p><strong>Field Indication:</strong> ${cave.fieldIndication ? escapeStatsHtml(`${cave.fieldIndication} - ${getFieldIndicationName(cave.fieldIndication)}`) : 'N/A'}</p>
+                <p><strong>Elevation:</strong> ${escapeStatsHtml(cave.elevation || 'Unknown')} ft</p>
               </div>
 
               <!-- Dimensions -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Length:</strong> ${cave.length || 'Unknown'} ft</p>
-                <p><strong>Vertical Extent:</strong> ${cave.vertical || 'Unknown'} ft</p>
-                <p><strong>Water Depth:</strong> ${cave.waterDepth || cave.water || 'Unknown'} ft</p>
-                <p><strong>Deepest Pitch:</strong> ${cave.pitch || 'Unknown'} ft</p>
+                <p><strong>Length:</strong> ${escapeStatsHtml(cave.length || 'Unknown')} ft</p>
+                <p><strong>Vertical Extent:</strong> ${escapeStatsHtml(cave.vertical || 'Unknown')} ft</p>
+                <p><strong>Water Depth:</strong> ${escapeStatsHtml(cave.waterDepth || cave.water || 'Unknown')} ft</p>
+                <p><strong>Deepest Pitch:</strong> ${escapeStatsHtml(cave.pitch || 'Unknown')} ft</p>
               </div>
 
               <!-- Technical Details -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Geology:</strong> ${cave.geology ? `${cave.geology} - ${getGeologyName(cave.geology)}` : 'Unknown'}</p>
+                <p><strong>Geology:</strong> ${cave.geology ? escapeStatsHtml(`${cave.geology} - ${getGeologyName(cave.geology)}`) : 'Unknown'}</p>
                 <p><strong>Map Type:</strong> ${(() => {
                   if (!cave.mapType) return 'Unknown';
                   const mapTypeMap = {
@@ -3003,7 +3003,7 @@
                     'T': 'T - Tape, Compass, Inclinometer',
                     'U': 'U - Unmapped'
                   };
-                  return mapTypeMap[cave.mapType] || cave.mapType;
+                  return mapTypeMap[cave.mapType] || escapeStatsHtml(cave.mapType);
                 })()}</p>
                 <p><strong>Map Status:</strong> ${(() => {
                   if (!cave.mapStatus) return 'Unknown';
@@ -3013,7 +3013,7 @@
                     'P': 'P - In Progress',
                     'R': 'R - Redraw of Old Map'
                   };
-                  return mapStatusMap[cave.mapStatus] || cave.mapStatus;
+                  return mapStatusMap[cave.mapStatus] || escapeStatsHtml(cave.mapStatus);
                 })()}</p>
               </div>
 
@@ -3665,7 +3665,8 @@ function escapeStatsHtml(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ----- Documentation Coverage -----
@@ -5806,43 +5807,86 @@ function loadFcsDatabaseTable() {
       }
     }
 
+    // Every cave field a proposal can change, in the order shown on the
+    // review card. The server only ever stores/applies these fields (see
+    // sanitizeProposedCave() in server.js), so this list is the whole
+    // change - nothing is applied on approval that isn't shown here.
+    const SUBMISSION_REVIEW_FIELDS = [
+      ['name', 'Name'], ['type', 'Type'], ['state', 'State'], ['county', 'County'],
+      ['latitude', 'Latitude'], ['longitude', 'Longitude'], ['locationAccuracy', 'Location Accuracy'],
+      ['elevation', 'Elevation'], ['entranceType', 'Entrance Type'], ['fieldIndication', 'Field Indication'],
+      ['entryStatus', 'Entry Status'], ['ownerInfo', 'Owner/Entity'],
+      ['length', 'Cave Length'], ['vertical', 'Vertical Extent'], ['waterDepth', 'Water Depth'], ['pitch', 'Deepest Pitch'],
+      ['geology', 'Geologic Formation'], ['topoProvince', 'Topographic Province'],
+      ['mapType', 'Map Type'], ['mapStatus', 'Map Status'],
+      ['equipment', 'Equipment'], ['exploration', 'Exploration'], ['hazards', 'Hazards'],
+      ['entrances', 'Entrances'], ['reporterName', 'Reporter'], ['reporterNSS', 'Reporter NSS #'], ['notes', 'Notes']
+    ];
+
+    // One field of a cave record (or proposal) as plain display text; ''
+    // when it's empty. Always escaped by the caller before it's shown.
+    function submissionFieldText(record, field) {
+      let value = record[field];
+      if (field === 'latitude') value = record.latitude ?? record.lat;
+      if (field === 'longitude') value = record.longitude ?? record.lng;
+      if (value === undefined || value === null || value === '') return '';
+      if (field === 'hazards') {
+        const parts = [];
+        if (value.badAir) parts.push('Bad Air');
+        if (value.unstable) parts.push('Unstable Structure');
+        if (value.casualties) parts.push('Known Casualties');
+        if (value.notes) parts.push(`Notes: ${value.notes}`);
+        return parts.join('; ');
+      }
+      if (field === 'entrances') {
+        if (!Array.isArray(value) || value.length === 0) return '';
+        return value.map((e, i) => {
+          const bits = [e.name || `Entrance ${i + 1}`];
+          if (e.latitude != null && e.longitude != null) bits.push(`${e.latitude}, ${e.longitude}`);
+          ['entranceType', 'fieldIndication', 'entryStatus', 'locationAccuracy'].forEach(k => { if (e[k]) bits.push(`${k}: ${e[k]}`); });
+          if (e.elevation !== undefined && e.elevation !== null && e.elevation !== '') bits.push(`elevation: ${e.elevation}`);
+          return bits.join(' | ');
+        }).join('; ');
+      }
+      if (Array.isArray(value)) return value.join(', ');
+      if (typeof value === 'object') return JSON.stringify(value);
+      return String(value);
+    }
+
     // Renders the proposed values for a "new_cave" submission, or a
     // before/after diff for an "edit_cave" one (currentCaveData is filled in
     // server-side by GET /api/pending-submissions / /api/approved-submissions).
+    // Every value is escaped: all of it comes from a member's request.
     function summarizeProposedSubmissionChanges(submission) {
-      const proposed = submission.proposedData || {};
+      const proposed = (submission.proposedData && typeof submission.proposedData === 'object') ? submission.proposedData : {};
 
       if (submission.type === 'new_cave') {
-        const lat = proposed.lat ?? proposed.latitude;
-        const lng = proposed.lng ?? proposed.longitude;
-        return `
-          <ul class="submission-diff">
-            <li><strong>Name:</strong> ${escapeStatsHtml(proposed.name || 'Unnamed cave')}</li>
-            <li><strong>County:</strong> ${escapeStatsHtml(submission.county || proposed.county || 'N/A')}</li>
-            <li><strong>Type:</strong> ${escapeStatsHtml(proposed.type || 'N/A')}</li>
-            <li><strong>Coordinates:</strong> ${lat != null ? lat : 'N/A'}, ${lng != null ? lng : 'N/A'}</li>
-          </ul>
-        `;
+        const record = { ...proposed, county: submission.county || proposed.county, state: submission.state || proposed.state };
+        const rows = SUBMISSION_REVIEW_FIELDS
+          .map(([field, label]) => [label, submissionFieldText(record, field)])
+          .filter(([, text]) => text !== '')
+          .map(([label, text]) => `<li><strong>${escapeStatsHtml(label)}:</strong> ${escapeStatsHtml(text)}</li>`);
+        return rows.length
+          ? `<ul class="submission-diff">${rows.join('')}</ul>`
+          : '<p>No details were provided.</p>';
       }
 
       const current = submission.currentCaveData || {};
-      const fieldsToCompare = [
-        ['name', 'Name'], ['type', 'Type'], ['entryStatus', 'Entry Status'],
-        ['mapType', 'Map Type'], ['mapStatus', 'Map Status'], ['geology', 'Geologic Formation'],
-        ['length', 'Cave Length'], ['vertical', 'Vertical Extent'], ['notes', 'Notes']
-      ];
-      const changes = fieldsToCompare
-        .filter(([field]) => JSON.stringify(proposed[field] ?? null) !== JSON.stringify(current[field] ?? null))
-        .map(([field, label]) => `
+      const changes = SUBMISSION_REVIEW_FIELDS
+        // Only fields the proposal actually contains are applied on approval
+        .filter(([field]) => field in proposed || (field === 'latitude' && 'lat' in proposed) || (field === 'longitude' && 'lng' in proposed))
+        .map(([field, label]) => [label, submissionFieldText(current, field), submissionFieldText(proposed, field)])
+        .filter(([, before, after]) => before !== after)
+        .map(([label, before, after]) => `
           <li>
             <strong>${escapeStatsHtml(label)}:</strong>
-            ${escapeStatsHtml(String(current[field] ?? '—'))} &rarr; ${escapeStatsHtml(String(proposed[field] ?? '—'))}
+            ${escapeStatsHtml(before || '—')} &rarr; ${escapeStatsHtml(after || '—')}
           </li>
         `);
 
       return changes.length
         ? `<ul class="submission-diff">${changes.join('')}</ul>`
-        : '<p>No differences detected in the compared fields.</p>';
+        : '<p>No differences detected.</p>';
     }
 
     // Create a submission card for the webmaster portal
@@ -5863,11 +5907,11 @@ function loadFcsDatabaseTable() {
       card.innerHTML = `
         <div class="submission-header">
           <h3>${escapeStatsHtml(typeLabel)}: ${escapeStatsHtml(caveLabel)}</h3>
-          <span class="status-badge status-${submission.status}">${capitalizeFirstLetter(submission.status)}</span>
+          <span class="status-badge status-${escapeStatsHtml(submission.status)}">${escapeStatsHtml(capitalizeFirstLetter(String(submission.status || "")))}</span>
         </div>
         <div class="submission-meta">
           <p><strong>Submitted by:</strong> ${escapeStatsHtml(submission.submittedBy || 'Unknown')}</p>
-          <p><strong>Date:</strong> ${formatDate(submission.submittedAt)}</p>
+          <p><strong>Date:</strong> ${escapeStatsHtml(formatDate(submission.submittedAt))}</p>
           ${submission.type === 'edit_cave' ? `<p><strong>Cave ID:</strong> ${escapeStatsHtml(submission.caveId)}</p>` : ''}
           ${submission.assignedCaveId ? `<p><strong>Assigned Cave ID:</strong> ${escapeStatsHtml(submission.assignedCaveId)}</p>` : ''}
           ${submission.approvedBy ? `<p><strong>Approved by:</strong> ${escapeStatsHtml(submission.approvedBy)} on ${formatDate(submission.approvedDate)}</p>` : ''}
@@ -5879,8 +5923,8 @@ function loadFcsDatabaseTable() {
         </div>
         <div class="submission-actions">
           ${submission.status === 'pending' && canReview ? `
-            <button class="btn-success approve-btn" data-submission-id="${submission.submissionId}">Approve</button>
-            <button class="btn-danger reject-btn" data-submission-id="${submission.submissionId}">Reject</button>
+            <button class="btn-success approve-btn" data-submission-id="${escapeStatsHtml(submission.submissionId)}">Approve</button>
+            <button class="btn-danger reject-btn" data-submission-id="${escapeStatsHtml(submission.submissionId)}">Reject</button>
           ` : ''}
         </div>
       `;
@@ -7319,13 +7363,13 @@ window.addEventListener('error', function(e) {
                 <p><strong>Type:</strong> ${safeType}</p>
                 <p><strong>State:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
-                  return resolved.state ? getStateName(resolved.state) : 'Unknown';
+                  return resolved.state ? escapeStatsHtml(getStateName(resolved.state)) : 'Unknown';
                 })()}</p>
                 <p><strong>County:</strong> ${(() => {
                   const resolved = resolveCaveStateAndCounty(cave);
-                  return resolved.county ? `${resolved.county} - ${getCountyName(resolved.state, resolved.county)}` : 'Unknown';
+                  return resolved.county ? escapeStatsHtml(`${resolved.county} - ${getCountyName(resolved.state, resolved.county)}`) : 'Unknown';
                 })()}</p>
-                <p><strong>Coordinates:</strong> ${cave.lat.toFixed(6)}, ${cave.lng.toFixed(6)}</p>
+                <p><strong>Coordinates:</strong> ${escapeStatsHtml(Number(cave.lat).toFixed(6))}, ${escapeStatsHtml(Number(cave.lng).toFixed(6))}</p>
                 <p><strong>Location Accuracy:</strong> ${(() => {
                   if (!cave.locationAccuracy) return 'Unknown';
                   const accuracyMap = {
@@ -7342,7 +7386,7 @@ window.addEventListener('error', function(e) {
                     'N': 'N - Mapped',
                     'U': 'U - Unknown'
                   };
-                  return accuracyMap[cave.locationAccuracy] || cave.locationAccuracy;
+                  return accuracyMap[cave.locationAccuracy] || escapeStatsHtml(cave.locationAccuracy);
                 })()}</p>
               </div>
 
@@ -7354,22 +7398,22 @@ window.addEventListener('error', function(e) {
 
               <!-- Physical Details -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Entrance Type:</strong> ${cave.entranceType ? `${cave.entranceType} - ${getEntranceTypeName(cave.entranceType)}` : 'N/A'}</p>
-                <p><strong>Field Indication:</strong> ${cave.fieldIndication ? `${cave.fieldIndication} - ${getFieldIndicationName(cave.fieldIndication)}` : 'N/A'}</p>
-                <p><strong>Elevation:</strong> ${cave.elevation || 'Unknown'} ft</p>
+                <p><strong>Entrance Type:</strong> ${cave.entranceType ? escapeStatsHtml(`${cave.entranceType} - ${getEntranceTypeName(cave.entranceType)}`) : 'N/A'}</p>
+                <p><strong>Field Indication:</strong> ${cave.fieldIndication ? escapeStatsHtml(`${cave.fieldIndication} - ${getFieldIndicationName(cave.fieldIndication)}`) : 'N/A'}</p>
+                <p><strong>Elevation:</strong> ${escapeStatsHtml(cave.elevation || 'Unknown')} ft</p>
               </div>
 
               <!-- Dimensions -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Length:</strong> ${cave.length || 'Unknown'} ft</p>
-                <p><strong>Vertical Extent:</strong> ${cave.vertical || 'Unknown'} ft</p>
-                <p><strong>Water Depth:</strong> ${cave.waterDepth || cave.water || 'Unknown'} ft</p>
-                <p><strong>Deepest Pitch:</strong> ${cave.pitch || 'Unknown'} ft</p>
+                <p><strong>Length:</strong> ${escapeStatsHtml(cave.length || 'Unknown')} ft</p>
+                <p><strong>Vertical Extent:</strong> ${escapeStatsHtml(cave.vertical || 'Unknown')} ft</p>
+                <p><strong>Water Depth:</strong> ${escapeStatsHtml(cave.waterDepth || cave.water || 'Unknown')} ft</p>
+                <p><strong>Deepest Pitch:</strong> ${escapeStatsHtml(cave.pitch || 'Unknown')} ft</p>
               </div>
 
               <!-- Technical Details -->
               <div style="margin-bottom: 10px;">
-                <p><strong>Geology:</strong> ${cave.geology ? `${cave.geology} - ${getGeologyName(cave.geology)}` : 'Unknown'}</p>
+                <p><strong>Geology:</strong> ${cave.geology ? escapeStatsHtml(`${cave.geology} - ${getGeologyName(cave.geology)}`) : 'Unknown'}</p>
                 <p><strong>Map Type:</strong> ${(() => {
                   if (!cave.mapType) return 'Unknown';
                   const mapTypeMap = {
@@ -7380,7 +7424,7 @@ window.addEventListener('error', function(e) {
                     'T': 'T - Tape, Compass, Inclinometer',
                     'U': 'U - Unmapped'
                   };
-                  return mapTypeMap[cave.mapType] || cave.mapType;
+                  return mapTypeMap[cave.mapType] || escapeStatsHtml(cave.mapType);
                 })()}</p>
                 <p><strong>Map Status:</strong> ${(() => {
                   if (!cave.mapStatus) return 'Unknown';
@@ -7390,7 +7434,7 @@ window.addEventListener('error', function(e) {
                     'P': 'P - In Progress',
                     'R': 'R - Redraw of Old Map'
                   };
-                  return mapStatusMap[cave.mapStatus] || cave.mapStatus;
+                  return mapStatusMap[cave.mapStatus] || escapeStatsHtml(cave.mapStatus);
                 })()}</p>
               </div>
 
@@ -10225,8 +10269,8 @@ async function loadNarrativeEditor() {
         
         const userInfo = document.createElement('div');
         userInfo.innerHTML = `
-          <h5 style="color: #4b86b4; margin: 0; font-size: 16px;">${narrative.user || 'Anonymous'}</h5>
-          <small style="color: #666; font-size: 12px;">${dateStr}</small>
+          <h5 style="color: #4b86b4; margin: 0; font-size: 16px;">${escapeStatsHtml(narrative.user || 'Anonymous')}</h5>
+          <small style="color: #666; font-size: 12px;">${escapeStatsHtml(dateStr)}</small>
         `;
         
         headerDiv.appendChild(userInfo);
@@ -10994,7 +11038,7 @@ function displayRecentNarratives(narratives) {
     const actionText = narrative.isDeleted ? 'deleted' : (narrative.isEdited ? 'edited' : 'created');
     const actionIcon = narrative.isDeleted ? '🗑️' : (narrative.isEdited ? '✏️' : '✨');
     const borderColor = narrative.isDeleted ? '#dc3545' : (narrative.isEdited ? '#ff9800' : '#4caf50');
-    const clickHandler = narrative.isDeleted ? '' : `onclick="goToNarrative('${narrative.caveId}')"`;
+    const clickHandler = narrative.isDeleted ? '' : `onclick="goToNarrative(${escapeStatsHtml(JSON.stringify(String(narrative.caveId)))})"`;
     const cursorStyle = narrative.isDeleted ? 'default' : 'pointer';
     
     html += `
@@ -11002,14 +11046,14 @@ function displayRecentNarratives(narratives) {
            style="padding: 8px; margin-bottom: 5px; background: white; border-radius: 4px; cursor: ${cursorStyle}; border-left: 3px solid ${borderColor}; transition: background-color 0.2s;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div style="font-weight: bold; color: #2a4d69;">
-            ${actionIcon} ${narrative.caveId} – ${narrative.caveName}
+            ${actionIcon} ${escapeStatsHtml(narrative.caveId)} – ${escapeStatsHtml(narrative.caveName)}
           </div>
           <div style="font-size: 12px; color: #666;">
             ${formattedDate}
           </div>
         </div>
         <div style="font-size: 12px; color: #666; margin-top: 2px;">
-          ${actionText} by ${narrative.user}
+          ${actionText} by ${escapeStatsHtml(narrative.user)}
         </div>
       </div>
     `;
@@ -11072,7 +11116,7 @@ function displayFullNarrativeLog() {
     const actionText = narrative.isDeleted ? 'deleted' : (narrative.isEdited ? 'edited' : 'created');
     const actionIcon = narrative.isDeleted ? '🗑️' : (narrative.isEdited ? '✏️' : '✨');
     const borderColor = narrative.isDeleted ? '#dc3545' : (narrative.isEdited ? '#ff9800' : '#4caf50');
-    const clickHandler = narrative.isDeleted ? '' : `onclick="goToNarrativeAndClose('${narrative.caveId}')"`;
+    const clickHandler = narrative.isDeleted ? '' : `onclick="goToNarrativeAndClose(${escapeStatsHtml(JSON.stringify(String(narrative.caveId)))})"`;
     const cursorStyle = narrative.isDeleted ? 'default' : 'pointer';
     
     html += `
@@ -11080,14 +11124,14 @@ function displayFullNarrativeLog() {
            style="padding: 12px; margin-bottom: 8px; background: white; border-radius: 4px; cursor: ${cursorStyle}; border-left: 4px solid ${borderColor}; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5px;">
           <div style="font-weight: bold; color: #2a4d69; font-size: 14px;">
-            ${actionIcon} ${narrative.caveId} – ${narrative.caveName}
+            ${actionIcon} ${escapeStatsHtml(narrative.caveId)} – ${escapeStatsHtml(narrative.caveName)}
           </div>
           <div style="font-size: 11px; color: #666; text-align: right;">
             #${sortOldestFirst ? index + 1 : sortedNarratives.length - index}
           </div>
         </div>
         <div style="font-size: 12px; color: #666;">
-          <strong>${actionText}</strong> by <strong>${narrative.user}</strong> on ${formattedDate}
+          <strong>${actionText}</strong> by <strong>${escapeStatsHtml(narrative.user)}</strong> on ${escapeStatsHtml(formattedDate)}
         </div>
       </div>
     `;
