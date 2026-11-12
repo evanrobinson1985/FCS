@@ -3298,3 +3298,116 @@ describe("a given-up username can't be picked up by someone else", () => {
     assert.equal(res.status, 400);
   });
 });
+
+// Photo and map URLs carry a token (the browser can't send a header for an
+// <img>), and URLs end up in logs - so that token must open photos and map
+// files only.
+describe("tokens in URLs are view-only", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("fake-png-body")]);
+  let session, assetToken, imageUrl;
+
+  before(async () => {
+    await seedUser({ username: "assetviewer", password: "AssetViewerPass1!", role: "webmaster" });
+    const res = await request(app).post("/api/login").send({ username: "assetviewer", password: "AssetViewerPass1!" });
+    session = res.body.token;
+    assetToken = res.body.assetToken;
+    const up = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${session}`)
+      .attach("image", PNG, { filename: "p.png", contentType: "image/png" });
+    imageUrl = up.body.imageUrl;
+  });
+
+  test("login returns a separate view-only token", () => {
+    assert.ok(assetToken);
+    assert.notEqual(assetToken, session);
+  });
+
+  test("the view-only token opens a photo from the URL", async () => {
+    const res = await request(app).get(`${imageUrl}?token=${assetToken}`);
+    assert.equal(res.status, 200);
+  });
+
+  test("the view-only token is refused everywhere else, in the URL or a header", async () => {
+    for (const route of ["/api/cave-database", "/api/users", "/api/backup-now", "/api/my-membership"]) {
+      assert.equal((await request(app).get(`${route}?token=${assetToken}`)).status, 401, route);
+      assert.equal((await request(app).get(route).set("Authorization", `Bearer ${assetToken}`)).status, 401, route);
+    }
+    const post = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${assetToken}`)
+      .send({ id: "FASSET1", name: "x", html: "<p>x</p>" });
+    assert.equal(post.status, 401);
+  });
+
+  test("a session token in the URL is refused for anything but photos and map files", async () => {
+    assert.equal((await request(app).get(`/api/backup-now?token=${session}`)).status, 401);
+    assert.equal((await request(app).get(`/api/cave-database?token=${session}`)).status, 401);
+    assert.equal((await request(app).get(`${imageUrl}?token=${session}`)).status, 200); // sessions begun before the change
+    assert.equal((await request(app).get("/api/backup-now").set("Authorization", `Bearer ${session}`)).status, 200);
+  });
+
+  test("a password change ends the view-only token too", async () => {
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ currentPassword: "AssetViewerPass1!", newPassword: "AssetViewerPass2!" });
+    assert.equal(res.status, 200);
+    assert.equal((await request(app).get(`${imageUrl}?token=${assetToken}`)).status, 401);
+    assert.equal((await request(app).get(`${imageUrl}?token=${res.body.assetToken}`)).status, 200);
+  });
+});
+
+describe("narrative styling is limited to what the editor produces", () => {
+  test("keeps colours and alignment, drops positioning and link tricks", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const html =
+      '<p style="color: rgb(230, 0, 0); text-align: center;">red</p>' +
+      '<div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999; background: url(https://evil.example/x)">overlay</div>' +
+      '<a href="data:text/html,<script>alert(1)</script>">link</a>' +
+      '<img src="/cave-pictures/a.png" style="width: 200px; float: left; position: absolute;">';
+    await request(app).post("/save-narrative").set("Authorization", `Bearer ${token}`).send({ id: "FSTYLE1", name: "Style Cave", html });
+    const res = await request(app).get("/get-narrative?id=FSTYLE1").set("Authorization", `Bearer ${token}`);
+    const saved = res.body[0].html;
+    assert.match(saved, /color:\s*rgb\(230, 0, 0\)/);
+    assert.match(saved, /text-align:\s*center/);
+    assert.match(saved, /width:\s*200px/);
+    assert.match(saved, /float:\s*left/);
+    assert.ok(!/position|z-index|url\(/i.test(saved), saved);
+    assert.ok(!/data:text/i.test(saved), saved);
+  });
+
+  test("a narrative stored under the older rules is cleaned when it's read", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    fs.writeFileSync(
+      path.join(process.env.NARRATIVE_DIR, "FSTYLE2.json"),
+      JSON.stringify([{ id: "FSTYLE2", name: "Old", user: "member1", timestamp: new Date().toISOString(), images: [],
+        html: '<div style="position:fixed;inset:0;z-index:9999">old overlay</div>' }])
+    );
+    const res = await request(app).get("/get-narrative?id=FSTYLE2").set("Authorization", `Bearer ${token}`);
+    assert.ok(!/position|z-index/i.test(res.body[0].html), res.body[0].html);
+    assert.match(res.body[0].html, /old overlay/);
+  });
+});
+
+describe("two-factor code re-sends are capped per login", () => {
+  test("a fourth re-send is refused until the member logs in again", async () => {
+    await seedUser({ username: "resendcap", password: "ResendCapPass123!", role: "member" });
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    users.find((u) => u.username === "resendcap").twoFactorEnabled = true;
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const first = await request(app).post("/api/login").send({ username: "resendcap", password: "ResendCapPass123!" });
+    assert.ok(first.body.twoFactorToken);
+    for (let i = 0; i < 3; i++) {
+      const ok = await request(app).post("/api/resend-2fa").send({ twoFactorToken: first.body.twoFactorToken });
+      assert.equal(ok.status, 200);
+    }
+    const capped = await request(app).post("/api/resend-2fa").send({ twoFactorToken: first.body.twoFactorToken });
+    assert.equal(capped.status, 429);
+
+    const again = await request(app).post("/api/login").send({ username: "resendcap", password: "ResendCapPass123!" });
+    const fresh = await request(app).post("/api/resend-2fa").send({ twoFactorToken: again.body.twoFactorToken });
+    assert.equal(fresh.status, 200);
+  });
+});

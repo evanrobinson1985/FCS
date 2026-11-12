@@ -1661,8 +1661,10 @@ function authenticateToken(req, res, next) {
   // required a login (see the client-side withAuthToken() helper, which
   // appends this to every such URL). The header is still tried first and
   // is what every fetch()-based API call uses.
+  let tokenFromUrl = false;
   if (!token && typeof req.query.token === "string") {
     token = req.query.token;
+    tokenFromUrl = true;
   }
 
   if (!token) {
@@ -1680,6 +1682,11 @@ function authenticateToken(req, res, next) {
     // could reach any authenticateToken-only route and skip the code step.
     if (decoded.pending2FA) {
       return res.status(401).json({ error: "Two-factor verification required." });
+    }
+    // A token in the URL, or a view-only token, opens photos and map files
+    // only - see "View-only tokens".
+    if ((tokenFromUrl || decoded.scope === "asset") && !isAssetRequest(req)) {
+      return res.status(401).json({ error: "Authentication required" });
     }
     // The JWT's role/status claims are a snapshot from login time and are
     // trusted for up to 8 hours (the token's lifetime) unless re-checked
@@ -1832,6 +1839,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       user.twoFactorCodeHash = hashOtp(code);
       user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
       user.twoFactorAttempts = 0;
+      user.twoFactorResends = 0;
       saveUsers(users, { backup: false });
 
       try {
@@ -1861,6 +1869,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     res.json({
       success: true,
       token,
+      assetToken: issueAssetToken(user),
       username: user.username,
       fullName: user.fullName,
       role: user.role,
@@ -1899,6 +1908,8 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeHash;
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
+      delete user.twoFactorResends;
+    delete user.twoFactorResends;
       saveUsers(users, { backup: false });
       return res.status(401).json({ error: "Verification code expired. Please log in again." });
     }
@@ -1910,6 +1921,8 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeHash;
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
+      delete user.twoFactorResends;
+    delete user.twoFactorResends;
       saveUsers(users, { backup: false });
       return res.status(429).json({ error: "Too many incorrect attempts. Please log in again." });
     }
@@ -1923,6 +1936,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     delete user.twoFactorCodeHash;
     delete user.twoFactorCodeExpires;
     delete user.twoFactorAttempts;
+    delete user.twoFactorResends;
     saveUsers(users, { backup: false });
 
     const token = issueSessionToken(user);
@@ -1930,6 +1944,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     res.json({
       success: true,
       token,
+      assetToken: issueAssetToken(user),
       username: user.username,
       fullName: user.fullName,
       role: user.role,
@@ -1960,9 +1975,17 @@ app.post("/api/resend-2fa", authLimiter, express.json(), async (req, res) => {
 
     const users = loadUsers();
     const user = users.find((u) => u.username === decoded.username);
-    if (!user) {
+    if (!user || user.status !== "active") {
       return res.status(400).json({ error: "No pending verification for this account." });
     }
+
+    // Each re-send gives a fresh code and a fresh set of guesses, so the
+    // number of re-sends per login is capped too.
+    const MAX_2FA_RESENDS = 3;
+    if ((user.twoFactorResends || 0) >= MAX_2FA_RESENDS) {
+      return res.status(429).json({ error: "Too many codes requested. Please log in again." });
+    }
+    user.twoFactorResends = (user.twoFactorResends || 0) + 1;
 
     const code = generateOtpCode();
     user.twoFactorCodeHash = hashOtp(code);
@@ -2155,6 +2178,41 @@ function issueSessionToken(user) {
     JWT_SECRET,
     { expiresIn: "8h" }
   );
+}
+
+// ---- View-only tokens --------------------------------------------------------
+// Photos, map files and direct downloads are requested by the browser
+// itself (<img src>, a download link), which can't send the Authorization
+// header, so their URLs carry a token instead - and URLs end up in server
+// and proxy logs. That token is therefore a separate, view-only one: it
+// opens photos and map files and nothing else, so a URL copied out of a log
+// can't be used to read the cave database, change anything, or act as the
+// account. Tied to the account's tokenVersion like a session token, so a
+// password change ends it too.
+function issueAssetToken(user) {
+  return jwt.sign(
+    { id: user.id, username: user.username, tv: user.tokenVersion || 0, scope: "asset" },
+    JWT_SECRET,
+    { expiresIn: "8h" }
+  );
+}
+
+// The only places a token in the URL (or a view-only token, however it
+// arrives) is accepted: GET requests for photos and map files.
+const ASSET_PATH_PREFIXES = [
+  "/cave-pictures/",
+  "/cave-maps/",
+  "/cave-maps-collection/",
+  "/tiles/sqlite-hillshades/",
+  "/download-narrative-image/",
+  "/api/cave-maps-collection/download/",
+  "/api/sqlite-hillshades/tiles/",
+];
+
+function isAssetRequest(req) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const p = (req.originalUrl || "").split("?")[0];
+  return ASSET_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
 }
 
 // Compared against when a login names an account that doesn't exist, so
@@ -3748,7 +3806,30 @@ const NARRATIVE_SANITIZE_OPTIONS = {
     img: ["src", "alt", "width", "height"],
     font: ["color", "size", "face"],
   },
-  allowedSchemes: ["http", "https", "data", "mailto"],
+  allowedSchemes: ["http", "https", "mailto"],
+  // data: is for pasted pictures only, never for a link
+  allowedSchemesByTag: { img: ["http", "https", "data"] },
+  // Only the formatting the editor itself produces. An open "style"
+  // attribute would let a narrative cover the page with its own content
+  // (position/z-index), e.g. a fake login box, or load remote files.
+  allowedStyles: {
+    "*": {
+      color: [/^#[0-9a-f]{3,8}$/i, /^rgba?\(\s*[\d.]+%?(\s*,\s*[\d.]+%?){2,3}\s*\)$/i, /^[a-z]{3,20}$/i],
+      "background-color": [/^#[0-9a-f]{3,8}$/i, /^rgba?\(\s*[\d.]+%?(\s*,\s*[\d.]+%?){2,3}\s*\)$/i, /^[a-z]{3,20}$/i],
+      "text-align": [/^(left|right|center|justify)$/i],
+      "font-size": [/^\d{1,3}(\.\d+)?(px|pt|em|rem|%)$/i],
+      "font-weight": [/^(normal|bold|[1-9]00)$/i],
+      "font-style": [/^(normal|italic)$/i],
+      "text-decoration": [/^(none|underline|line-through)$/i],
+    },
+    img: {
+      width: [/^\d{1,4}(\.\d+)?(px|%)?$/i],
+      height: [/^(auto|\d{1,4}(\.\d+)?(px|%)?)$/i],
+      float: [/^(left|right|none)$/i],
+      display: [/^(inline|block|inline-block)$/i],
+      margin: [/^(auto|\d{1,3}(px|em)?)(\s+(auto|\d{1,3}(px|em)?)){0,3}$/i],
+    },
+  },
   allowVulnerableTags: false,
 };
 
@@ -4469,14 +4550,14 @@ app.get("/get-narrative", authenticateToken, (req, res) => {
     try {
       const fileData = JSON.parse(data);
       // Handle both old single narrative format and new array format
-      if (Array.isArray(fileData)) {
-        res.json(fileData);
-      } else if (fileData.user) {
-        // Convert old single narrative to array format
-        res.json([fileData]);
-      } else {
-        res.json([]);
-      }
+      const list = Array.isArray(fileData) ? fileData : fileData.user ? [fileData] : [];
+      // Cleaned again on the way out, so a narrative saved under older,
+      // looser rules is held to the current ones when it's shown.
+      res.json(
+        list.map((n) =>
+          n && typeof n.html === "string" ? { ...n, html: sanitizeHtml(n.html, NARRATIVE_SANITIZE_OPTIONS) } : n
+        )
+      );
     } catch (e) {
       console.error("Failed to parse narratives JSON:", e);
       res.json([]);
@@ -5702,7 +5783,7 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     saveUsers(users);
 
-    res.json({ success: true, message: "Password updated.", token: issueSessionToken(user) });
+    res.json({ success: true, message: "Password updated.", token: issueSessionToken(user), assetToken: issueAssetToken(user) });
   } catch (error) {
     console.error("Error changing password:", error);
     res.status(500).json({ error: "Failed to change password" });
@@ -5769,7 +5850,7 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
     // immediately (see handleChangeUsername() in httpdocs/portal.html).
     const token = issueSessionToken(user);
 
-    res.json({ success: true, message: "Username updated.", username: user.username, token });
+    res.json({ success: true, message: "Username updated.", username: user.username, token, assetToken: issueAssetToken(user) });
   } catch (error) {
     console.error("Error changing username:", error);
     res.status(500).json({ error: "Failed to change username" });
