@@ -885,6 +885,8 @@ const MAINTENANCE_MODE_ALLOWLIST = new Set([
   "/api/resend-2fa",
   "/api/forgot-password",
   "/api/reset-password",
+  "/api/verify-email",
+  "/api/resend-verification",
   "/api/site-status",
   "/api/cave-count",
   // The daily scheduled task that sends dues reminders (key-protected)
@@ -1239,6 +1241,7 @@ app.get("/api/dues/members", authenticateToken, requireDuesManager, (req, res) =
       firstName: u.firstName || "",
       lastName: u.lastName || "",
       email: u.email || "",
+      emailUnconfirmed: isEmailUnconfirmed(u),
       status: u.status,
       created: u.created || null,
       lastLogin: u.lastLogin || null,
@@ -1812,7 +1815,17 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     // Only said once the password has been proven, so it can't be used to
     // find out which usernames exist (or which are awaiting approval).
     if (user.status !== "active") {
-      return res.status(403).json({ error: "This account is inactive." });
+      if (isEmailUnconfirmed(user)) {
+        return res.status(403).json({
+          error: "Please confirm your email address first, using the link we emailed you when you signed up.",
+          emailUnconfirmed: true,
+        });
+      }
+      return res.status(403).json({
+        error: user.status === "pending"
+          ? "This account is waiting for an administrator's approval."
+          : "This account is inactive.",
+      });
     }
 
     // Update last login and reset login attempts
@@ -2213,6 +2226,63 @@ function isAssetRequest(req) {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   const p = (req.originalUrl || "").split("?")[0];
   return ASSET_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
+
+// ---- Email confirmation at sign-up -------------------------------------------
+// A new sign-up is emailed a link to confirm the address really is theirs.
+// Until it's confirmed the account shows as "email not confirmed" to the
+// webmaster and Treasurer, and (when real email is set up) they aren't
+// asked to review it - so a sign-up under someone else's address, or a
+// made-up one, never reaches them as a request to approve. Approving is
+// still their decision: they can activate an unconfirmed account if the
+// member can't get the email.
+//
+// Only accounts created with this in place carry a confirmation token;
+// accounts from before it are left exactly as they were.
+const EMAIL_VERIFY_HOURS = 48;
+
+function isEmailUnconfirmed(user) {
+  return !!user && !user.isEmailVerified && !!user.emailVerifyTokenHash;
+}
+
+// Sets a fresh confirmation token on the account and returns the link to
+// email. Stored hashed, like a password-reset token.
+function startEmailVerification(user, req) {
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  user.emailVerifyTokenHash = hashResetToken(rawToken);
+  user.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_HOURS * 60 * 60 * 1000).toISOString();
+  // /portal, not /, so the link also works while the site is in
+  // maintenance mode
+  return `${siteOrigin(req)}/portal?verifyEmail=${rawToken}`;
+}
+
+async function sendVerificationEmail(user, verifyUrl) {
+  if (!mailTransporter) {
+    console.log(`[DEV] Email confirmation link for ${user.email}: ${verifyUrl}`);
+    return;
+  }
+  await sendUserEmail(user, {
+    subject: "Florida Cave Survey - Confirm your email address",
+    text:
+      `Hi ${user.firstName || user.username},\n\n` +
+      "Thanks for signing up for the Florida Cave Survey. Please confirm this is your email address " +
+      `by opening this link (it works for ${EMAIL_VERIFY_HOURS} hours):\n\n` +
+      `${verifyUrl}\n\n` +
+      "Once it's confirmed, your account goes to an administrator for approval, and you'll be able to log in after that.\n\n" +
+      "If you didn't sign up, you can ignore this email - nothing will happen.",
+  });
+}
+
+// An unconfirmed sign-up whose link has run out doesn't hold on to its
+// username or email address: a new sign-up using either replaces it.
+function isAbandonedSignup(user) {
+  return (
+    isEmailUnconfirmed(user) &&
+    user.status === "pending" &&
+    !user.lastLogin &&
+    !!user.emailVerifyExpires &&
+    new Date(user.emailVerifyExpires) < new Date()
+  );
 }
 
 // Compared against when a login names an account that doesn't exist, so
@@ -5305,6 +5375,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       lastLogin: user.lastLogin,
       loginAttempts: user.loginAttempts,
       isEmailVerified: user.isEmailVerified,
+      emailUnconfirmed: isEmailUnconfirmed(user),
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
@@ -5590,7 +5661,12 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     const names = nameFields(req, res);
     if (!names) return;
 
-    const users = loadUsers();
+    let users = loadUsers();
+
+    // An unconfirmed sign-up whose link ran out gives way to this one
+    const sameName = (u) => String(u.username).toLowerCase() === username.toLowerCase();
+    const sameEmail = (u) => String(u.email).toLowerCase() === email.toLowerCase();
+    users = users.filter((u) => !(isAbandonedSignup(u) && (sameName(u) || sameEmail(u))));
 
     // Check if username or email already exists
     if (isUsernameInUse(users, username) || isUsernameRetired(username, null)) {
@@ -5624,15 +5700,33 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       twoFactorEnabled: false,
       loginIPs: [req.ip],
     };
+    const verifyUrl = startEmailVerification(newUser, req);
 
     users.push(newUser);
     saveUsers(users);
 
-    await notifyNewAccount(newUser, req);
+    let emailSent = true;
+    try {
+      await sendVerificationEmail(newUser, verifyUrl);
+    } catch (mailErr) {
+      emailSent = false;
+      console.error(`Failed to send email confirmation to ${newUser.email}:`, mailErr.message);
+    }
+
+    // With real email set up, reviewers hear about the account once its
+    // address is confirmed (see /api/verify-email). Without it - or if the
+    // confirmation couldn't be sent - they're told now, as before, so a
+    // sign-up is never left where nobody will see it.
+    if (!mailTransporter || !emailSent) {
+      await notifyNewAccount(newUser, req);
+    }
 
     res.json({
       success: true,
-      message: "Account created. An administrator must approve it before you can log in.",
+      emailConfirmationSent: emailSent,
+      message: emailSent
+        ? "Account created. We've emailed you a link to confirm your email address - please open it. An administrator will then review your account before you can log in."
+        : "Account created, but we couldn't send the email to confirm your address. An administrator will review your account before you can log in.",
     });
   } catch (error) {
     console.error("Error creating account:", error);
@@ -5655,6 +5749,81 @@ const emailCheckLimiter = rateLimit({
 app.post("/api/check-email", emailCheckLimiter, express.json(), async (req, res) => {
   const result = await checkEmail(req.body && req.body.email, { dns: EMAIL_DNS_CHECK });
   res.json(result.ok ? { ok: true } : { ok: false, reason: result.reason, suggestion: result.suggestion || null });
+});
+
+// Confirms a sign-up's email address from the emailed link.
+app.post("/api/verify-email", authLimiter, express.json(), async (req, res) => {
+  try {
+    const token = req.body && req.body.token;
+    if (typeof token !== "string" || !token) {
+      return res.status(400).json({ error: "This confirmation link is missing its code." });
+    }
+    const users = loadUsers();
+    const tokenHash = hashResetToken(token);
+    const user = users.find((u) => u.emailVerifyTokenHash === tokenHash);
+    if (!user || !user.emailVerifyExpires || new Date(user.emailVerifyExpires) < new Date()) {
+      return res.status(400).json({
+        error: "This confirmation link is invalid or has expired. Log in with your username and password to be sent a new one.",
+      });
+    }
+    user.isEmailVerified = true;
+    user.emailVerifiedAt = new Date().toISOString();
+    delete user.emailVerifyTokenHash;
+    delete user.emailVerifyExpires;
+    saveUsers(users);
+
+    // Now it goes to the reviewers (they were already told at sign-up if
+    // real email isn't set up - see /api/create-account)
+    if (mailTransporter && user.status === "pending") {
+      await notifyNewAccount(user, req);
+    }
+
+    res.json({
+      success: true,
+      message:
+        user.status === "active"
+          ? "Your email address is confirmed. You can log in."
+          : "Your email address is confirmed. An administrator will now review your account, and you'll be able to log in once it's approved.",
+    });
+  } catch (error) {
+    console.error("Error confirming email:", error);
+    res.status(500).json({ error: "Could not confirm your email address. Please try again." });
+  }
+});
+
+// Sends a fresh confirmation link. Asks for the password as well as the
+// username, so it can't be used to find out which accounts exist or to
+// send email to someone else's address over and over.
+app.post("/api/resend-verification", authLimiter, express.json(), async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
+      return res.status(400).json({ error: "Username and password are required" });
+    }
+    const users = loadUsers();
+    const user = users.find((u) => u.username === username);
+    const passwordMatches = user && user.passwordHash
+      ? await bcrypt.compare(password, user.passwordHash)
+      : (await bcrypt.compare(password, DUMMY_PASSWORD_HASH), false);
+    if (!passwordMatches) {
+      return res.status(401).json({ error: "Invalid username or password" });
+    }
+    if (!isEmailUnconfirmed(user)) {
+      return res.status(400).json({ error: "This account's email address doesn't need confirming." });
+    }
+    const verifyUrl = startEmailVerification(user, req);
+    saveUsers(users, { backup: false });
+    try {
+      await sendVerificationEmail(user, verifyUrl);
+    } catch (mailErr) {
+      console.error(`Failed to send email confirmation to ${user.email}:`, mailErr.message);
+      return res.status(502).json({ error: "The confirmation email could not be sent. Please try again later." });
+    }
+    res.json({ success: true, message: "We've sent a new confirmation link to your email address." });
+  } catch (error) {
+    console.error("Error re-sending email confirmation:", error);
+    res.status(500).json({ error: "Could not send the confirmation email." });
+  }
 });
 
 // Forgot password endpoint

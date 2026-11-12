@@ -1488,7 +1488,7 @@
 <!-- "What's new" card after login + the Site Updates tab -->
 <script src="js/site-updates.js?v=3"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
-<script src="js/membership.js?v=6"></script>
+<script src="js/membership.js?v=7"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -8528,6 +8528,8 @@ window.addEventListener('error', function(e) {
           showTwoFactorForm();
         } else if (response.ok && result.success) {
           completeLogin(result);
+        } else if (result.emailUnconfirmed) {
+          await offerResendVerification(username, password);
         } else {
           throw new Error(result.error || 'Login failed');
         }
@@ -11440,6 +11442,51 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// If this page was opened from the "confirm your email address" link sent
+// at sign-up (.../portal?verifyEmail=xxx), confirm it and say what happens
+// next. The code is taken out of the visible URL first, same as above.
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('verifyEmail');
+  if (!token) return;
+  params.delete('verifyEmail');
+  const cleanUrl = window.location.pathname + (params.toString() ? `?${params.toString()}` : '') + window.location.hash;
+  window.history.replaceState({}, document.title, cleanUrl);
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      const response = await fetch('/api/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      const result = await response.json();
+      alert(response.ok && result.success ? result.message : (result.error || 'Could not confirm your email address.'));
+    } catch (error) {
+      console.error('Email confirmation error:', error);
+      alert('Could not confirm your email address. Please try the link again.');
+    }
+  });
+})();
+
+// Offered when a login is refused because the sign-up's email address
+// hasn't been confirmed yet - sends the link again.
+async function offerResendVerification(username, password) {
+  if (!confirm("Your email address hasn't been confirmed yet. Please open the link we emailed you when you signed up.\n\nCan't find it? Press OK and we'll send it again.")) return;
+  try {
+    const response = await fetch('/api/resend-verification', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const result = await response.json();
+    alert(response.ok && result.success ? result.message : (result.error || 'Could not send the email.'));
+  } catch (error) {
+    console.error('Resend confirmation error:', error);
+    alert('Could not send the email. Please try again later.');
+  }
+}
+
 // Handle setting a new password from a reset link
 async function handleResetPassword() {
   if (!pendingPasswordResetToken) {
@@ -11601,7 +11648,7 @@ async function handleCreateAccount() {
     const result = await response.json();
 
     if (response.ok && result.success) {
-      alert('Account created successfully! Please check your email for verification.');
+      alert(result.message || 'Account created. Please check your email for a link to confirm your address.');
       showLogin();
       // Clear form fields
       document.getElementById('new-first-name').value = '';
@@ -11757,9 +11804,10 @@ function displayUsers(users) {
   users.forEach(user => {
     const row = document.createElement('tr');
     
-    const statusBadge = user.isActive ? 
-      '<span style="color: green;">Active</span>' : 
-      '<span style="color: red;">Inactive</span>';
+    const statusBadge = (user.isActive ?
+      '<span style="color: green;">Active</span>' :
+      '<span style="color: red;">Inactive</span>') +
+      (user.emailUnconfirmed ? '<div style="color: #b45309; font-size: 0.85em;">Email not confirmed</div>' : '');
     
     const lastLogin = user.lastLogin ? 
       new Date(user.lastLogin).toLocaleDateString() + ' ' + new Date(user.lastLogin).toLocaleTimeString() : 'Never';
