@@ -8427,6 +8427,9 @@ window.addEventListener('error', function(e) {
       if (!response.ok || !result.success) {
         throw new Error(result.error || 'Could not change password.');
       }
+      // Changing the password signs out every older session; the server
+      // hands back a fresh token so this one carries on.
+      if (result.token) sessionStorage.setItem('sessionToken', result.token);
       alert(result.message || 'Password updated.');
       toggleChangePasswordForm(false);
     } catch (error) {

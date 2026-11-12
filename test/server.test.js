@@ -3134,3 +3134,167 @@ describe("narrative name and photo ownership", () => {
     assert.ok(photoExists(imageUrl), "still used by FPHOTO05");
   });
 });
+
+describe("a new password ends older sessions", () => {
+  before(async () => {
+    await seedUser({ username: "sessionchange", password: "SessionChangePass1!", role: "member" });
+    await seedUser({ username: "sessionreset", password: "SessionResetPass1!", role: "member" });
+  });
+
+  test("changing the password rejects the old token and returns a working new one", async () => {
+    const other = await login("sessionchange", "SessionChangePass1!"); // e.g. a thief's session
+    const mine = await login("sessionchange", "SessionChangePass1!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${mine}`)
+      .send({ currentPassword: "SessionChangePass1!", newPassword: "SessionChangePass2!" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.token);
+
+    for (const stale of [other, mine]) {
+      const staleRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${stale}`);
+      assert.equal(staleRes.status, 401);
+    }
+    const freshRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${res.body.token}`);
+    assert.equal(freshRes.status, 200);
+  });
+
+  test("resetting the password by emailed link rejects tokens issued before it", async () => {
+    const old = await login("sessionreset", "SessionResetPass1!");
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const user = users.find((u) => u.username === "sessionreset");
+    const rawToken = "a".repeat(64);
+    user.resetTokenHash = require("crypto").createHash("sha256").update(rawToken).digest("hex");
+    user.resetTokenExpires = new Date(Date.now() + 60000).toISOString();
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const res = await request(app).post("/api/reset-password").send({ token: rawToken, newPassword: "SessionResetPass2!" });
+    assert.equal(res.status, 200);
+    const staleRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${old}`);
+    assert.equal(staleRes.status, 401);
+    await login("sessionreset", "SessionResetPass2!");
+  });
+});
+
+describe("login bookkeeping and the users file", () => {
+  before(async () => {
+    await seedUser({ username: "backupchurn", password: "BackupChurnPass1!", role: "member" });
+    await seedUser({ username: "awaitingapproval", password: "AwaitingApproval1!", role: "member", status: "pending" });
+  });
+
+  function userBackupCount() {
+    const dir = path.join(process.env.DATA_DIR, "backups");
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith("users.")).length : 0;
+  }
+
+  test("logins, failed or not, don't use up backups of the user list", async () => {
+    const before = userBackupCount();
+    for (let i = 0; i < 3; i++) {
+      await request(app).post("/api/login").send({ username: "backupchurn", password: "wrong-password" });
+    }
+    await login("backupchurn", "BackupChurnPass1!");
+    assert.equal(userBackupCount(), before);
+  });
+
+  test("an account awaiting approval isn't revealed to someone who doesn't know its password", async () => {
+    const wrong = await request(app).post("/api/login").send({ username: "awaitingapproval", password: "not-the-password" });
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.body.error, "Invalid username or password");
+    const right = await request(app).post("/api/login").send({ username: "awaitingapproval", password: "AwaitingApproval1!" });
+    assert.equal(right.status, 403);
+  });
+
+  test("an unreadable users file is never overwritten", async () => {
+    const file = usersFilePath();
+    const good = fs.readFileSync(file, "utf8");
+    try {
+      fs.writeFileSync(file, good.slice(0, Math.floor(good.length / 2))); // cut off mid-write
+      const res = await request(app).post("/api/create-account").send({
+        firstName: "New", lastName: "Person", username: "wouldwipe", email: "wouldwipe@example.com", password: "WouldWipePass123!",
+      });
+      assert.notEqual(res.status, 200);
+      assert.equal(fs.readFileSync(file, "utf8"), good.slice(0, Math.floor(good.length / 2)));
+    } finally {
+      fs.writeFileSync(file, good);
+    }
+    await login("backupchurn", "BackupChurnPass1!"); // readable again, and writes resume
+  });
+
+  test("the proxy-header diagnostic is webmaster-only", async () => {
+    assert.equal((await request(app).get("/api/debug-headers")).status, 401);
+    const member = await login("member1", MEMBER_PASSWORD);
+    assert.equal((await request(app).get("/api/debug-headers").set("Authorization", `Bearer ${member}`)).status, 403);
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    assert.equal((await request(app).get("/api/debug-headers").set("Authorization", `Bearer ${wm}`)).status, 200);
+  });
+});
+
+describe("a given-up username can't be picked up by someone else", () => {
+  before(async () => {
+    await seedUser({ username: "oldauthor", password: "OldAuthorPass123!", role: "member" });
+    await seedUser({ username: "namegrabber", password: "NameGrabberPass1!", role: "member" });
+    await seedUser({ username: "leavingmember", password: "LeavingMember123!", role: "member" });
+  });
+
+  test("a rename keeps the member's narratives, and reserves the old name", async () => {
+    const authorToken = await login("oldauthor", "OldAuthorPass123!");
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${authorToken}`)
+      .send({ id: "FRENAME1", name: "Rename Cave", html: "<p>mine</p>", images: [] });
+
+    const renameRes = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${authorToken}`)
+      .send({ newUsername: "newauthor", currentPassword: "OldAuthorPass123!" });
+    assert.equal(renameRes.status, 200);
+
+    const getRes = await request(app).get("/get-narrative?id=FRENAME1").set("Authorization", `Bearer ${renameRes.body.token}`);
+    assert.equal(getRes.body[0].user, "newauthor");
+
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    for (const name of ["oldauthor", "OldAuthor"]) {
+      const grabRes = await request(app)
+        .post("/api/change-username")
+        .set("Authorization", `Bearer ${grabberToken}`)
+        .send({ newUsername: name, currentPassword: "NameGrabberPass1!" });
+      assert.equal(grabRes.status, 400, `"${name}" must stay reserved`);
+    }
+    const signupRes = await request(app).post("/api/create-account").send({
+      firstName: "Old", lastName: "Author", username: "oldauthor", email: "oldauthor2@example.com", password: "SomeStrongPass123!",
+    });
+    assert.equal(signupRes.status, 400);
+
+    // The account that gave the name up may take it back
+    const backRes = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${renameRes.body.token}`)
+      .send({ newUsername: "oldauthor", currentPassword: "OldAuthorPass123!" });
+    assert.equal(backRes.status, 200);
+  });
+
+  test("a name differing only by upper/lower case counts as taken", async () => {
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${grabberToken}`)
+      .send({ newUsername: "Webmaster1", currentPassword: "NameGrabberPass1!" });
+    assert.equal(res.status, 400);
+    const signupRes = await request(app).post("/api/create-account").send({
+      firstName: "Fake", lastName: "Admin", username: "WEBMASTER1", email: "fakeadmin@example.com", password: "SomeStrongPass123!",
+    });
+    assert.equal(signupRes.status, 400);
+  });
+
+  test("a deleted account's name stays reserved", async () => {
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const delRes = await request(app).delete("/api/delete-user").set("Authorization", `Bearer ${wm}`).send({ username: "leavingmember" });
+    assert.equal(delRes.status, 200);
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${grabberToken}`)
+      .send({ newUsername: "leavingmember", currentPassword: "NameGrabberPass1!" });
+    assert.equal(res.status, 400);
+  });
+});

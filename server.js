@@ -66,6 +66,20 @@ if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 const MAX_BACKUPS_PER_FILE = 30;
 
+// Writes a data file in one step: the new contents go to a temporary file
+// beside it, which then replaces the real one. A crash or a full disk part
+// way through leaves the old file intact instead of a half-written one.
+function writeFileAtomicSync(filePath, contents) {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, contents);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch { /* nothing to clean up */ }
+    throw err;
+  }
+}
+
 function backupDataFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return; // nothing to back up yet
@@ -375,7 +389,9 @@ app.set("trust proxy", 1);
 // once the live deployment issue this is diagnosing is resolved; it only
 // echoes back the incoming request's own headers, nothing about the
 // server's internals or any other request.
-app.get("/api/debug-headers", (req, res) => {
+// Webmaster-only: it shows how the proxy in front of this app presents a
+// request (addresses, forwarded headers), which nobody else needs to see.
+app.get("/api/debug-headers", authenticateToken, requireRole("webmaster"), (req, res) => {
   res.json({
     headers: req.headers,
     ip: req.ip,
@@ -588,7 +604,7 @@ function loadSiteConfig() {
 
 function saveSiteConfig(config) {
   backupDataFile(SITE_CONFIG_FILE);
-  fs.writeFileSync(SITE_CONFIG_FILE, JSON.stringify(config, null, 2));
+  writeFileAtomicSync(SITE_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
 let siteConfig = loadSiteConfig();
@@ -1025,7 +1041,7 @@ function loadFeedback() {
 
 function saveFeedback(list) {
   backupDataFile(FEEDBACK_FILE);
-  fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(list, null, 2));
+  writeFileAtomicSync(FEEDBACK_FILE, JSON.stringify(list, null, 2));
 }
 
 async function notifyNewFeedback(item, req) {
@@ -1488,7 +1504,7 @@ function loadCaveJump() {
 
 function saveCaveJump(data) {
   backupDataFile(CAVE_JUMP_FILE);
-  fs.writeFileSync(CAVE_JUMP_FILE, JSON.stringify(data, null, 2));
+  writeFileAtomicSync(CAVE_JUMP_FILE, JSON.stringify(data, null, 2));
 }
 
 // Ranked list of every account's best, best first (ties: earlier score first)
@@ -1589,7 +1605,7 @@ app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res)
   if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
     user.lastSeenUpdateId = update.id;
     user.lastSeenUpdateDate = update.date;
-    saveUsers(users);
+    saveUsers(users, { backup: false });
   }
   res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
 });
@@ -1609,6 +1625,24 @@ const authLimiter = rateLimit({
   // unrelated global limiter. Never skipped outside of tests.
   skip: () => process.env.NODE_ENV === "test",
 });
+
+// Per-account caps on what one member can write in an hour, so a single
+// account can't fill the disk or bury reviewers. Generous for real use.
+// These run after authenticateToken, which is what sets req.user.
+function perAccountLimiter(max, what) {
+  return rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `account:${req.user.username}`,
+    message: { error: `You've sent a lot of ${what} in the last hour. Please try again later.` },
+    skip: (req) => process.env.NODE_ENV === "test" || ["admin", "webmaster"].includes(req.user.role),
+  });
+}
+const submissionLimiter = perAccountLimiter(60, "submissions");
+const narrativeLimiter = perAccountLimiter(60, "narrative changes");
+const photoUploadLimiter = perAccountLimiter(200, "photos");
 
 // --- Auth middleware -------------------------------------------------------
 
@@ -1657,6 +1691,15 @@ function authenticateToken(req, res, next) {
     const liveUser = loadUsers().find((u) => u.username === decoded.username);
     if (!liveUser || liveUser.status !== "active") {
       return res.status(401).json({ error: "Your account is no longer active. Please log in again or contact a webmaster." });
+    }
+    // The token must belong to this very account (not just to its current
+    // username), and must not predate the account's last password change -
+    // see issueSessionToken().
+    if (
+      (decoded.id && liveUser.id && decoded.id !== liveUser.id) ||
+      (decoded.tv || 0) !== (liveUser.tokenVersion || 0)
+    ) {
+      return res.status(401).json({ error: "Your session has ended. Please log in again." });
     }
     req.user = { ...decoded, role: liveUser.role };
     // Dues access switch (Account Management, off by default): a member
@@ -1718,15 +1761,16 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
         .json({ error: "Username and password are required" });
     }
 
+    if (typeof username !== "string" || typeof password !== "string") {
+      return res.status(400).json({ error: "Username and password are required" });
+    }
+
     const users = loadUsers();
     const user = users.find((u) => u.username === username);
 
     if (!user) {
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res.status(401).json({ error: "Invalid username or password" });
-    }
-
-    if (user.status !== "active") {
-      return res.status(403).json({ error: "This account is inactive." });
     }
 
     // Lock the account out temporarily after repeated failed attempts, on top
@@ -1754,8 +1798,14 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     if (!passwordMatches) {
       user.loginAttempts = (user.loginAttempts || 0) + 1;
       user.lastFailedLogin = new Date().toISOString();
-      saveUsers(users);
+      saveUsers(users, { backup: false });
       return res.status(401).json({ error: "Invalid username or password" });
+    }
+
+    // Only said once the password has been proven, so it can't be used to
+    // find out which usernames exist (or which are awaiting approval).
+    if (user.status !== "active") {
+      return res.status(403).json({ error: "This account is inactive." });
     }
 
     // Update last login and reset login attempts
@@ -1782,7 +1832,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       user.twoFactorCodeHash = hashOtp(code);
       user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
       user.twoFactorAttempts = 0;
-      saveUsers(users);
+      saveUsers(users, { backup: false });
 
       try {
         await sendTwoFactorCode(user, code);
@@ -1804,18 +1854,9 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       });
     }
 
-    saveUsers(users);
+    saveUsers(users, { backup: false });
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        fullName: user.fullName,
-      },
-      JWT_SECRET,
-      { expiresIn: "8h" }
-    );
+    const token = issueSessionToken(user);
 
     res.json({
       success: true,
@@ -1850,7 +1891,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
 
     const users = loadUsers();
     const user = users.find((u) => u.username === decoded.username);
-    if (!user || !user.twoFactorCodeHash || !user.twoFactorCodeExpires) {
+    if (!user || user.status !== "active" || !user.twoFactorCodeHash || !user.twoFactorCodeExpires) {
       return res.status(400).json({ error: "No pending verification for this account. Please log in again." });
     }
 
@@ -1858,7 +1899,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeHash;
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
-      saveUsers(users);
+      saveUsers(users, { backup: false });
       return res.status(401).json({ error: "Verification code expired. Please log in again." });
     }
 
@@ -1869,31 +1910,22 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeHash;
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
-      saveUsers(users);
+      saveUsers(users, { backup: false });
       return res.status(429).json({ error: "Too many incorrect attempts. Please log in again." });
     }
 
     if (hashOtp(String(code)) !== user.twoFactorCodeHash) {
       user.twoFactorAttempts = (user.twoFactorAttempts || 0) + 1;
-      saveUsers(users);
+      saveUsers(users, { backup: false });
       return res.status(401).json({ error: "Incorrect verification code." });
     }
 
     delete user.twoFactorCodeHash;
     delete user.twoFactorCodeExpires;
     delete user.twoFactorAttempts;
-    saveUsers(users);
+    saveUsers(users, { backup: false });
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        fullName: user.fullName,
-      },
-      JWT_SECRET,
-      { expiresIn: "8h" }
-    );
+    const token = issueSessionToken(user);
 
     res.json({
       success: true,
@@ -1936,7 +1968,7 @@ app.post("/api/resend-2fa", authLimiter, express.json(), async (req, res) => {
     user.twoFactorCodeHash = hashOtp(code);
     user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     user.twoFactorAttempts = 0;
-    saveUsers(users);
+    saveUsers(users, { backup: false });
 
     await sendTwoFactorCode(user, code);
     res.json({ message: "A new verification code has been sent." });
@@ -1984,27 +2016,150 @@ app.post("/api/toggle-2fa", authenticateToken, express.json(), async (req, res) 
   }
 });
 
+// Set when users.json exists but couldn't be read as a list of accounts.
+// While it's set, nothing is written back (see saveUsers) - otherwise the
+// empty list a failed read returns would be saved over the real file by the
+// next sign-up or login, wiping every account.
+let usersFileUnreadable = false;
+
 function loadUsers() {
   try {
     if (fs.existsSync(USERS_FILE)) {
-      const data = fs.readFileSync(USERS_FILE, "utf-8");
-      return JSON.parse(data);
+      const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+      if (!Array.isArray(data)) throw new Error("users.json does not hold a list");
+      usersFileUnreadable = false;
+      return data;
     }
+    usersFileUnreadable = false;
     return [];
   } catch (err) {
+    usersFileUnreadable = true;
     console.error("Error loading users:", err);
     return [];
   }
 }
 
-function saveUsers(users) {
+// Pass { backup: false } for routine bookkeeping (a login, a failed
+// attempt, a one-time code, a display preference). Only 30 backups are
+// kept, so backing up on every login let ordinary traffic - or anyone
+// sending bad passwords - push every useful restore point out within
+// minutes. Account changes (new/deleted accounts, roles, passwords, dues)
+// still back up first.
+function saveUsers(users, { backup = true } = {}) {
+  if (usersFileUnreadable) {
+    throw new Error(
+      `${USERS_FILE} could not be read, so it was not overwritten. Fix or restore it (see ${BACKUP_DIR}) and try again.`
+    );
+  }
   try {
-    backupDataFile(USERS_FILE);
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+    if (backup) backupDataFile(USERS_FILE);
+    writeFileAtomicSync(USERS_FILE, JSON.stringify(users, null, 2));
   } catch (err) {
     console.error("Error saving users:", err);
   }
 }
+
+// ---- Usernames ---------------------------------------------------------------
+// Narratives and feedback are tied to their author by username, and members
+// can change their username. So that nobody can pick up someone else's old
+// name (and with it their narratives): names differing only by upper/lower
+// case count as the same name, a name given up by a rename or a deleted
+// account stays reserved, and a rename carries the member's narratives and
+// feedback over to the new name.
+const RETIRED_USERNAMES_FILE = path.join(DATA_DIR, "retired-usernames.json");
+
+function loadRetiredUsernames() {
+  try {
+    if (fs.existsSync(RETIRED_USERNAMES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(RETIRED_USERNAMES_FILE, "utf8"));
+      if (isPlainObject(data)) return data;
+    }
+  } catch (err) {
+    console.error("Error loading retired usernames:", err);
+  }
+  return {};
+}
+
+function retireUsername(username, userId) {
+  const retired = loadRetiredUsernames();
+  retired[String(username).toLowerCase()] = userId || "";
+  writeFileAtomicSync(RETIRED_USERNAMES_FILE, JSON.stringify(retired, null, 2));
+}
+
+function unretireUsername(username) {
+  const retired = loadRetiredUsernames();
+  const key = String(username).toLowerCase();
+  if (key in retired) {
+    delete retired[key];
+    writeFileAtomicSync(RETIRED_USERNAMES_FILE, JSON.stringify(retired, null, 2));
+  }
+}
+
+// True if another account already has this name (ignoring case).
+function isUsernameInUse(users, username, exceptUser) {
+  const key = String(username).toLowerCase();
+  return users.some((u) => u !== exceptUser && String(u.username).toLowerCase() === key);
+}
+
+// True if the name was given up by a different account. The account that
+// gave it up may take it back.
+function isUsernameRetired(username, userId) {
+  const retired = loadRetiredUsernames();
+  const key = String(username).toLowerCase();
+  return key in retired && !(userId && retired[key] === userId);
+}
+
+// Moves a member's narratives and feedback to their new username.
+function carryOverAuthoredContent(oldUsername, newUsername) {
+  try {
+    const files = fs.readdirSync(NARRATIVE_DIR).filter((f) => f.endsWith(".json") && f !== "deletion-log.json");
+    for (const f of files) {
+      const filePath = path.join(NARRATIVE_DIR, f);
+      const narratives = readNarrativeFile(filePath);
+      let changed = false;
+      narratives.forEach((n) => {
+        if (n && n.user === oldUsername) {
+          n.user = newUsername;
+          changed = true;
+        }
+      });
+      if (changed) writeFileAtomicSync(filePath, JSON.stringify(narratives, null, 2));
+    }
+  } catch (err) {
+    console.error("Error carrying narratives over to a new username:", err);
+  }
+  try {
+    const feedback = loadFeedback();
+    let changed = false;
+    feedback.forEach((item) => {
+      if (item && item.submittedBy === oldUsername) {
+        item.submittedBy = newUsername;
+        changed = true;
+      }
+    });
+    if (changed) saveFeedback(feedback);
+  } catch (err) {
+    console.error("Error carrying feedback over to a new username:", err);
+  }
+}
+
+// ---- Session tokens ----------------------------------------------------------
+// Every session token carries the account's tokenVersion ("tv") as it was
+// when the token was issued. Changing or resetting the password raises the
+// account's tokenVersion, and authenticateToken refuses a token whose
+// version is behind - so a new password signs out every older session,
+// including one held by whoever the password was changed to lock out.
+function issueSessionToken(user) {
+  return jwt.sign(
+    { id: user.id, username: user.username, role: user.role, fullName: user.fullName, tv: user.tokenVersion || 0 },
+    JWT_SECRET,
+    { expiresIn: "8h" }
+  );
+}
+
+// Compared against when a login names an account that doesn't exist, so
+// that case takes as long as a wrong password for a real one.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync("no-such-account", process.env.NODE_ENV === "test" ? 4 : 12);
 
 // API endpoint to get current cave database - the whole point of this route
 // is that it is NOT static and DOES require a valid login, unlike the old
@@ -2226,11 +2381,15 @@ app.get("/api/states", (req, res) => {
 function persistCaveDatabase(caves) {
   backupDataFile(CAVE_DB_FILE);
   const json = JSON.stringify(caves, null, 2);
-  return fs.promises
-    .writeFile(CAVE_DB_FILE, json, "utf8")
-    .then(() => {
+  return new Promise((resolve, reject) => {
+    try {
+      writeFileAtomicSync(CAVE_DB_FILE, json);
       reloadCaveDatabase();
-    });
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 function writeCaveDatabase(caves, res, successPayload) {
@@ -2871,7 +3030,7 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
 // or an edit to an existing one; identity and timestamp are always derived
 // from the authenticated session, never trusted from the request body, so a
 // member can't submit a proposal under someone else's name.
-app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, (req, res) => {
+app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, submissionLimiter, (req, res) => {
   const { type, caveId, caveName, state, county } = req.body || {};
 
   if (!type || !["new_cave", "edit_cave"].includes(type)) {
@@ -3621,7 +3780,7 @@ function loadImageOwners() {
 }
 
 function saveImageOwners(owners) {
-  fs.writeFileSync(IMAGE_OWNERS_FILE, JSON.stringify(owners, null, 2));
+  writeFileAtomicSync(IMAGE_OWNERS_FILE, JSON.stringify(owners, null, 2));
 }
 
 // The photo's file name from a /cave-pictures/ URL, or null if the URL
@@ -3695,7 +3854,7 @@ function sanitizeNarrativeImages(images, reqUser, alreadyAttached) {
   return kept;
 }
 
-app.post("/save-narrative", authenticateToken, requireNotReadOnly, express.json(), (req, res) => {
+app.post("/save-narrative", authenticateToken, requireNotReadOnly, narrativeLimiter, express.json(), (req, res) => {
   const { id, isEditing, originalTimestamp } = req.body;
   // The author is always the authenticated user, never a client-supplied
   // value - otherwise anyone could save a narrative "as" another member.
@@ -4252,7 +4411,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, requireLargeFilesEnabled, (req, res) => {
+app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, requireLargeFilesEnabled, photoUploadLimiter, (req, res) => {
   upload.single("image")(req, res, (err) => {
     if (err) {
       return res.status(400).json({ error: err.message || "Upload failed" });
@@ -4826,7 +4985,7 @@ app.get("/api/sqlite-hillshades/tiles/:filename/:z/:x/:y", authenticateToken, (r
 });
 
 // Add this endpoint to help calibrate geographic bounds
-app.get("/api/sqlite-hillshades/calibrate/:filename", authenticateToken, (req, res) => {
+app.get("/api/sqlite-hillshades/calibrate/:filename", authenticateToken, requireRole("webmaster"), (req, res) => {
   const filename = path.basename(req.params.filename);
   const dbPath = path.join(sqliteHillshadesDir, filename);
 
@@ -4893,7 +5052,7 @@ app.get("/api/sqlite-hillshades/calibrate/:filename", authenticateToken, (req, r
 });
 
 // Add this debug route to check database structure
-app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, (req, res) => {
+app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, requireRole("webmaster"), (req, res) => {
   const filename = path.basename(req.params.filename);
   const dbPath = path.join(sqliteHillshadesDir, filename);
 
@@ -4935,7 +5094,7 @@ app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, (req, res) 
 });
 
 // TEMPORARY: Debug your specific database
-app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, (req, res) => {
+app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, requireRole("webmaster"), (req, res) => {
   const filename = path.basename(req.params.filename);
   const dbPath = path.join(sqliteHillshadesDir, filename);
 
@@ -4988,12 +5147,12 @@ app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, (req, re
       }),
     });
   } catch (error) {
-    res.status(500).json({ error: error.message, stack: error.stack });
+    res.status(500).json({ error: error.message });
   }
 });
 
 // TEMPORARY: Check what coordinates exist in your database
-app.get("/api/sqlite-hillshades/test-coords/:filename", authenticateToken, (req, res) => {
+app.get("/api/sqlite-hillshades/test-coords/:filename", authenticateToken, requireRole("webmaster"), (req, res) => {
   const filename = path.basename(req.params.filename);
   const dbPath = path.join(sqliteHillshadesDir, filename);
 
@@ -5119,12 +5278,14 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
     }
 
     const users = loadUsers();
-    if (users.find((u) => u.username === username)) {
+    if (isUsernameInUse(users, username)) {
       return res.status(400).json({ error: "Username already exists" });
     }
-    if (users.find((u) => u.email === email)) {
+    if (users.find((u) => String(u.email).toLowerCase() === email.toLowerCase())) {
       return res.status(400).json({ error: "Email already exists" });
     }
+    // A webmaster may deliberately bring a given-up username back
+    unretireUsername(username);
 
     const passwordHash = await bcrypt.hash(password, 12);
 
@@ -5248,9 +5409,12 @@ app.delete("/api/delete-user", authenticateToken, requireRole("webmaster"), expr
       return res.status(403).json({ error: "Cannot delete webmaster accounts" });
     }
     
-    users.splice(userIndex, 1);
+    const [removed] = users.splice(userIndex, 1);
     saveUsers(users);
-    
+    // Keeps the name from being picked up by someone else, who would then
+    // own this account's narratives
+    retireUsername(removed.username, removed.id);
+
     res.json({ success: true, message: "User deleted successfully" });
   } catch (error) {
     console.error('Error deleting user:', error);
@@ -5348,11 +5512,11 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     const users = loadUsers();
 
     // Check if username or email already exists
-    if (users.find((u) => u.username === username)) {
+    if (isUsernameInUse(users, username) || isUsernameRetired(username, null)) {
       return res.status(400).json({ error: "Username already exists" });
     }
 
-    if (users.find((u) => u.email === email)) {
+    if (users.find((u) => String(u.email).toLowerCase() === email.toLowerCase())) {
       return res.status(400).json({ error: "Email already exists" });
     }
 
@@ -5438,7 +5602,7 @@ app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) =
     const rawToken = crypto.randomBytes(32).toString("hex");
     user.resetTokenHash = hashResetToken(rawToken);
     user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
-    saveUsers(users);
+    saveUsers(users, { backup: false });
 
     const origin = (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
     const resetUrl = `${origin}/?resetToken=${rawToken}`;
@@ -5469,7 +5633,7 @@ app.post("/api/reset-password", authLimiter, express.json(), async (req, res) =>
     if (!token || !newPassword) {
       return res.status(400).json({ error: "Token and new password are required" });
     }
-    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    if (typeof newPassword !== "string" || newPassword.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
       });
@@ -5490,6 +5654,8 @@ app.post("/api/reset-password", authLimiter, express.json(), async (req, res) =>
     delete user.resetTokenExpires;
     user.loginAttempts = 0;
     user.lastFailedLogin = null;
+    // Signs out every session opened with the old password
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     saveUsers(users);
 
     res.json({ success: true, message: "Password updated. You can now log in with your new password." });
@@ -5510,7 +5676,7 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: "Current password and new password are required" });
     }
-    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    if (typeof newPassword !== "string" || newPassword.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long`,
       });
@@ -5531,9 +5697,12 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
     user.passwordHash = await bcrypt.hash(newPassword, 12);
     user.loginAttempts = 0;
     user.lastFailedLogin = null;
+    // Signs out every other session; this one carries on with the fresh
+    // token returned below (see handleChangePassword() in portal.html).
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     saveUsers(users);
 
-    res.json({ success: true, message: "Password updated." });
+    res.json({ success: true, message: "Password updated.", token: issueSessionToken(user) });
   } catch (error) {
     console.error("Error changing password:", error);
     res.status(500).json({ error: "Failed to change password" });
@@ -5579,12 +5748,18 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
     if (newUsername === user.username) {
       return res.status(400).json({ error: "That's already your username." });
     }
-    if (users.some((u) => u.username === newUsername)) {
+    if (isUsernameInUse(users, newUsername, user) || isUsernameRetired(newUsername, user.id)) {
       return res.status(400).json({ error: "That username is already taken." });
     }
 
+    const oldUsername = user.username;
     user.username = newUsername;
     saveUsers(users);
+    // The old name stays reserved for this account, and everything written
+    // under it moves to the new name - see "Usernames" above.
+    retireUsername(oldUsername, user.id);
+    unretireUsername(newUsername);
+    carryOverAuthoredContent(oldUsername, newUsername);
 
     // The JWT the client is still holding has the OLD username baked into
     // its payload - authenticateToken, and every route that looks up
@@ -5592,11 +5767,7 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
     // finding this account on the very next request otherwise. Issue a
     // fresh token the same way login does, so the client can swap it in
     // immediately (see handleChangeUsername() in httpdocs/portal.html).
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role, fullName: user.fullName },
-      JWT_SECRET,
-      { expiresIn: "8h" }
-    );
+    const token = issueSessionToken(user);
 
     res.json({ success: true, message: "Username updated.", username: user.username, token });
   } catch (error) {
@@ -5651,7 +5822,7 @@ app.post("/api/stats-preferences", authenticateToken, express.json(), (req, res)
       return res.status(404).json({ error: "User not found" });
     }
     user.statsPreferences = { hidden, order };
-    saveUsers(users);
+    saveUsers(users, { backup: false });
     res.json({ success: true, statsPreferences: user.statsPreferences });
   } catch (error) {
     console.error("Error saving statistics preferences:", error);
@@ -5721,7 +5892,7 @@ app.post("/api/map-preferences", authenticateToken, express.json(), (req, res) =
       return res.status(404).json({ error: "User not found" });
     }
     user.mapPreferences = sanitized;
-    saveUsers(users);
+    saveUsers(users, { backup: false });
     res.json({ success: true, mapPreferences: user.mapPreferences });
   } catch (error) {
     console.error("Error saving map preferences:", error);
