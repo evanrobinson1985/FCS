@@ -66,6 +66,10 @@
         background: #4b86b4; border: 2px solid #fff; box-shadow: 0 0 0 2px #4b86b4; }
       .su-badge { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 10px; background: #dcfce7; color: #166534;
         font-size: 11px; font-weight: 700; vertical-align: middle; text-transform: none; letter-spacing: 0; }
+      .su-entry li.su-line-hidden .su-line-text { color: #92400e; text-decoration: line-through; text-decoration-color: #d6a55c; }
+      .su-entry button.su-line-toggle { margin-left: 8px; padding: 0 8px; font-size: 11px; line-height: 18px; font-weight: 600;
+        background: #fff; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; cursor: pointer; vertical-align: middle; }
+      .su-entry button.su-line-toggle:hover { background: #f1f5f9; color: #0f172a; }
       .su-badge.su-hidden-badge { background: #fef3c7; color: #92400e; }
       .su-timeline .su-entry.su-is-hidden { background: #fffbeb; border-style: dashed; }
       .fb-bar { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 12px; }
@@ -116,7 +120,21 @@
     box.appendChild(el('div', 'su-title', u.title));
     if (u.changes.length) {
       const ul = el('ul');
-      u.changes.forEach(c => ul.appendChild(el('li', null, c)));
+      // Only a webmaster is ever sent hidden lines (and the keys to hide
+      // them by); everyone else just gets the lines they may see.
+      const manage = showVisibilityControl && role() === 'webmaster' && Array.isArray(u.changeKeys);
+      const hiddenKeys = new Set(u.hiddenChangeKeys || []);
+      u.changes.forEach((c, i) => {
+        const key = manage ? u.changeKeys[i] : null;
+        const isHidden = !!key && hiddenKeys.has(key);
+        const li = el('li', isHidden ? 'su-line-hidden' : null);
+        li.appendChild(el('span', 'su-line-text', c));
+        if (manage) {
+          if (isHidden) li.appendChild(el('span', 'su-badge su-hidden-badge', 'Hidden from members'));
+          li.appendChild(lineToggle(u, key, isHidden));
+        }
+        ul.appendChild(li);
+      });
       box.appendChild(ul);
     }
     // Webmaster-only, and only on the full Site Updates tab (not the brief
@@ -130,6 +148,27 @@
     return box;
   }
 
+  // "Hide" / "Show" beside one line of an update (webmasters only)
+  function lineToggle(u, key, isHidden) {
+    const b = el('button', 'su-line-toggle', isHidden ? 'Show' : 'Hide');
+    b.type = 'button';
+    b.title = isHidden ? 'Show this line to everyone again' : 'Hide this line from everyone but webmasters';
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        await api('POST', '/api/site-updates/visibility', { id: u.id, changeKey: key, hidden: !isHidden });
+        const next = new Set(u.hiddenChangeKeys || []);
+        if (isHidden) next.delete(key); else next.add(key);
+        u.hiddenChangeKeys = [...next];
+        renderTimeline();
+      } catch (err) {
+        b.disabled = false;
+        alert('Could not save the change: ' + err.message);
+      }
+    });
+    return b;
+  }
+
   function visibilityRow(u) {
     const row = el('label', 'su-visibility');
     const cb = document.createElement('input');
@@ -137,7 +176,7 @@
     cb.checked = !!u.webmasterOnly;
     const status = el('span', 'su-visibility-status');
     row.appendChild(cb);
-    row.appendChild(document.createTextNode(' Hide this update from everyone but webmasters'));
+    row.appendChild(document.createTextNode(' Hide this whole update from everyone but webmasters'));
     row.appendChild(status);
     cb.addEventListener('change', async () => {
       const next = cb.checked;

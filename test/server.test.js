@@ -2534,6 +2534,75 @@ describe("site updates", () => {
     }
   });
 
+  describe("hiding one line of an update", () => {
+    const lineKey = (text) => require("crypto").createHash("sha256").update(text).digest("hex").slice(0, 16);
+    const setLine = (token, id, changeKey, hidden) =>
+      request(app).post("/api/site-updates/visibility").set("Authorization", `Bearer ${token}`).send({ id, changeKey, hidden });
+    const listFor = async (token) => (await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`)).body.updates;
+
+    test("a member stops seeing just that line; a webmaster still sees it, marked hidden", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["b", "c"]);
+
+      const res = await setLine(wm, "newest", lineKey("b"), true);
+      assert.equal(res.status, 200);
+
+      const forMember = (await listFor(member)).find((u) => u.id === "newest");
+      assert.deepEqual(forMember.changes, ["c"]);
+      assert.equal(forMember.changeKeys, undefined, "members are sent no hide controls or hidden-line data");
+      assert.equal(forMember.hiddenChangeKeys, undefined);
+
+      const forWebmaster = (await listFor(wm)).find((u) => u.id === "newest");
+      assert.deepEqual(forWebmaster.changes, ["b", "c"]);
+      assert.deepEqual(forWebmaster.hiddenChangeKeys, [lineKey("b")]);
+
+      assert.equal((await setLine(wm, "newest", lineKey("b"), false)).status, 200);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["b", "c"]);
+    });
+
+    test("an update with every line hidden disappears for members, and comes back when one is shown", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      await setLine(wm, "newest", lineKey("b"), true);
+      await setLine(wm, "newest", lineKey("c"), true);
+      assert.ok(!(await listFor(member)).some((u) => u.id === "newest"));
+      assert.ok((await listFor(wm)).some((u) => u.id === "newest"));
+      // an update that never had any lines is not affected
+      assert.ok((await listFor(member)).some((u) => u.id === "middle"));
+
+      await setLine(wm, "newest", lineKey("c"), false);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["c"]);
+      await setLine(wm, "newest", lineKey("b"), false);
+    });
+
+    test("the choice follows the line when the shipped file is reordered or added to", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      await setLine(wm, "newest", lineKey("c"), true);
+      const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+      const list = JSON.parse(before);
+      list.find((u) => u.id === "newest").changes = ["added later", "c", "b"];
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+      try {
+        assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["added later", "b"]);
+      } finally {
+        fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+        await setLine(wm, "newest", lineKey("c"), false);
+      }
+    });
+
+    test("needs a webmaster, a real update and a real line", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      assert.equal((await setLine(member, "newest", lineKey("b"), true)).status, 403);
+      assert.equal((await setLine(wm, "no-such-update", lineKey("b"), true)).status, 404);
+      assert.equal((await setLine(wm, "newest", lineKey("not a line of it"), true)).status, 404);
+      assert.equal((await setLine(wm, "newest", "nonsense", true)).status, 400);
+      assert.equal((await setLine(wm, "newest", lineKey("b"), "yes")).status, 400);
+    });
+  });
+
   test("the shipped config/site-updates.json is valid", () => {
     const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
     assert.ok(Array.isArray(list) && list.length > 0);

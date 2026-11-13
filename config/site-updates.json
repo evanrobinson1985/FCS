@@ -11,9 +11,10 @@
   {
     "id": "2026-11-13-site-updates-hiding",
     "date": "2026-11-13",
-    "title": "Hiding updates from members now sticks",
+    "title": "Hide whole updates or single lines from members",
     "webmasterOnly": true,
     "changes": [
+      "Each line of an update now has its own Hide button, so you can hide one item and leave the rest of the update showing. An update with every line hidden disappears for members.",
       "The \"Hide this update\" checkbox on the Site Updates tab now keeps its setting when the site is updated. Before, hidden updates could reappear, or the list could stop receiving new updates.",
       "Hidden updates are marked \"Hidden from members\" so you can tell them apart at a glance."
     ]

@@ -955,25 +955,70 @@ function loadSiteUpdateVisibility() {
   return {};
 }
 
+// Individual lines of an update can be hidden too. A line has no id of its
+// own in the shipped file, so it is known by a short fingerprint of its
+// text: the choice follows the line if lines are added or reordered around
+// it, and a reworded line counts as a new one. Hidden lines are stored in
+// the same file as hidden updates, under this key (never a real update id).
+const HIDDEN_ITEMS_KEY = "#items";
+
+function siteUpdateChangeKey(text) {
+  return crypto.createHash("sha256").update(String(text)).digest("hex").slice(0, 16);
+}
+
+// What one account is sent: a webmaster gets everything, with what's
+// hidden marked; everyone else gets only what they may see - hidden
+// updates and hidden lines never reach their browser, and an update whose
+// every line is hidden is left out altogether.
+function siteUpdatesFor(role) {
+  const all = loadSiteUpdates();
+  if (role === "webmaster") return all;
+  return all
+    .filter((u) => !u.webmasterOnly)
+    .map((u) => {
+      const hidden = new Set(u.hiddenChangeKeys);
+      return {
+        id: u.id,
+        date: u.date,
+        title: u.title,
+        changes: u.changes.filter((c, i) => !hidden.has(u.changeKeys[i])),
+        hadChanges: u.changes.length > 0,
+      };
+    })
+    .filter((u) => u.changes.length > 0 || !u.hadChanges)
+    .map(({ hadChanges, ...u }) => u);
+}
+
 function loadSiteUpdates() {
   try {
     const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
     if (!Array.isArray(list)) return [];
     const visibility = loadSiteUpdateVisibility();
+    const hiddenItems = isPlainObject(visibility[HIDDEN_ITEMS_KEY]) ? visibility[HIDDEN_ITEMS_KEY] : {};
     return list
       .filter(
         (u) =>
           u &&
-          typeof u.id === "string" && u.id &&
+          typeof u.id === "string" && u.id && u.id !== HIDDEN_ITEMS_KEY &&
           typeof u.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(u.date) &&
           typeof u.title === "string" &&
           Array.isArray(u.changes)
       )
-      .map((u) => ({
+      .map((u) => {
+        const changes = u.changes.filter((c) => typeof c === "string");
+        const changeKeys = changes.map(siteUpdateChangeKey);
+        const hiddenForThis = Array.isArray(hiddenItems[u.id]) ? hiddenItems[u.id] : [];
+        return { u, changes, changeKeys, hiddenChangeKeys: changeKeys.filter((k, i) => hiddenForThis.includes(k) && changeKeys.indexOf(k) === i) };
+      })
+      .map(({ u, changes, changeKeys, hiddenChangeKeys }) => ({
         id: u.id,
         date: u.date,
         title: u.title,
-        changes: u.changes.filter((c) => typeof c === "string"),
+        changes,
+        // For the webmaster's hide controls: one key per line, and the
+        // keys of the lines currently hidden from everyone else
+        changeKeys,
+        hiddenChangeKeys,
         // Set on an entry describing a webmaster-only tool/feature (e.g. a
         // Website Management control) so it never reaches a member or
         // admin's device - see the filtering in GET /api/site-updates below,
@@ -997,8 +1042,7 @@ function loadSiteUpdates() {
 // never reaches a non-webmaster's browser at all.
 app.get("/api/site-updates", authenticateToken, (req, res) => {
   const user = loadUsers().find((u) => u.username === req.user.username);
-  const isWebmaster = req.user.role === "webmaster";
-  const updates = loadSiteUpdates().filter((u) => !u.webmasterOnly || isWebmaster);
+  const updates = siteUpdatesFor(req.user.role);
   // Always the current list - never a copy a browser or proxy kept
   res.set("Cache-Control", "no-store");
   res.json({
@@ -1015,21 +1059,46 @@ app.get("/api/site-updates", authenticateToken, (req, res) => {
 // again, from the Site Updates tab (a checkbox per entry). The choice is
 // stored beside the other site data - see loadSiteUpdateVisibility().
 app.post("/api/site-updates/visibility", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
-  const { id, webmasterOnly } = req.body || {};
+  const { id, webmasterOnly, changeKey, hidden } = req.body || {};
   if (typeof id !== "string" || !id) {
     return res.status(400).json({ error: "id is required." });
   }
-  if (typeof webmasterOnly !== "boolean") {
+  // Either the whole update ({ id, webmasterOnly }) or one line of it
+  // ({ id, changeKey, hidden })
+  const forLine = changeKey !== undefined;
+  if (forLine) {
+    if (typeof changeKey !== "string" || !/^[a-f0-9]{16}$/.test(changeKey)) {
+      return res.status(400).json({ error: "changeKey is not valid." });
+    }
+    if (typeof hidden !== "boolean") {
+      return res.status(400).json({ error: "hidden must be true or false." });
+    }
+  } else if (typeof webmasterOnly !== "boolean") {
     return res.status(400).json({ error: "webmasterOnly must be true or false." });
   }
 
-  if (!loadSiteUpdates().some((u) => u.id === id)) {
+  const update = loadSiteUpdates().find((u) => u.id === id);
+  if (!update) {
     return res.status(404).json({ error: "No update with that id." });
+  }
+  if (forLine && !update.changeKeys.includes(changeKey)) {
+    return res.status(404).json({ error: "That update has no such line." });
   }
 
   try {
     const visibility = loadSiteUpdateVisibility();
-    visibility[id] = webmasterOnly;
+    if (forLine) {
+      const items = isPlainObject(visibility[HIDDEN_ITEMS_KEY]) ? visibility[HIDDEN_ITEMS_KEY] : {};
+      // Only keys of lines the update still has are kept
+      const current = new Set((Array.isArray(items[id]) ? items[id] : []).filter((k) => update.changeKeys.includes(k)));
+      if (hidden) current.add(changeKey);
+      else current.delete(changeKey);
+      if (current.size) items[id] = [...current];
+      else delete items[id];
+      visibility[HIDDEN_ITEMS_KEY] = items;
+    } else {
+      visibility[id] = webmasterOnly;
+    }
     backupDataFile(SITE_UPDATES_VISIBILITY_FILE);
     writeFileAtomicSync(SITE_UPDATES_VISIBILITY_FILE, JSON.stringify(visibility, null, 2));
   } catch (err) {
@@ -1038,7 +1107,9 @@ app.post("/api/site-updates/visibility", authenticateToken, requireRole("webmast
   }
 
   console.log(
-    `Site update "${id}" ${webmasterOnly ? "hidden from" : "made visible to"} non-webmasters, by ${req.user.username}`
+    forLine
+      ? `A line of site update "${id}" ${hidden ? "hidden from" : "made visible to"} non-webmasters, by ${req.user.username}`
+      : `Site update "${id}" ${webmasterOnly ? "hidden from" : "made visible to"} non-webmasters, by ${req.user.username}`
   );
   res.json({ success: true, updates: loadSiteUpdates() });
 });
@@ -1620,7 +1691,7 @@ app.delete("/api/cave-jump/scores/:userId", authenticateToken, requireRole("webm
 app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
   const id = req.body && req.body.id;
   const all = loadSiteUpdates();
-  const update = all.find((u) => u.id === id);
+  const update = siteUpdatesFor(req.user.role).find((u) => u.id === id);
   if (!update) return res.status(400).json({ error: "Unknown update id." });
   const users = loadUsers();
   const user = users.find((u) => u.username === req.user.username);
@@ -1631,7 +1702,7 @@ app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res)
   // or an earlier date, and lost its place if that update was then hidden.
   // The page sends the ids it was showing; an older copy of the page sends
   // only the newest, which then stands for everything up to its date.
-  const visible = all.filter((u) => !u.webmasterOnly || req.user.role === "webmaster");
+  const visible = siteUpdatesFor(req.user.role);
   const sent = Array.isArray(req.body.ids) ? new Set(req.body.ids.filter((x) => typeof x === "string")) : null;
   const nowSeen = visible.filter((u) => (sent ? sent.has(u.id) : u.date <= update.date)).map((u) => u.id);
   const known = new Set(all.map((u) => u.id));
