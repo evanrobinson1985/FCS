@@ -2831,7 +2831,7 @@ function _splitInkBySize(src,W,H){
   const isLong=new Uint8Array(n+1); for(let k=1;k<=n;k++) if(Math.max(x1[k]-x0[k],y1[k]-y0[k])>=minLen) isLong[k]=1;
   const longInk=new Uint8Array(W*H), smallInk=new Uint8Array(W*H);
   for(let i=0;i<W*H;i++){ const l=lab[i]; if(!l) continue; if(isLong[l]) longInk[i]=1; else smallInk[i]=1; }
-  return {longInk, smallInk};
+  return {longInk, smallInk, minLen};
 }
 // the page border / neat line: one stroke spanning nearly the whole sheet whose ink all sits along the edges
 // of its own bounding box. Left in, it encloses the entire page and the tracer sees one sheet-sized "cave".
@@ -2964,7 +2964,21 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
   src = _eraseAndReconnect(src,W,H,scale,manualFillsRas,manualFillsRings);
   src = _addManualLines(src,W,H,scale,manualLines);
   // cap open passage ends (see _bridgeOpenEnds). `src` itself stays as drawn - only the wall mask gets the caps.
-  const {longInk, smallInk}=_splitInkBySize(src,W,H);
+  const {longInk, smallInk, minLen}=_splitInkBySize(src,W,H);
+  // A wall drawn as a dashed line (a lower level passing underneath, an inferred wall) is made of small
+  // pieces too, but they line up into a long run - unlike lettering, which stays word-sized. Unless dashed
+  // lines are being ignored, such runs count as wall line, so a dashed-walled passage isn't trimmed away as
+  // if it were a label. (Judged on the small ink alone, so a label beside a wall can't borrow the wall's length.)
+  let wallLine=longInk;
+  if(!P.dashes && gap>0){
+    const {lab:sl,n:sn}=_label(_dilateF(smallInk,W,H,gap),W,H);
+    if(sn){
+      const sx0=new Int32Array(sn+1).fill(W), sy0=new Int32Array(sn+1).fill(H), sx1=new Int32Array(sn+1), sy1=new Int32Array(sn+1);
+      for(let i=0;i<N;i++){ const l=sl[i]; if(!l) continue; const x=i%W,y=(i/W)|0; if(x<sx0[l])sx0[l]=x; if(x>sx1[l])sx1[l]=x; if(y<sy0[l])sy0[l]=y; if(y>sy1[l])sy1[l]=y; }
+      wallLine=longInk.slice();
+      for(let i=0;i<N;i++){ const l=sl[i]; if(l && smallInk[i] && Math.max(sx1[l]-sx0[l], sy1[l]-sy0[l])>=3*minLen) wallLine[i]=1; }
+    }
+  }
   const closePct = P.closePct==null ? 8 : P.closePct;
   const {bridged, lineW, caps}=_bridgeOpenEnds(src,W,H,longInk, (closePct/100)*(refDim||0.5*Math.max(W,H)));
   const wall = gap>0 ? _dilateF(bridged,W,H,gap) : bridged;
@@ -2986,7 +3000,7 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
   }
   let foot=new Uint8Array(N); for(let i=0;i<N;i++) foot[i]=(solid[i]&&!isle[i])?1:0;
   if(gap>0) foot=_erodeF(foot,W,H,gap);
-  foot=_trimSpurs(foot,W,H,longInk,lineW);
+  foot=_trimSpurs(foot,W,H,wallLine,lineW);
   const {lab,areas,n}=_label(foot,W,H);
   const minA=N*(P.minPct/100);
   // a "blob" that is nothing but the drawn lines themselves means the walls never closed around anything -
