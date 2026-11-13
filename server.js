@@ -933,10 +933,33 @@ app.use((req, res, next) => {
 // Read on every request (the file is small) so a deploy that changes it is
 // picked up without a restart. Entries are returned newest first; anything
 // malformed is skipped rather than breaking the list.
+// Which updates a webmaster has hidden from (or shown to) everyone else,
+// as { updateId: true|false }. Kept in the private data directory, NOT in
+// config/site-updates.json: that file ships with the code, so a change
+// made to it on the server is either thrown away by the next deploy (the
+// hidden update reappears) or blocks the deploy from replacing the file
+// (the list stops receiving new updates). A choice stored here survives
+// deploys and never touches a tracked file. An entry's own webmasterOnly
+// flag in the shipped file is its default until a webmaster chooses.
+const SITE_UPDATES_VISIBILITY_FILE = path.join(DATA_DIR, "site-updates-visibility.json");
+
+function loadSiteUpdateVisibility() {
+  try {
+    if (fs.existsSync(SITE_UPDATES_VISIBILITY_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SITE_UPDATES_VISIBILITY_FILE, "utf-8"));
+      if (isPlainObject(data)) return data;
+    }
+  } catch (err) {
+    console.error("Error loading site update visibility:", err);
+  }
+  return {};
+}
+
 function loadSiteUpdates() {
   try {
     const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
     if (!Array.isArray(list)) return [];
+    const visibility = loadSiteUpdateVisibility();
     return list
       .filter(
         (u) =>
@@ -955,7 +978,7 @@ function loadSiteUpdates() {
         // Website Management control) so it never reaches a member or
         // admin's device - see the filtering in GET /api/site-updates below,
         // the only place this ever gets read.
-        webmasterOnly: u.webmasterOnly === true,
+        webmasterOnly: typeof visibility[u.id] === "boolean" ? visibility[u.id] : u.webmasterOnly === true,
       }))
       .map((u, i) => ({ u, i }))
       .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
@@ -976,19 +999,21 @@ app.get("/api/site-updates", authenticateToken, (req, res) => {
   const user = loadUsers().find((u) => u.username === req.user.username);
   const isWebmaster = req.user.role === "webmaster";
   const updates = loadSiteUpdates().filter((u) => !u.webmasterOnly || isWebmaster);
+  // Always the current list - never a copy a browser or proxy kept
+  res.set("Cache-Control", "no-store");
   res.json({
     updates,
+    // Every update this account has dismissed (null until its first
+    // dismissal after this was added - the two fields below cover that)
+    seenUpdateIds: user && Array.isArray(user.seenUpdateIds) ? user.seenUpdateIds : null,
     lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
     lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
   });
 });
 
-// Lets a webmaster flip a single entry's webmasterOnly flag from the Site
-// Updates tab (a checkbox per entry) instead of hand-editing
-// config/site-updates.json. Reads/writes the raw file directly, not via
-// loadSiteUpdates() - that function drops anything outside its known
-// schema, which would silently discard fields on an entry it doesn't
-// recognize; this only ever touches the one field it's asked to.
+// Lets a webmaster hide a single update from everyone else, or show it
+// again, from the Site Updates tab (a checkbox per entry). The choice is
+// stored beside the other site data - see loadSiteUpdateVisibility().
 app.post("/api/site-updates/visibility", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
   const { id, webmasterOnly } = req.body || {};
   if (typeof id !== "string" || !id) {
@@ -998,23 +1023,19 @@ app.post("/api/site-updates/visibility", authenticateToken, requireRole("webmast
     return res.status(400).json({ error: "webmasterOnly must be true or false." });
   }
 
-  let list;
+  if (!loadSiteUpdates().some((u) => u.id === id)) {
+    return res.status(404).json({ error: "No update with that id." });
+  }
+
   try {
-    list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+    const visibility = loadSiteUpdateVisibility();
+    visibility[id] = webmasterOnly;
+    backupDataFile(SITE_UPDATES_VISIBILITY_FILE);
+    writeFileAtomicSync(SITE_UPDATES_VISIBILITY_FILE, JSON.stringify(visibility, null, 2));
   } catch (err) {
-    console.error("Error reading site updates file:", err);
-    return res.status(500).json({ error: "Could not read the site updates file." });
+    console.error("Error saving site update visibility:", err);
+    return res.status(500).json({ error: "Could not save the change." });
   }
-  if (!Array.isArray(list)) {
-    return res.status(500).json({ error: "The site updates file is malformed." });
-  }
-
-  const entry = list.find((u) => u && u.id === id);
-  if (!entry) return res.status(404).json({ error: "No update with that id." });
-
-  entry.webmasterOnly = webmasterOnly;
-  backupDataFile(SITE_UPDATES_FILE);
-  fs.writeFileSync(SITE_UPDATES_FILE, JSON.stringify(list, null, 2));
 
   console.log(
     `Site update "${id}" ${webmasterOnly ? "hidden from" : "made visible to"} non-webmasters, by ${req.user.username}`
@@ -1598,19 +1619,33 @@ app.delete("/api/cave-jump/scores/:userId", authenticateToken, requireRole("webm
 // update it has now seen, so the card stays away until there's a newer one.
 app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res) => {
   const id = req.body && req.body.id;
-  const update = loadSiteUpdates().find((u) => u.id === id);
+  const all = loadSiteUpdates();
+  const update = all.find((u) => u.id === id);
   if (!update) return res.status(400).json({ error: "Unknown update id." });
   const users = loadUsers();
   const user = users.find((u) => u.username === req.user.username);
   if (!user) return res.status(404).json({ error: "Account not found." });
+
+  // Remember every update dismissed, not just the newest one. Going by
+  // "the newest one seen" alone missed an update added later with the same
+  // or an earlier date, and lost its place if that update was then hidden.
+  // The page sends the ids it was showing; an older copy of the page sends
+  // only the newest, which then stands for everything up to its date.
+  const visible = all.filter((u) => !u.webmasterOnly || req.user.role === "webmaster");
+  const sent = Array.isArray(req.body.ids) ? new Set(req.body.ids.filter((x) => typeof x === "string")) : null;
+  const nowSeen = visible.filter((u) => (sent ? sent.has(u.id) : u.date <= update.date)).map((u) => u.id);
+  const known = new Set(all.map((u) => u.id));
+  const merged = new Set([...(Array.isArray(user.seenUpdateIds) ? user.seenUpdateIds : []), ...nowSeen, update.id]);
+  user.seenUpdateIds = [...merged].filter((x) => known.has(x));
+
   // Never move backwards (e.g. an old tab closing the card after a newer
   // update was already dismissed elsewhere)
   if (!user.lastSeenUpdateDate || update.date >= user.lastSeenUpdateDate) {
     user.lastSeenUpdateId = update.id;
     user.lastSeenUpdateDate = update.date;
-    saveUsers(users, { backup: false });
   }
-  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId });
+  saveUsers(users, { backup: false });
+  res.json({ success: true, lastSeenUpdateId: user.lastSeenUpdateId, seenUpdateIds: user.seenUpdateIds });
 });
 
 // Rate limiting on authentication-adjacent endpoints to blunt brute-force

@@ -66,6 +66,8 @@
         background: #4b86b4; border: 2px solid #fff; box-shadow: 0 0 0 2px #4b86b4; }
       .su-badge { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 10px; background: #dcfce7; color: #166534;
         font-size: 11px; font-weight: 700; vertical-align: middle; text-transform: none; letter-spacing: 0; }
+      .su-badge.su-hidden-badge { background: #fef3c7; color: #92400e; }
+      .su-timeline .su-entry.su-is-hidden { background: #fffbeb; border-style: dashed; }
       .fb-bar { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 12px; }
       .fb-bar button { display: inline-flex; align-items: center; gap: 6px; }
       .fb-bar button.fb-bug { background: #b45309; }
@@ -104,10 +106,13 @@
   }
 
   function entryEl(u, isNew, showVisibilityControl) {
-    const box = el('div', 'su-entry');
+    const box = el('div', 'su-entry' + (u.webmasterOnly ? ' su-is-hidden' : ''));
     const date = el('div', 'su-date', formatDate(u.date));
     if (isNew) date.appendChild(el('span', 'su-badge', 'New'));
     box.appendChild(date);
+    // Webmasters are the only ones sent a hidden update, so this marks it
+    // for them as one nobody else can see
+    if (u.webmasterOnly) date.appendChild(el('span', 'su-badge su-hidden-badge', 'Hidden from members'));
     box.appendChild(el('div', 'su-title', u.title));
     if (u.changes.length) {
       const ul = el('ul');
@@ -132,7 +137,7 @@
     cb.checked = !!u.webmasterOnly;
     const status = el('span', 'su-visibility-status');
     row.appendChild(cb);
-    row.appendChild(document.createTextNode(' Hide from everyone but webmasters'));
+    row.appendChild(document.createTextNode(' Hide this update from everyone but webmasters'));
     row.appendChild(status);
     cb.addEventListener('change', async () => {
       const next = cb.checked;
@@ -145,8 +150,7 @@
           const cached = (cache.updates || []).find(x => x.id === u.id);
           if (cached) cached.webmasterOnly = next;
         }
-        status.textContent = ' Saved';
-        setTimeout(() => { status.textContent = ''; }, 1500);
+        renderTimeline(); // redraw so the entry shows (or loses) its "Hidden" mark
       } catch (err) {
         cb.checked = !next;
         status.textContent = ' Error: ' + err.message;
@@ -160,18 +164,24 @@
   async function fetchUpdates() {
     const t = token();
     if (!t) return null;
-    const res = await fetch('/api/site-updates', { headers: { Authorization: 'Bearer ' + t } });
+    const res = await fetch('/api/site-updates', { headers: { Authorization: 'Bearer ' + t }, cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     cache = await res.json();
     return cache;
   }
 
-  // The updates this account hasn't seen: everything newer than the one it
-  // last dismissed. An account that has never dismissed the card is shown
-  // just the latest update rather than the whole history.
+  // The updates this account hasn't seen: every one it hasn't dismissed
+  // (the server keeps the list of those). An account that has never
+  // dismissed the card is shown just the latest update rather than the
+  // whole history. Accounts that last dismissed it before that list was
+  // kept fall back to "everything newer than the one last dismissed".
   function unseenOf(data) {
     const list = data.updates || [];
     if (!list.length) return [];
+    if (Array.isArray(data.seenUpdateIds)) {
+      const seen = new Set(data.seenUpdateIds);
+      return list.filter(u => !seen.has(u.id));
+    }
     if (data.lastSeenUpdateId) {
       const k = list.findIndex(u => u.id === data.lastSeenUpdateId);
       if (k >= 0) return list.slice(0, k);
@@ -180,14 +190,19 @@
     return list.slice(0, 1);
   }
 
-  function markSeen(id) {
+  // Records every update in the list this account was just shown as seen
+  function markSeen(id, ids) {
     const t = token();
     if (!t || !id) return;
     fetch('/api/site-updates/seen', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t },
-      body: JSON.stringify({ id })
-    }).then(() => { if (cache) cache.lastSeenUpdateId = id; }).catch(err => console.warn('Could not save the seen update:', err));
+      body: JSON.stringify({ id, ids })
+    }).then(res => (res.ok ? res.json() : null)).then(data => {
+      if (!cache) return;
+      cache.lastSeenUpdateId = id;
+      if (data && Array.isArray(data.seenUpdateIds)) cache.seenUpdateIds = data.seenUpdateIds;
+    }).catch(err => console.warn('Could not save the seen update:', err));
   }
 
   function hide() {
@@ -195,7 +210,7 @@
     if (card) card.remove();
   }
 
-  function showCard(unseen, newestId) {
+  function showCard(unseen, newestId, allIds) {
     hide();
     injectStyles();
     const card = el('div', 'su-card');
@@ -227,7 +242,7 @@
     card.appendChild(head); card.appendChild(body); card.appendChild(foot);
     document.body.appendChild(card);
 
-    const close = () => { hide(); markSeen(newestId); document.removeEventListener('keydown', onKey); };
+    const close = () => { hide(); markSeen(newestId, allIds); document.removeEventListener('keydown', onKey); };
     const onKey = (e) => { if (e.key === 'Escape' && document.getElementById('site-updates-card') && !document.querySelector('.terrain3d-overlay')) close(); };
     x.addEventListener('click', close);
     ok.addEventListener('click', close);
@@ -249,7 +264,7 @@
       const unseen = unseenOf(data);
       newIds = new Set(unseen.map(u => u.id));
       renderTimeline(); // keep the tab current if it's already open
-      if (unseen.length) showCard(unseen, data.updates[0].id);
+      if (unseen.length) showCard(unseen, data.updates[0].id, data.updates.map(u => u.id));
     } catch (err) {
       console.warn('Could not load site updates:', err);
     }

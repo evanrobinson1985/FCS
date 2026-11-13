@@ -2466,6 +2466,74 @@ describe("site updates", () => {
     });
   });
 
+  test("hiding an update never changes the shipped update file, and is kept in the data directory", async () => {
+    const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const memberToken = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-updates/visibility")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ id: "middle", webmasterOnly: true });
+    assert.equal(res.status, 200);
+    assert.equal(fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8"), before);
+    const stored = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "site-updates-visibility.json"), "utf8"));
+    assert.equal(stored.middle, true);
+
+    // A deploy replaces the shipped file (here: a new entry on top). The
+    // new entry shows up, and the hidden one stays hidden.
+    const list = JSON.parse(before);
+    list.unshift({ id: "after-deploy", date: "2026-03-01", title: "Posted by a later deploy", changes: ["z"] });
+    fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+    try {
+      const memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      const ids = memberRes.body.updates.map((u) => u.id);
+      assert.ok(ids.includes("after-deploy"));
+      assert.ok(!ids.includes("middle"));
+      assert.equal(memberRes.headers["cache-control"], "no-store");
+
+      // A webmaster can also show an update the shipped file marks hidden
+      await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "webmaster-secret", webmasterOnly: false });
+      const shown = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(shown.body.updates.some((u) => u.id === "webmaster-secret"));
+    } finally {
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+      for (const [id, flag] of [["middle", false], ["webmaster-secret", true]]) {
+        await request(app)
+          .post("/api/site-updates/visibility")
+          .set("Authorization", `Bearer ${webmasterToken}`)
+          .send({ id, webmasterOnly: flag });
+      }
+    }
+  });
+
+  test("an update posted later with the same date as one already seen still counts as unseen", async () => {
+    await seedUser({ username: "updates-sameday", password: MEMBER_PASSWORD, role: "member" });
+    const token = await login("updates-sameday", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+    let res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.seenUpdateIds, null);
+    const shownIds = res.body.updates.map((u) => u.id);
+    const seenRes = await request(app).post("/api/site-updates/seen").set(auth).send({ id: shownIds[0], ids: shownIds.concat("made-up") });
+    assert.deepEqual(seenRes.body.seenUpdateIds.slice().sort(), shownIds.slice().sort());
+
+    const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+    const list = JSON.parse(before);
+    list.push({ id: "same-day-later", date: "2026-03-01", title: "Same day as newest", changes: ["q"] });
+    list.push({ id: "backdated", date: "2025-12-01", title: "Dated before everything", changes: ["r"] });
+    fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+    try {
+      res = await request(app).get("/api/site-updates").set(auth);
+      const seen = new Set(res.body.seenUpdateIds);
+      const unseen = res.body.updates.filter((u) => !seen.has(u.id)).map((u) => u.id);
+      assert.deepEqual(unseen.sort(), ["backdated", "same-day-later"]);
+    } finally {
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+    }
+  });
+
   test("the shipped config/site-updates.json is valid", () => {
     const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
     assert.ok(Array.isArray(list) && list.length > 0);
