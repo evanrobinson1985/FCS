@@ -1,5 +1,18 @@
 [
   {
+    "id": "2026-11-13-georeferencer-auto-outline",
+    "date": "2026-11-13",
+    "title": "Map georeferencer: better automatic cave outlines",
+    "changes": [
+      "The Outline tool now closes passages whose walls are left open on the map, such as a lead that continues or a label written across a wall. Before, one opening anywhere meant nothing was traced. A new \"Close open passage ends\" slider sets how wide an opening may be.",
+      "Labels and leader lines touching a wall are no longer swept into the outline.",
+      "\"Keep interior voids\" now works: rock pillars and the rock inside a loop of passages are cut out as holes. Before, turning it on hollowed out the whole passage.",
+      "Maps with a border drawn around the sheet can be traced without circling the cave first.",
+      "Yellowed or unevenly lit scans trace much more reliably.",
+      "If the walls still do not close, stronger gap bridging is tried automatically, and the note under the preview says what was done."
+    ]
+  },
+  {
     "id": "2026-11-13-site-updates-fixes",
     "date": "2026-11-13",
     "title": "Site Updates tab fixes",

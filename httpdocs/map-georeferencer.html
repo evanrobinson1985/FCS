@@ -382,6 +382,11 @@
             <input id="vecGap" type="range" min="0" max="10" step="0.5" value="3">
           </div>
           <div class="ctl">
+            <div class="lab">Close open passage ends <span class="val" id="vecCloseV">8%</span></div>
+            <input id="vecClose" type="range" min="0" max="20" step="1" value="8">
+            <div style="color:var(--faint);font-size:11px;margin-top:3px">Where two wall lines simply stop (a lead that continues, a label written across a wall), a straight cap is drawn between them. This is the widest opening that gets capped, as a share of the cave's size. 0 turns it off.</div>
+          </div>
+          <div class="ctl">
             <div class="lab">Simplify detail <span class="val" id="vecTolV">1.5 px</span></div>
             <input id="vecTol" type="range" min="0" max="6" step="0.1" value="1.5">
           </div>
@@ -393,7 +398,7 @@
             <div class="lab">Edge margin to ignore <span class="val" id="vecMarginV">2%</span></div>
             <input id="vecMargin" type="range" min="0" max="8" step="0.5" value="2">
           </div>
-          <label class="toggle ctl"><input type="checkbox" id="vecFill"> Keep interior voids (holes)</label>
+          <label class="toggle ctl" title="Turn on for rock pillars, and for the rock enclosed by a loop of passages. Any closed shape drawn inside a passage (a pool, a block) is then cut out as a hole too — click it with ✕ Erase to put it back."><input type="checkbox" id="vecFill"> Keep interior voids (pillars, rock inside passage loops)</label>
           <div class="ctl" id="vecHoleMinRow" style="display:none;margin:-6px 0 13px 26px">
             <div class="lab">Smallest hole <span class="val" id="vecHoleMinV">4 px</span></div>
             <input id="vecHoleMin" type="range" min="1" max="30" step="1" value="4">
@@ -777,13 +782,47 @@ function drawCal(){
 function otsu(hist,total){ let sum=0; for(let i=0;i<256;i++) sum+=i*hist[i];
   let sumB=0,wB=0,mx=0,thr=127; for(let i=0;i<256;i++){ wB+=hist[i]; if(!wB)continue; const wF=total-wB; if(!wF)break;
     sumB+=i*hist[i]; const mB=sumB/wB, mF=(sum-sumB)/wF, between=wB*wF*(mB-mF)*(mB-mF); if(between>mx){mx=between;thr=i;} } return thr; }
+// Even out the paper before thresholding. One cut-off for the whole sheet only works if the paper is the
+// same brightness everywhere; a scan that is yellowed, shadowed toward the spine, or lit unevenly has paper
+// in its dark corner that is darker than ink in its bright corner, and half the sheet comes out solid black.
+// So: estimate the paper's brightness around every point (the bright end of what's in each small block,
+// taken over the neighbouring blocks too so a patch of solid ink can't pass for dark paper) and rescale each
+// pixel against it. On an evenly lit sheet this changes nothing.
+function _flattenPaper(gray,W,H){
+  const bs=Math.max(8, Math.round(Math.max(W,H)/40)), bw=Math.ceil(W/bs), bh=Math.ceil(H/bs);
+  const blk=new Float32Array(bw*bh), hist=new Int32Array(256);
+  for(let by=0;by<bh;by++) for(let bx=0;bx<bw;bx++){
+    hist.fill(0); let n=0;
+    const x1=Math.min(W,(bx+1)*bs), y1=Math.min(H,(by+1)*bs);
+    for(let y=by*bs;y<y1;y++) for(let x=bx*bs;x<x1;x++){ hist[gray[y*W+x]]++; n++; }
+    let need=Math.max(1,Math.round(n*0.15)), v=255; while(v>0 && (need-=hist[v])>0) v--;   // 85th percentile
+    blk[by*bw+bx]=v;
+  }
+  const sorted=Array.from(blk).sort((a,b)=>a-b), paper=sorted[Math.floor(sorted.length*0.5)]||255;
+  let lo=255, hi=0; for(let i=0;i<blk.length;i++){ if(blk[i]<lo)lo=blk[i]; if(blk[i]>hi)hi=blk[i]; }
+  if(hi-lo<24) return;   // evenly lit: leave the image exactly as it was
+  const wide=new Float32Array(bw*bh);
+  for(let by=0;by<bh;by++) for(let bx=0;bx<bw;bx++){ let m=0;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const yy=by+dy, xx=bx+dx; if(yy<0||xx<0||yy>=bh||xx>=bw) continue; const v=blk[yy*bw+xx]; if(v>m) m=v; }
+    wide[by*bw+bx]=Math.max(m, 0.45*paper); }   // a large solid-dark area stays dark instead of being "corrected" to white
+  for(let y=0;y<H;y++){
+    const fy=Math.min(bh-1, Math.max(0, (y+0.5)/bs-0.5)), y0=Math.floor(fy), y1b=Math.min(bh-1,y0+1), ty=fy-y0;
+    for(let x=0;x<W;x++){
+      const fx=Math.min(bw-1, Math.max(0, (x+0.5)/bs-0.5)), x0=Math.floor(fx), x1b=Math.min(bw-1,x0+1), tx=fx-x0;
+      const bg=(wide[y0*bw+x0]*(1-tx)+wide[y0*bw+x1b]*tx)*(1-ty)+(wide[y1b*bw+x0]*(1-tx)+wide[y1b*bw+x1b]*tx)*ty;
+      const v=gray[y*W+x]*255/Math.max(1,bg); gray[y*W+x]=v>255?255:v;
+    }
+  }
+}
 function binarizeImage(img, maxDim){
   const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
   const W=Math.max(1,Math.round(img.naturalWidth*scale)), H=Math.max(1,Math.round(img.naturalHeight*scale));
   const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
   const cx=cv.getContext('2d'); cx.drawImage(img,0,0,W,H);
   const d=cx.getImageData(0,0,W,H).data, gray=new Uint8Array(W*H), hist=new Array(256).fill(0);
-  for(let i=0;i<W*H;i++){ const a=d[i*4+3]; const v=a<128?255:(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])|0; gray[i]=v; hist[v]++; }
+  for(let i=0;i<W*H;i++){ const a=d[i*4+3]; gray[i]=a<128?255:(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])|0; }
+  _flattenPaper(gray,W,H);
+  for(let i=0;i<W*H;i++) hist[gray[i]]++;
   const t=otsu(hist,W*H), bin=new Uint8Array(W*H);
   for(let i=0;i<W*H;i++) bin[i]=gray[i]<t?1:0;
   return {bin,W,H,scale};
@@ -2629,6 +2668,16 @@ function _removeDashes(bin,W,H,dashMax){ // drop dashed/dotted lines (short isol
   for(let i=0;i<W*H;i++) out[i]=(bin[i]&&!short[lab[i]])?1:0;
   return out;
 }
+// Which enclosed voids are simply the passage floor, as opposed to something standing inside it (a rock
+// pillar's own closed loop): a void that lies just across the wall from open paper is floor. "Just across the
+// wall" has to mean the wall's real thickness - the drawn line plus gap bridging on both of its sides. The
+// old test used a fixed few pixels, which any real wall exceeded, so with "Keep interior voids" on the whole
+// passage floor was treated as one big hole and the traced shape was only the wall line itself.
+function _voidsAcrossWallFromPaper(wall,bg,el,en,W,H,gap,lineW){
+  const bgD=_dilateF(bg,W,H, Math.ceil((2*gap+lineW+2)*2)/2), touch=new Uint8Array(en+1);
+  for(let i=0;i<W*H;i++){ const l=el[i]; if(l&&bgD[i]) touch[l]=1; }
+  return touch;
+}
 // Decide which enclosed voids are real interior holes vs. fragments of a text/number symbol —
 // e.g. digits inside a station-number circle carve it into several small slivers. A real rock
 // island stands alone; symbol fragments sit in a tight cluster with same-sized siblings.
@@ -2732,35 +2781,218 @@ function magicWandHoleAt(m,imgX,imgY,P){
   ring=_dp(ring,P.tol); if(ring.length<4) return null;
   return ring.map(([x,y])=>[x/scale, y/scale]);
 }
+// ================= auto outline: closing open walls, and keeping non-wall ink out =================
+// The tracer finds a passage as "the area the walls enclose", so everything hinges on the walls forming a
+// closed loop. Real cave maps routinely leave them open: a lead that continues is drawn with its two walls
+// simply ending, and a label written across a wall interrupts the line. Gap bridging (below) only closes
+// breaks a few pixels wide, and turning it up far enough to close a passage end also fuses neighbouring
+// passages, dashed lower levels and labels into the shape. So open ends are closed the way a person would
+// do it by hand instead: find where wall lines END, and draw a straight cap between two ends that face each
+// other across clear paper. Nothing else about the drawing is thickened or moved.
+
+// Zhang-Suen thinning: reduces every stroke to a 1px-wide centre line (same connectivity), which is what
+// makes a line's ends findable - an end is simply a centre-line pixel with exactly one neighbour.
+function _thin(bin,W,H){
+  const img=bin.slice();
+  for(let x=0;x<W;x++){ img[x]=0; img[(H-1)*W+x]=0; } for(let y=0;y<H;y++){ img[y*W]=0; img[y*W+W-1]=0; }
+  let active=[]; for(let i=0;i<W*H;i++) if(img[i]) active.push(i);
+  // (a drawn line is a few px thick: stop well before a large solid area could cost dozens of full passes)
+  let changed=true, guard=0;
+  while(changed && guard++<14){
+    changed=false;
+    for(let pass=0;pass<2;pass++){
+      const del=[];
+      for(let a=0;a<active.length;a++){ const i=active[a]; if(!img[i]) continue;
+        const p2=img[i-W],p3=img[i-W+1],p4=img[i+1],p5=img[i+W+1],p6=img[i+W],p7=img[i+W-1],p8=img[i-1],p9=img[i-W-1];
+        const B=p2+p3+p4+p5+p6+p7+p8+p9; if(B<2||B>6) continue;
+        const A=(!p2&&p3)+(!p3&&p4)+(!p4&&p5)+(!p5&&p6)+(!p6&&p7)+(!p7&&p8)+(!p8&&p9)+(!p9&&p2); if(A!==1) continue;
+        if(pass===0){ if((p2&&p4&&p6)||(p4&&p6&&p8)) continue; } else { if((p2&&p4&&p8)||(p2&&p6&&p8)) continue; }
+        del.push(i);
+      }
+      if(del.length){ changed=true; for(let k=0;k<del.length;k++) img[del[k]]=0; }
+    }
+    if(changed) active=active.filter(i=>img[i]);
+  }
+  // Zhang-Suen leaves diagonal runs two pixels thick ("staircases"), where no pixel has just one neighbour
+  // even at the very tip of a line. Take out the redundant corner pixel of each step (done in place, one at a
+  // time, so the line never breaks) to get a strictly 1px-wide centre line.
+  for(let a=0;a<active.length;a++){ const i=active[a]; if(!img[i]) continue;
+    const n=img[i-W], e=img[i+1], s2=img[i+W], w=img[i-1];
+    if((n&&e&&!img[i+W-1]) || (e&&s2&&!img[i-W-1]) || (s2&&w&&!img[i-W+1]) || (w&&n&&!img[i+W+1])) img[i]=0; }
+  return img;
+}
+// raw ink split into "long" strokes (walls, and whatever is drawn onto them) and "small" pieces (letters,
+// digits, dots, dashes, symbols). Only long strokes can have a wall end worth capping.
+function _splitInkBySize(src,W,H){
+  const {lab,n}=_label(src,W,H);
+  const x0=new Int32Array(n+1).fill(W), y0=new Int32Array(n+1).fill(H), x1=new Int32Array(n+1), y1=new Int32Array(n+1);
+  for(let i=0;i<W*H;i++){ const l=lab[i]; if(!l) continue; const x=i%W,y=(i/W)|0; if(x<x0[l])x0[l]=x; if(x>x1[l])x1[l]=x; if(y<y0[l])y0[l]=y; if(y>y1[l])y1[l]=y; }
+  const minLen=Math.max(18, Math.round(0.022*Math.max(W,H)));
+  const isLong=new Uint8Array(n+1); for(let k=1;k<=n;k++) if(Math.max(x1[k]-x0[k],y1[k]-y0[k])>=minLen) isLong[k]=1;
+  const longInk=new Uint8Array(W*H), smallInk=new Uint8Array(W*H);
+  for(let i=0;i<W*H;i++){ const l=lab[i]; if(!l) continue; if(isLong[l]) longInk[i]=1; else smallInk[i]=1; }
+  return {longInk, smallInk};
+}
+// the page border / neat line: one stroke spanning nearly the whole sheet whose ink all sits along the edges
+// of its own bounding box. Left in, it encloses the entire page and the tracer sees one sheet-sized "cave".
+function _removePageFrames(bin,W,H){
+  const {lab,areas,n}=_label(bin,W,H); if(!n) return bin;
+  const x0=new Int32Array(n+1).fill(W), y0=new Int32Array(n+1).fill(H), x1=new Int32Array(n+1), y1=new Int32Array(n+1);
+  for(let i=0;i<W*H;i++){ const l=lab[i]; if(!l) continue; const x=i%W,y=(i/W)|0; if(x<x0[l])x0[l]=x; if(x>x1[l])x1[l]=x; if(y<y0[l])y0[l]=y; if(y>y1[l])y1[l]=y; }
+  const cand=[]; for(let k=1;k<=n;k++) if((x1[k]-x0[k])>0.8*W && (y1[k]-y0[k])>0.8*H) cand.push(k);
+  if(!cand.length) return bin;
+  const near=new Int32Array(n+1), isCand=new Uint8Array(n+1); cand.forEach(k=>isCand[k]=1);
+  for(let i=0;i<W*H;i++){ const l=lab[i]; if(!l||!isCand[l]) continue; const x=i%W,y=(i/W)|0;
+    const band=Math.max(3, Math.round(0.03*Math.min(x1[l]-x0[l], y1[l]-y0[l])));
+    if(x-x0[l]<band || x1[l]-x<band || y-y0[l]<band || y1[l]-y<band) near[l]++; }
+  const drop=new Uint8Array(n+1); let any=false;
+  cand.forEach(k=>{ if(near[k]/areas[k]>0.9){ drop[k]=1; any=true; } });
+  if(!any) return bin;
+  const out=bin.slice(); for(let i=0;i<W*H;i++) if(drop[lab[i]]) out[i]=0;
+  return out;
+}
+// Find wall-line ends and cap the open ones. Returns {bridged, lineW, caps}: the ink with cap strokes added,
+// the typical wall line thickness in px, and how many caps were drawn. maxLen is the longest cap allowed.
+function _bridgeOpenEnds(src,W,H,longInk,maxLen){
+  const N=W*H; let inkArea=0; for(let i=0;i<N;i++) if(longInk[i]) inkArea++;
+  if(!inkArea) return {bridged:src, lineW:3, caps:0};
+  const sk=_thin(longInk,W,H); let skLen=0; for(let i=0;i<N;i++) if(sk[i]) skLen++;
+  const lineW=Math.max(1, Math.min(12, inkArea/Math.max(1,skLen)));
+  if(maxLen<=0) return {bridged:src, lineW, caps:0};
+  const nbr=[-W-1,-W,-W+1,-1,1,W-1,W,W+1];
+  const deg=i=>{ let c=0; for(let k=0;k<8;k++) if(sk[i+nbr[k]]) c++; return c; };
+  // ends: one-neighbour centre-line pixels. Thinning a blunt stroke end leaves a tiny fork there (two stubs a
+  // few px long meeting at a junction), so those stubs are pruned first - the junction they met at is then
+  // the line's true end. Longer side branches (tick marks, hachures) are left alone.
+  const spurMin=Math.max(5, Math.round(lineW*2));
+  for(let round=0; round<3; round++){
+    const kill=[];
+    for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){ const i=y*W+x; if(!sk[i]||deg(i)!==1) continue;
+      const path=[i]; let prev=-1, cur=i, hit=false;
+      while(path.length<=spurMin){ let nxt=-1, c=0; for(let k=0;k<8;k++){ const q=cur+nbr[k]; if(sk[q]){ c++; if(q!==prev) nxt=q; } }
+        if(path.length>1 && c>=3){ hit=true; break; }
+        if(nxt<0) break; prev=cur; cur=nxt; path.push(cur); }
+      if(hit){ path.pop(); for(const q of path) kill.push(q); }
+    }
+    if(!kill.length) break;
+    for(const q of kill) sk[q]=0;
+  }
+  const ends=[];
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){ const i=y*W+x; if(!sk[i]||deg(i)!==1) continue;
+    let prev=-1, cur=i, steps=0, bx=x, by=y;
+    while(steps<12){ let nxt=-1, c=0; for(let k=0;k<8;k++){ const q=cur+nbr[k]; if(sk[q]){ c++; if(q!==prev) nxt=q; } }
+      if(steps>0 && c>=3) break;
+      if(nxt<0) break; prev=cur; cur=nxt; steps++; bx=cur%W; by=(cur/W)|0; }
+    const dl=Math.hypot(x-bx,y-by)||1;
+    ends.push({x,y,dx:(x-bx)/dl,dy:(y-by)/dl,used:0});   // (dx,dy): the direction the line was heading when it stopped
+  }
+  if(ends.length<2 || ends.length>4000) return {bridged:src, lineW, caps:0};
+  // how many separate strokes a straight line from a to b crosses (not counting right at its two ends), or
+  // 9 if it runs along ink rather than across it. A cap across a passage mouth legitimately crosses one thin
+  // line - the survey shot running down the passage - so one crossing is tolerated; more means the two ends
+  // are on opposite sides of something and aren't a pair.
+  const crossings=(a,b)=>{
+    const len=Math.hypot(b.x-a.x,b.y-a.y), n=Math.ceil(len), skip=Math.min(lineW+2, len/3);
+    let runs=0, run=0;
+    for(let t=0;t<=n;t++){ const d=t*len/n; if(d<skip||len-d<skip){ run=0; continue; }
+      const px=Math.round(a.x+(b.x-a.x)*t/n), py=Math.round(a.y+(b.y-a.y)*t/n);
+      if(longInk[py*W+px]){ if(!run) runs++; run++; if(run>lineW*2+3) return 9; } else run=0; }
+    return runs;
+  };
+  const pairs=[];
+  for(let i=0;i<ends.length;i++) for(let j=i+1;j<ends.length;j++){
+    const a=ends[i], b=ends[j], ex=b.x-a.x, ey=b.y-a.y, len=Math.hypot(ex,ey);
+    if(len>maxLen || len<1.5) continue;
+    // a cap never doubles back along the line it starts from
+    if((a.dx*ex+a.dy*ey)/len < -0.8 || (b.dx*-ex+b.dy*-ey)/len < -0.8) continue;
+    const c=crossings(a,b); if(c>1) continue;
+    pairs.push([len*(1+0.5*c),i,j]);
+  }
+  pairs.sort((p,q)=>p[0]-q[0]);
+  const raw=new Uint8Array(N); let caps=0;
+  const draw=(a,b)=>{ _drawLine(raw,W,H,a.x,a.y,b.x,b.y); a.used++; b.used++; caps++; };
+  // shortest first, one cap per end...
+  pairs.forEach(([len,i,j])=>{ const a=ends[i], b=ends[j]; if(a.used||b.used) return; a.first=j; b.first=i; draw(a,b); });
+  // ...then again allowing an end up to three caps. Broken bits of thin interior linework (a survey shot that
+  // scanned as fragments) have ends too, and pair off with a nearby wall end first; without this second
+  // round that would use up the wall end and leave the passage mouth open. A surplus cap is harmless - it
+  // lands inside the passage or along its mouth - whereas a missing one loses the whole passage.
+  pairs.forEach(([len,i,j])=>{ const a=ends[i], b=ends[j];
+    if(a.first===j || b.first===i) return; if(a.used>=3||b.used>=3) return; draw(a,b); });
+  if(!caps) return {bridged:src, lineW, caps:0};
+  const thick=_dilate(raw,W,H,1), bridged=src.slice();
+  for(let i=0;i<N;i++) if(thick[i]) bridged[i]=1;
+  return {bridged, lineW, caps};
+}
+// Trim what isn't passage off a traced footprint: labels and leader lines that touch (or sit within gap
+// bridging of) a wall get swept into the shape as bumps and spurs. Every part of the footprint narrower than
+// lettering is looked at on its own: a real passage part, however tight, is made of wall line (two walls
+// side by side), while a label is made of small ink and a leader is one line thick. Parts with no wall line
+// in them, or no wider than a single line, are cut; everything else narrow is left exactly as it was.
+function _trimSpurs(foot,W,H,longInk,lineW){
+  const N=W*H, q=Math.max(2, Math.round(Math.max(lineW*2.5, 0.006*Math.max(W,H))));
+  const opened=_dilate(_erode(foot,W,H,q),W,H,q);
+  const thin=new Uint8Array(N); let any=false;
+  for(let i=0;i<N;i++) if(foot[i]&&!opened[i]){ thin[i]=1; any=true; }
+  if(!any) return foot;
+  const {lab,areas,n}=_label(thin,W,H);
+  const wallPx=new Int32Array(n+1); for(let i=0;i<N;i++){ const l=lab[i]; if(l&&longInk[i]) wallPx[l]++; }
+  const e=Math.floor(lineW/2)+1, core=_erode(thin,W,H,e), hasCore=new Uint8Array(n+1);
+  for(let i=0;i<N;i++) if(core[i]) hasCore[lab[i]]=1;
+  const drop=new Uint8Array(n+1); let dropAny=false;
+  for(let k=1;k<=n;k++){ if(areas[k]<12) continue;
+    if(wallPx[k]<0.08*areas[k] || !hasCore[k]){ drop[k]=1; dropAny=true; } }
+  if(!dropAny) return foot;
+  const out=foot.slice(); for(let i=0;i<N;i++) if(drop[lab[i]]) out[i]=0;
+  return out;
+}
+// what the last trace had to do beyond the settings as given, per map name - shown under the preview
+const _autoOutlineNotes={};
+
 // shared core: find connected ink blobs in an already-prepared binary source (margin-cropped for the
 // no-lasso case, or the full page for the lasso-as-filter case — the caller decides what if any pre-crop
 // to do). Same detection _vectorizeAuto has always used (dash removal, gap bridging, fill, hole
 // classification, connected-component trace), now also erasing+reconnecting wall ink under fill marks and
 // adding any hand-drawn connect-line ink.
 // rejectFrame: true to skip a component that spans almost the whole page (the page border itself).
-function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings, manualLines, rejectFrame){
+function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings, manualLines, rejectFrame, refDim){
   const N=W*H, resScale=Math.max(W,H)/1400, gap=P.gap;
+  if(rejectFrame) bin=_removePageFrames(bin,W,H);
   let src = P.dashes ? _removeDashes(bin.slice(),W,H, Math.max(6,Math.round((P.dashPct/100)*Math.max(W,H)))) : bin.slice();
   const manualHolesRas = (manualHolesRings && manualHolesRings.length) ? _rasterizeMask(manualHolesRings,W,H,scale) : null;
   const manualFillsRas = (manualFillsRings && manualFillsRings.length) ? _rasterizeMask(manualFillsRings,W,H,scale) : null;
   src = _eraseAndReconnect(src,W,H,scale,manualFillsRas,manualFillsRings);
   src = _addManualLines(src,W,H,scale,manualLines);
-  const wall = gap>0 ? _dilateF(src,W,H,gap) : src;
+  // cap open passage ends (see _bridgeOpenEnds). `src` itself stays as drawn - only the wall mask gets the caps.
+  const {longInk, smallInk}=_splitInkBySize(src,W,H);
+  const closePct = P.closePct==null ? 8 : P.closePct;
+  const {bridged, lineW, caps}=_bridgeOpenEnds(src,W,H,longInk, (closePct/100)*(refDim||0.5*Math.max(W,H)));
+  const wall = gap>0 ? _dilateF(bridged,W,H,gap) : bridged;
   const solid=_fillHoles(wall,W,H);
   const isle=new Uint8Array(N);
   if(P.holes){
-    const bg=_bgMask(wall,W,H), bgD=_dilateF(bg,W,H,gap+2);
-    const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wall[i]&&!bg[i])?1:0;
+    // judged on the walls as drawn, without the caps: a cap can fence off a corner of the floor (against a
+    // survey shot, say), and that must not read as a rock pillar. A real pillar is closed by its own line.
+    const wallAsDrawn = caps ? (gap>0 ? _dilateF(src,W,H,gap) : src) : wall;
+    const bg=_bgMask(wallAsDrawn,W,H);
+    const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wallAsDrawn[i]&&!bg[i])?1:0;
     const {lab:el,areas:ea,n:en}=_label(enc,W,H);
-    const touch=new Uint8Array(en+1); for(let i=0;i<N;i++){const l=el[i]; if(l&&bgD[i]) touch[l]=1;}
+    // ...but "open paper" means outside the capped cave: with an open lead, the uncapped floor is itself
+    // connected to the paper, and every pillar would then count as lying next to it
+    const touch=_voidsAcrossWallFromPaper(wall, caps ? _bgMask(wall,W,H) : bg, el,en,W,H,gap,lineW);
     const holeMinArea=Math.max(1, P.holeMinPx*P.holeMinPx);
     const classified=_classifyIslands(el,ea,en,W,H,touch,holeMinArea, 400*resScale*resScale, 26*resScale);
     for(let i=0;i<N;i++) if(classified[i]) isle[i]=1;
   }
   let foot=new Uint8Array(N); for(let i=0;i<N;i++) foot[i]=(solid[i]&&!isle[i])?1:0;
   if(gap>0) foot=_erodeF(foot,W,H,gap);
+  foot=_trimSpurs(foot,W,H,longInk,lineW);
   const {lab,areas,n}=_label(foot,W,H);
   const minA=N*(P.minPct/100);
+  // a "blob" that is nothing but the drawn lines themselves means the walls never closed around anything -
+  // tracing it would give a hollow, line-thin shape instead of a passage
+  const fat=_erode(foot,W,H,Math.floor(lineW/2)+2), fatArea=new Int32Array(n+1);
+  for(let i=0;i<N;i++) if(fat[i]) fatArea[lab[i]]++;
   let bx0,by0,bx1,by1;
   if(rejectFrame){
     bx0=new Int32Array(n+1).fill(W); by0=new Int32Array(n+1).fill(H); bx1=new Int32Array(n+1); by1=new Int32Array(n+1);
@@ -2769,6 +3001,7 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
   const out=[];
   for(let k=1;k<=n;k++){
     if(areas[k]<minA) continue;
+    if(fatArea[k]<0.04*areas[k]) continue;
     if(rejectFrame && (bx1[k]-bx0[k])>0.93*W && (by1[k]-by0[k])>0.93*H) continue;
     let outer=_trace(lab,W,H,k); if(outer.length<8) continue;
     outer=_dp(outer,P.tol); if(outer.length<4) continue;
@@ -2782,7 +3015,24 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
     const detailRings = P.detailed ? _traceDetailInk(src,cfLessHoles,W,H,P) : [];
     out.push({outer, W,H,scale, inside:cf, holeRas, detailRings});
   }
+  out.caps=caps;
   return out;
+}
+// If the walls still don't close around anything with the settings as given, try progressively stronger gap
+// bridging before giving up - a rougher outline the user can then refine beats "Nothing traced". `accept`
+// says whether a result counts (for a circled area: at least one blob inside the circle).
+function _detectInkBlobsAdaptive(bin, W, H, scale, P, m, rejectFrame, refDim, accept){
+  let blobs=_detectInkBlobs(bin,W,H,scale,P, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim);
+  let note = blobs.caps ? `drew ${blobs.caps} cap${blobs.caps===1?'':'s'} across open line ends` : '';
+  if(!accept(blobs)){
+    for(const extra of [2,4,7]){
+      const P2=Object.assign({},P,{gap:P.gap+extra});
+      const b2=_detectInkBlobs(bin,W,H,scale,P2, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim);
+      if(accept(b2)){ blobs=b2; note=`the walls didn't close at ${P.gap} px gap bridging, so ${P2.gap} px was used`; break; }
+    }
+  }
+  if(m && m.name!=null){ if(note) _autoOutlineNotes[m.name]=note; else delete _autoOutlineNotes[m.name]; }
+  return blobs;
 }
 // per-map raster prep for a lassoed map in MANUAL mode — the lasso IS the outer boundary, verbatim.
 // Shared by normal export and by stitching multiple maps together.
@@ -2799,12 +3049,13 @@ function _maskedRingRasters(m,P){
     src = _eraseAndReconnect(src,W,H,scale,manualFillsRas,m.manualFills);
     src = _addManualLines(src,W,H,scale,m.manualLines);
     const wall = gap>0? _dilateF(src,W,H,gap) : src;
+    const lineW = P.holes ? _bridgeOpenEnds(src,W,H,_splitInkBySize(src,W,H).longInk,0).lineW : 3;   // drawn line thickness (no caps: maxLen 0)
     const isle=new Uint8Array(N);
     if(P.holes){
-      const bg=_bgMask(wall,W,H), bgD=_dilateF(bg,W,H,gap+2);
+      const bg=_bgMask(wall,W,H);
       const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wall[i]&&!bg[i])?1:0;
       const {lab:el,areas:ea,n:en}=_label(enc,W,H);
-      const touch=new Uint8Array(en+1); for(let i=0;i<N;i++){const l=el[i]; if(l&&bgD[i]) touch[l]=1;}
+      const touch=_voidsAcrossWallFromPaper(wall,bg,el,en,W,H,gap,lineW);
       const holeMinArea=Math.max(1, P.holeMinPx*P.holeMinPx);
       const classified=_classifyIslands(el,ea,en,W,H,touch,holeMinArea, 400*resScale*resScale, 26*resScale);
       for(let i=0;i<N;i++) if(classified[i]) isle[i]=1;
@@ -2829,13 +3080,16 @@ function _maskedRingRastersAuto(m,P){
   const bin2=bin0.slice();
   for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar) bin2[y*W+x]=0; } }
   _restrictToRingsBBox(bin2,W,H,scale,m.vecMask);   // keep the ink search near what was actually circled — a north arrow/legend/profile view drawn elsewhere on the sheet can't be found at all, let alone included
-  const blobs=_detectInkBlobs(bin2,W,H,scale,P, m.manualHoles, m.manualFills, m.manualLines, true);
   const lassoRas=_rasterizeMask(m.vecMask,W,H,scale);
+  const overlapsLasso=r=>{ for(let i=0;i<r.inside.length;i++){ if(r.inside[i] && lassoRas[i]) return true; } return false; };
+  // the circled area's own size sets how long a cap across an open passage end may be
+  let lx0=Infinity,ly0=Infinity,lx1=-Infinity,ly1=-Infinity;
+  m.vecMask.forEach(ring=>ring.forEach(([x,y])=>{ if(x<lx0)lx0=x; if(x>lx1)lx1=x; if(y<ly0)ly0=y; if(y>ly1)ly1=y; }));
+  const refDim=Math.max(lx1-lx0, ly1-ly0)*scale;
+  const blobs=_detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,refDim, bs=>bs.some(overlapsLasso));
   const out=[];
   blobs.forEach(r=>{
-    let overlaps=false;
-    for(let i=0;i<r.inside.length;i++){ if(r.inside[i] && lassoRas[i]){ overlaps=true; break; } }
-    if(!overlaps) return;
+    if(!overlapsLasso(r)) return;
     out.push({
       ring:r.outer.map(([x,y])=>[x/scale,y/scale]), W:r.W,H:r.H,scale:r.scale, inside:r.inside, holeRas:r.holeRas,
       detailRings:(r.detailRings||[]).map(dr=>dr.map(([x,y])=>[x/scale,y/scale]))
@@ -2862,7 +3116,7 @@ function _vectorizeAuto(m, P){
   const mar=Math.max(2, Math.round((P.marginPct/100)*Math.min(W,H)));   // drop paper-edge margin
   const bin2=bin0.slice();
   for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar) bin2[y*W+x]=0; } }
-  const blobs=_detectInkBlobs(bin2,W,H,scale,P, m.manualHoles, m.manualFills, m.manualLines, true);
+  const blobs=_detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,0, bs=>bs.length>0);
   const feats=[];
   blobs.forEach(r=>{
     feats.push({ kind:'passage', rings:[_ringLL(m,r.outer,r.scale), ..._traceHoleRings(r.holeRas,r.W,r.H,P.tol,m,r.scale)] });
@@ -3156,6 +3410,7 @@ function _currentP(){
     gap:parseFloat($('vecGap').value)||0, tol:parseFloat($('vecTol').value)||0, minPct:parseFloat($('vecMin').value)||0.05,
     holeMinPx:parseFloat($('vecHoleMin').value)||1, dashPct:parseFloat($('vecDashLen').value)||2.5,
     marginPct:parseFloat($('vecMargin').value)||2, maxDim:parseInt($('vecRes').value)||1400,
+    closePct:parseFloat($('vecClose').value)||0,
     detailed: vecDetailMode==='detailed'
   };
 }
@@ -3202,8 +3457,11 @@ function runVecPreview(){
       const passages=outlinePreview.length-details;
       const holes=outlinePreview.reduce((s,f)=>s+(f.kind==='detail'?0:f.rings.length-1),0);
       st.innerHTML=`<span class="v">${passages}</span> polygon(s), ${holes} hole(s)${details?`, <span class="v">${details}</span> detail shape(s)`:''}, ${verts} vertices.`;
+      // anything the tracer had to do beyond the settings as given (set as plain text - map names are user-supplied)
+      const noted=use.filter(m=>_autoOutlineNotes[m.name] && !(m.editedOutline&&m.editedOutline.length) && m.outlineMode!=='manual');
+      noted.forEach(m=>{ const d=document.createElement('div'); d.style.marginTop='3px'; d.textContent=(use.length>1?m.name+': ':'')+_autoOutlineNotes[m.name]+'.'; st.appendChild(d); });
     } else {
-      st.textContent='Nothing traced — try more gap bridging, or lower “Smallest feature”.';
+      st.textContent='Nothing traced — the walls don\u2019t close around anything. Try raising “Close open passage ends” or “Gap bridging”, lower “Smallest feature”, or use ✎ Connect to draw across an opening by hand.';
     }
     drawVecPreviewCanvas();
   }catch(err){ st.textContent='Trace failed: '+err.message; drawVecPreviewCanvas(); } },10);
@@ -3251,6 +3509,7 @@ $('vecRes').addEventListener('change',()=>scheduleVecPreview(30));
 $('vecGap').addEventListener('input',e=>{ $('vecGapV').textContent=fmtPx(e.target.value); scheduleVecPreview(); });
 $('vecTol').addEventListener('input',e=>{ $('vecTolV').textContent=parseFloat(e.target.value).toFixed(1)+' px'; scheduleVecPreview(); });
 $('vecMin').addEventListener('input',e=>{ $('vecMinV').textContent=parseFloat(e.target.value).toFixed(2)+'%'; scheduleVecPreview(); });
+$('vecClose').addEventListener('input',e=>{ $('vecCloseV').textContent=parseFloat(e.target.value).toFixed(0)+'%'; scheduleVecPreview(); });
 $('vecMargin').addEventListener('input',e=>{ $('vecMarginV').textContent=parseFloat(e.target.value).toFixed(1)+'%'; scheduleVecPreview(); });
 $('vecHoleMin').addEventListener('input',e=>{ $('vecHoleMinV').textContent=e.target.value+' px'; scheduleVecPreview(); });
 $('vecDashLen').addEventListener('input',e=>{ $('vecDashLenV').textContent=parseFloat(e.target.value).toFixed(2)+'%'; scheduleVecPreview(); });
