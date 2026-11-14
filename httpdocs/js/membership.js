@@ -522,7 +522,9 @@
         who.appendChild(el('div', null, m.username));
         if (m.fullName) who.appendChild(el('div', 'dues-sub', m.fullName));
         tr.appendChild(who);
-        tr.appendChild(el('td', null, m.email));
+        const emailCell = el('td', null, m.email);
+        if (m.emailUnconfirmed) emailCell.appendChild(el('div', 'dues-sub', 'Not confirmed yet'));
+        tr.appendChild(emailCell);
         const acct = el('td');
         acct.appendChild(el('div', 'tv-status ' + m.status, STATUS_LABEL[m.status] || m.status));
         const active = m.status === 'active';
