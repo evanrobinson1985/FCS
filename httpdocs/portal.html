@@ -4033,8 +4033,8 @@ function updateStatistics() {
   document.getElementById('total-entrances').textContent = countTotalEntrances(caveDataStore);
 
   // Count by type
-  const landCaves = distinctCaves.filter(cave => cave.type.includes('Land')).length;
-  const underwaterCaves = distinctCaves.filter(cave => cave.type.includes('Underwater')).length;
+  const landCaves = distinctCaves.filter(cave => cave.type && cave.type.includes('Land')).length;
+  const underwaterCaves = distinctCaves.filter(cave => cave.type && cave.type.includes('Underwater')).length;
   document.getElementById('land-caves').textContent = landCaves;
   document.getElementById('underwater-caves').textContent = underwaterCaves;
 
