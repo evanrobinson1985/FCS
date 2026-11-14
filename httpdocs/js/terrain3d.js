@@ -89,6 +89,26 @@
     return { bounds: b, W, H, res: Math.sqrt((widthM / W) * (heightM / H)), widthM, heightM };
   }
 
+  // fetch() has no built-in timeout, and a stalled connection (a firewall,
+  // router, or ISP that drops a request without ever sending back a reset)
+  // just hangs forever rather than rejecting - which, with no retry ever
+  // kicking in, means the whole box's download never finishes and the "N
+  // of M" progress line sits frozen with no error. This bounds every
+  // attempt so a stall surfaces as a failure the retry loop below can act
+  // on, same as a real network error would. Named 'TimeoutError' (not
+  // 'AbortError') so it still goes through the retry/backoff path instead
+  // of being treated like the user's own cancel signal.
+  function fetchWithTimeout(url, signal, timeoutMs) {
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort(signal.reason);
+    if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => ctrl.abort(new DOMException('Elevation tile request timed out', 'TimeoutError')), timeoutMs);
+    return fetch(url, { signal: ctrl.signal }).finally(() => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    });
+  }
+
   async function fetchTile(plan, job, out, signal) {
     const b = plan.bounds, dLon = (b.e - b.w) / plan.W, dLat = (b.n - b.s) / plan.H;
     const w = b.w + job.c0 * dLon, e = b.w + (job.c0 + job.w) * dLon;
@@ -100,7 +120,7 @@
         `&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation` +
         `${attempt < 2 ? '&compression=LZ77' : ''}&adjustAspectRatio=false&f=image`;
       try {
-        const resp = await fetch(url, { signal });
+        const resp = await fetchWithTimeout(url, signal, 20000);
         if (!resp.ok) throw new Error(`elevation server returned ${resp.status}`);
         const tiff = await GeoTIFF.fromArrayBuffer(await resp.arrayBuffer());
         const image = await tiff.getImage();
