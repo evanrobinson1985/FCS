@@ -9239,19 +9239,30 @@ window.addEventListener('error', function(e) {
       
       // Remove new cave mode class
       document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
-      
-      // Success! Update UI
+
+      // The save to the server already fully succeeded at this point -
+      // say so unconditionally. Everything below (refreshing the dropdown/
+      // map/stats/table, offering a backup download) is best-effort
+      // post-save housekeeping; a bug in any of it is a separate problem
+      // from whether the save worked, and must never be reported through
+      // the same "could not save" message below, which would be actively
+      // false and only make someone re-save (or worse, assume they lost
+      // an edit) that already went through.
       alert(isNewCave ? `✅ New cave created successfully with ID: ${data.caveId || updatedCave.id}` : "✅ Cave updated successfully.");
-      
-      // Update dropdowns and views
-      populateEditCaveDropdown();
-      if (map && cavesLayer) loadCavesToMap();
-      if (document.getElementById('statistics').classList.contains('active')) updateStatistics();
-      if (document.getElementById('cave-database').classList.contains('active')) loadFcsDatabaseTable();
-      
-      // Ask user if they want to download updated database
-      if (confirm("Would you like to download a copy of the updated cave database?")) {
-        downloadUpdatedCaveDataWithProperFormat(caveDataStore);
+
+      try {
+        // Update dropdowns and views
+        populateEditCaveDropdown();
+        if (map && cavesLayer) loadCavesToMap();
+        if (document.getElementById('statistics').classList.contains('active')) updateStatistics();
+        if (document.getElementById('cave-database').classList.contains('active')) loadFcsDatabaseTable();
+
+        // Ask user if they want to download updated database
+        if (confirm("Would you like to download a copy of the updated cave database?")) {
+          downloadUpdatedCaveDataWithProperFormat(caveDataStore);
+        }
+      } catch (refreshErr) {
+        console.error("Cave saved successfully, but refreshing the page afterward failed:", refreshErr);
       }
     })
     .catch(error => {
