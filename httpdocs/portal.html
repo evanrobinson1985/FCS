@@ -1088,12 +1088,6 @@
 <input id="edit-cave-name" type="text"/>
 </div>
 <div class="form-group">
-<label for="edit-state">State:</label>
-<select id="edit-state">
-<option value="">Select a state</option>
-</select>
-</div>
-<div class="form-group">
 <label for="edit-county">County:</label>
 <select id="edit-county">
 <option value="">Select a county</option>
@@ -4992,7 +4986,6 @@ function loadFcsDatabaseTable() {
 
       const pairs = [
         { stateId: 'database-filter-state', countyId: 'database-filter-county', includeAllOption: true, onChange: () => { if (typeof filterDatabase === 'function') filterDatabase(); } },
-        { stateId: 'edit-state', countyId: 'edit-county', includeAllOption: false, onChange: null },
       ];
 
       pairs.forEach(({ stateId, countyId, includeAllOption, onChange }) => {
@@ -5016,6 +5009,17 @@ function loadFcsDatabaseTable() {
 
         populateCountySelect(countySelect, stateSelect.value, { includeAllOption });
       });
+
+      // Same deal for Edit Cave Data's county field, which dropped its
+      // paired state picker for the same reason - just Florida's counties.
+      const editCountySelect = document.getElementById('edit-county');
+      if (editCountySelect) {
+        const previousEditCountyValue = editCountySelect.value;
+        populateCountySelect(editCountySelect, 'FL');
+        if ([...editCountySelect.options].some(o => o.value === previousEditCountyValue)) {
+          editCountySelect.value = previousEditCountyValue;
+        }
+      }
 
       // The Interactive Map's county filter isn't part of a state/county
       // cascade (there's no state picker next to it - this site only ever
@@ -6099,12 +6103,11 @@ function loadFcsDatabaseTable() {
       document.getElementById('edit-cave-id').value = cave.id || '';
       document.getElementById('edit-cave-name').value = cave.name || '';
 
-      // State + county - resolveCaveStateAndCounty falls back to parsing
-      // the ID for legacy Florida records missing these fields explicitly.
+      // County - resolveCaveStateAndCounty falls back to parsing the ID
+      // for legacy Florida records missing the field explicitly. No state
+      // field to set here (this site only ever hosts Florida data).
       const resolvedStateCounty = resolveCaveStateAndCounty(cave);
-      const editStateSelect = document.getElementById('edit-state');
-      editStateSelect.value = resolvedStateCounty.state || '';
-      populateCountySelect(document.getElementById('edit-county'), resolvedStateCounty.state || '');
+      populateCountySelect(document.getElementById('edit-county'), resolvedStateCounty.state || 'FL');
       document.getElementById('edit-county').value = resolvedStateCounty.county || '';
 
       // Cave type
@@ -8866,19 +8869,17 @@ window.addEventListener('error', function(e) {
       newCaveBtn.addEventListener('click', initNewCaveForm);
     }
     
-    // Add event listener to the county dropdown to generate a temp ID when
-    // both state and county are selected (state's own change handler
-    // repopulates the county list - see initializeStateSelectors() - so by
-    // the time the user picks a county, edit-state already has a value).
+    // Add event listener to the county dropdown to generate a temp ID once
+    // a county is selected. State is always Florida (this site only ever
+    // hosts Florida data), so the county alone is enough to generate one.
     const countySelect = document.getElementById('edit-county');
     if (countySelect) {
       countySelect.addEventListener('change', function() {
         // Only generate ID if we're in "new cave" mode
         if (document.getElementById('edit-cave-form').classList.contains('new-cave-mode')) {
-          const stateCode = document.getElementById('edit-state').value;
           const countyCode = this.value;
-          if (stateCode && countyCode) {
-            const newCaveId = generateNewCaveId(stateCode, countyCode);
+          if (countyCode) {
+            const newCaveId = generateNewCaveId('FL', countyCode);
             document.getElementById('edit-cave-id').value = newCaveId;
           }
         }
@@ -8897,8 +8898,7 @@ window.addEventListener('error', function(e) {
     // Clear all field values
     document.getElementById('edit-cave-id').value = '';
     document.getElementById('edit-cave-name').value = '';
-    document.getElementById('edit-state').value = '';
-    populateCountySelect(document.getElementById('edit-county'), '');
+    populateCountySelect(document.getElementById('edit-county'), 'FL');
     document.getElementById('edit-type').value = 'land';
     document.getElementById('edit-latitude').value = '';
     document.getElementById('edit-longitude').value = '';
@@ -9008,9 +9008,10 @@ window.addEventListener('error', function(e) {
     const caveId = document.getElementById('edit-cave-id').value;
     const isNewCave = document.getElementById('edit-cave-form').classList.contains('new-cave-mode');
 
-    // Validate required fields
+    // Validate required fields. State is always Florida - this site only
+    // ever hosts Florida data, so there's no field to read it from.
     const caveName = document.getElementById('edit-cave-name').value;
-    const stateCode = document.getElementById('edit-state').value;
+    const stateCode = 'FL';
     const countyCode = document.getElementById('edit-county').value;
     const latitude = document.getElementById('edit-latitude').value;
     const longitude = document.getElementById('edit-longitude').value;
@@ -9021,12 +9022,6 @@ window.addEventListener('error', function(e) {
       return;
     }
 
-    if (!stateCode) {
-      alert("Please select a state.");
-      document.getElementById('edit-state').focus();
-      return;
-    }
-
     if (!countyCode) {
       alert("Please select a county.");
       document.getElementById('edit-county').focus();
@@ -9034,7 +9029,7 @@ window.addEventListener('error', function(e) {
     }
 
     if (!caveId && isNewCave) {
-      alert("Please select a state and county to generate a Cave ID.");
+      alert("Please select a county to generate a Cave ID.");
       document.getElementById('edit-county').focus();
       return;
     }
