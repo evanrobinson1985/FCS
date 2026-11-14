@@ -398,11 +398,13 @@
             <div class="lab">Edge margin to ignore <span class="val" id="vecMarginV">2%</span></div>
             <input id="vecMargin" type="range" min="0" max="8" step="0.5" value="2">
           </div>
-          <label class="toggle ctl" title="Turn on for rock pillars, and for the rock enclosed by a loop of passages. Any closed shape drawn inside a passage (a pool, a block) is then cut out as a hole too — click it with ✕ Erase to put it back."><input type="checkbox" id="vecFill"> Keep interior voids (pillars, rock inside passage loops)</label>
-          <div class="ctl" id="vecHoleMinRow" style="display:none;margin:-6px 0 13px 26px">
-            <div class="lab">Smallest hole <span class="val" id="vecHoleMinV">4 px</span></div>
-            <input id="vecHoleMin" type="range" min="1" max="30" step="1" value="4">
+          <label class="toggle ctl" title="Turn on for rock pillars, and for the rock enclosed by a loop of passages. Any closed shape drawn inside a passage (a pool, a block) is then cut out as a hole too — click it with ✕ Erase to put it back."><input type="checkbox" id="vecFill" checked> Keep interior voids (pillars, rock inside passage loops)</label>
+          <div class="ctl" id="vecHoleMinRow" style="margin:-6px 0 13px 26px">
+            <div class="lab">Smallest hole <span class="val" id="vecHoleMinV">6 px</span></div>
+            <input id="vecHoleMin" type="range" min="1" max="30" step="1" value="6">
           </div>
+          <label class="toggle ctl" title="On a map whose passage floor is coloured in (tan floor, blue water) with rock left as blank paper, the outline follows the colour: floor is whatever is tinted, rock is whatever is bare paper inside the cave. Detected automatically; plain line drawings are unaffected. Untick if a coloured map traces worse this way."><input type="checkbox" id="vecTint" checked> Use floor colour on tinted maps</label>
+          <label class="toggle ctl" title="Pages placed side by side are traced as one cave: a passage that runs across a seam becomes a single polygon, and rock enclosed by passages on different pages becomes a hole in it. Untick to get one outline per page."><input type="checkbox" id="vecMerge" checked> Trace all placed maps as one outline</label>
           <label class="toggle ctl"><input type="checkbox" id="vecDash"> Ignore dashed lines (assumed passages)</label>
           <div class="ctl" id="vecDashLenRow" style="display:none;margin:-6px 0 13px 26px">
             <div class="lab">Dash sensitivity <span class="val" id="vecDashLenV">2.5%</span></div>
@@ -800,7 +802,8 @@ function _flattenPaper(gray,W,H){
   }
   const sorted=Array.from(blk).sort((a,b)=>a-b), paper=sorted[Math.floor(sorted.length*0.5)]||255;
   let lo=255, hi=0; for(let i=0;i<blk.length;i++){ if(blk[i]<lo)lo=blk[i]; if(blk[i]>hi)hi=blk[i]; }
-  if(hi-lo<24) return;   // evenly lit: leave the image exactly as it was
+  if(hi-lo<24) return null;   // evenly lit: leave the image exactly as it was
+  const factor=new Float32Array(W*H);
   const wide=new Float32Array(bw*bh);
   for(let by=0;by<bh;by++) for(let bx=0;bx<bw;bx++){ let m=0;
     for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const yy=by+dy, xx=bx+dx; if(yy<0||xx<0||yy>=bh||xx>=bw) continue; const v=blk[yy*bw+xx]; if(v>m) m=v; }
@@ -810,9 +813,43 @@ function _flattenPaper(gray,W,H){
     for(let x=0;x<W;x++){
       const fx=Math.min(bw-1, Math.max(0, (x+0.5)/bs-0.5)), x0=Math.floor(fx), x1b=Math.min(bw-1,x0+1), tx=fx-x0;
       const bg=(wide[y0*bw+x0]*(1-tx)+wide[y0*bw+x1b]*tx)*(1-ty)+(wide[y1b*bw+x0]*(1-tx)+wide[y1b*bw+x1b]*tx)*ty;
-      const v=gray[y*W+x]*255/Math.max(1,bg); gray[y*W+x]=v>255?255:v;
+      const f=255/Math.max(1,bg); factor[y*W+x]=f;
+      const v=gray[y*W+x]*f; gray[y*W+x]=v>255?255:v;
     }
   }
+  return factor;   // what each pixel was multiplied by, so colour can be evened out the same way
+}
+// Which non-ink pixels are COLOURED rather than bare paper. Many cave maps fill the passage floor with a tint
+// (tan floor, blue water) and leave rock - including the rock between passages - as blank paper. Thresholding
+// for ink throws that away (tan and white are both "not ink"), yet it is by far the most reliable evidence of
+// what is passage and what is not. Paper colour is taken as the typical colour of the sheet's brightest
+// pixels; a pixel is tinted when it differs from that by more than scanner noise. The one-pixel fringe
+// around every inked line (anti-aliasing: grey, neither ink nor paper) is left out.
+function _tintMask(d,gray,bin,factor,W,H){
+  const N=W*H, gh=new Int32Array(256); for(let i=0;i<N;i++) gh[gray[i]]++;
+  let need=Math.round(N*0.3), gv=255; while(gv>0 && (need-=gh[gv])>0) gv--;   // brightest 30% of the sheet
+  const hr=new Int32Array(256), hg=new Int32Array(256), hb=new Int32Array(256); let cnt=0;
+  const ch=(i,k)=>{ const v=d[i*4+3]<128 ? 255 : d[i*4+k]*(factor?factor[i]:1); return v>255?255:(v|0); };
+  for(let i=0;i<N;i++){ if(gray[i]<gv) continue; hr[ch(i,0)]++; hg[ch(i,1)]++; hb[ch(i,2)]++; cnt++; }
+  const med=h=>{ let n=cnt/2, v=0; while(v<255 && (n-=h[v])>0) v++; return v; };
+  const pr=med(hr), pg=med(hg), pb=med(hb);
+  // how much bare paper itself varies from pixel to pixel (scanner grain, JPEG noise): how far the brighter
+  // paper pixels sit above the typical one. (Measured on the bright side only - on the dark side a tinted
+  // floor would be mistaken for noise.) A pixel only counts as tinted well clear of that.
+  const nh=new Int32Array(256); let nn=0; for(let i=0;i<N;i++) if(!bin[i]){ nh[gray[i]]++; nn++; }
+  const pct=q=>{ let n=nn*q, v=0; while(v<255 && (n-=nh[v])>0) v++; return v; };
+  const noise=Math.max(0, pct(0.9)-pct(0.5));
+  const thr=Math.max(14, 3*noise+8);
+  const off=new Uint8Array(N);   // how far each non-ink pixel's colour is from bare paper
+  let tint=new Uint8Array(N);
+  for(let i=0;i<N;i++){ if(bin[i]) continue;
+    const dr=Math.abs(ch(i,0)-pr), dg=Math.abs(ch(i,1)-pg), db=Math.abs(ch(i,2)-pb), dm=Math.max(dr,dg,db);
+    off[i]=dm; if(dm>thr) tint[i]=1; }
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){ const i=y*W+x; if(!bin[i]) continue;
+    tint[i-1]=tint[i+1]=tint[i-W]=tint[i+W]=tint[i-W-1]=tint[i-W+1]=tint[i+W-1]=tint[i+W+1]=0; }
+  if(noise>3) tint=_dilate(_erode(tint,W,H,1),W,H,1);   // on a grainy scan, isolated off-colour specks aren't tint
+  tint.off=off; tint.paperTol=Math.max(5, Math.round(1.5*noise)+3);   // what still counts as "bare paper" on average
+  return tint;
 }
 function binarizeImage(img, maxDim){
   const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
@@ -821,11 +858,11 @@ function binarizeImage(img, maxDim){
   const cx=cv.getContext('2d'); cx.drawImage(img,0,0,W,H);
   const d=cx.getImageData(0,0,W,H).data, gray=new Uint8Array(W*H), hist=new Array(256).fill(0);
   for(let i=0;i<W*H;i++){ const a=d[i*4+3]; gray[i]=a<128?255:(0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2])|0; }
-  _flattenPaper(gray,W,H);
+  const factor=_flattenPaper(gray,W,H);
   for(let i=0;i<W*H;i++) hist[gray[i]]++;
   const t=otsu(hist,W*H), bin=new Uint8Array(W*H);
   for(let i=0;i<W*H;i++) bin[i]=gray[i]<t?1:0;
-  return {bin,W,H,scale};
+  return {bin,tint:_tintMask(d,gray,bin,factor,W,H),W,H,scale};
 }
 // binarizeImage decodes + thresholds the whole page, which is one of the more expensive steps in the
 // outline/hole/erase/connect pipeline — it runs on every live-preview refresh, drag, and stitch. Cache it per
@@ -2146,7 +2183,7 @@ function buildSelPanel(){
     <div class="ctl">
       <div class="lab">Stitch group (shapefile)</div>
       <input id="stitchGroup" type="text" placeholder="e.g. Russell Cave — leave blank if standalone" value="${(m.stitchGroup||'').replace(/"/g,'&quot;')}">
-      <div style="color:var(--faint);font-size:11px;margin-top:5px">Give two or more lassoed maps the same name here to merge their outlines into one continuous polygon where they overlap or touch.</div>
+      <div style="color:var(--faint);font-size:11px;margin-top:5px">Only used when “Trace all placed maps as one outline” is off: give two or more lassoed maps the same name here to merge their outlines into one continuous polygon where they overlap or touch.</div>
     </div>
   `;
   const bind=(id,fn)=>$(id).addEventListener('input',fn);
@@ -2678,6 +2715,84 @@ function _voidsAcrossWallFromPaper(wall,bg,el,en,W,H,gap,lineW){
   for(let i=0;i<W*H;i++){ const l=el[i]; if(l&&bgD[i]) touch[l]=1; }
   return touch;
 }
+// Is the passage floor on this sheet filled with a tint? Asked of the wall lines themselves: on a filled map
+// nearly every stretch of wall has tint right beside it (floor on one side), while on a plain line drawing
+// with, say, a few blue pools almost none does. Lettering and symbols are left out of the count (long strokes
+// only), and a generous share of untinted long lines - sheet border, title box, legend - is allowed for.
+function _isFilledMap(longInk,tint,W,H,resScale){
+  const near=_dilate(tint,W,H, Math.max(3, Math.round(3*resScale)+2));
+  let wall=0, beside=0;
+  for(let i=0;i<W*H;i++){ if(!longInk[i]) continue; wall++; if(near[i]) beside++; }
+  return wall>200 && beside>=0.35*wall;
+}
+// The footprint of a tinted-floor map, taken from the tint instead of from "whatever the wall lines enclose".
+// That matters most where the walls do NOT enclose the passage: a sheet edge or crop that cuts a passage in
+// two leaves it open, and the enclosed-area rule then picks out the rock between passages (which IS still
+// enclosed) as if it were the cave. The tint has no such ambiguity - floor is tinted, rock is bare paper -
+// and needs no gap bridging or end caps either.
+//   1. tint, minus hair-thin coloured lines, with the ink drawn on the floor (cobbles, symbols, labels, the
+//      wall line between two tinted areas) closed over;
+//   2. bare-paper areas enclosed by that: rock if blank (or large), a symbol if it is a small white shape with
+//      ink in it (a numbered circle or box) - symbols are filled back in, rock is left out;
+//   3. the wall line along every edge added back, so the outline runs along the outside of the drawn wall.
+function _filledFootprint(src,tint,W,H,P,resScale,lineW){
+  const N=W*H, lw=Math.max(1,Math.round(lineW));
+  let F=_dilate(_erode(tint,W,H,1),W,H,1);
+  const rc=lw+2+Math.round(P.gap);
+  F=_erode(_dilate(F,W,H,rc),W,H,rc);
+  const all=_fillHoles(F,W,H);
+  if(P.holes){
+    const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(all[i]&&!F[i])?1:0;
+    const {lab,areas,n}=_label(enc,W,H), ink=new Int32Array(n+1), offSum=new Float64Array(n+1);
+    const off=tint.off, inkNearby=off?_dilate(src,W,H,1):null;
+    for(let i=0;i<N;i++){ const l=lab[i]; if(!l) continue; if(src[i]) ink[l]++; else if(off && !inkNearby[i]){ offSum[l]+=off[i]; } }
+    const clearPx=new Int32Array(n+1); if(off) for(let i=0;i<N;i++){ const l=lab[i]; if(l&&!inkNearby[i]) clearPx[l]++; }
+    const minArea=Math.max(1,P.holeMinPx*P.holeMinPx), big=1500*resScale*resScale, rock=new Uint8Array(n+1);
+    for(let k=1;k<=n;k++){
+      // rock is BARE paper. A patch of floor whose tint is too faint to register pixel by pixel (a light
+      // stipple, a pale wash) still isn't paper-coloured on average, and stays floor.
+      const bare = !off || !clearPx[k] || offSum[k]/clearPx[k] <= (tint.paperTol||5);
+      rock[k]=(bare && areas[k]>=minArea && (areas[k]>=big || ink[k]<=0.08*areas[k]))?1:0;
+    }
+    for(let i=0;i<N;i++){ const l=lab[i]; if(l&&!rock[l]) F[i]=1; }
+  } else F=all;
+  const grown=_dilate(F,W,H,lw+1), inkNear=_dilate(src,W,H,1), out=F.slice();
+  for(let i=0;i<N;i++) if(!out[i] && grown[i] && inkNear[i]) out[i]=1;
+  return out;
+}
+// On a map whose passage floor is tinted, rock is simply whatever is left as bare paper inside the cave - no
+// guessing from the shape of the linework needed. Returns the rock mask, or null when the sheet isn't drawn
+// that way (a plain line drawing has a paper-coloured floor, and must keep using the linework rule).
+//   - "drawn that way" is decided where it can't be confused: the strip of floor just inside the cave's outer
+//     wall. If that strip is mostly tinted, the floor is filled.
+//   - a white disc or box holding a number (ceiling height, depth, station) is a symbol, not rock: small, and
+//     with ink inside it. Large blank areas are always rock.
+function _paperVoidsInFill(solid, wall, src, tint, W, H, P, lineW, resScale){
+  const N=W*H, gap=P.gap;
+  const bg=_bgMask(wall,W,H), near=_dilateF(bg,W,H, Math.ceil(2*gap+lineW+6));
+  let rim=0, rimTint=0;
+  for(let i=0;i<N;i++){ if(!solid[i]||src[i]||wall[i]||!near[i]) continue; rim++; if(tint[i]) rimTint++; }
+  if(rim<40 || rimTint<0.5*rim) return null;
+  const paper=new Uint8Array(N); for(let i=0;i<N;i++) paper[i]=(solid[i]&&!src[i]&&!tint[i])?1:0;
+  const ro=Math.max(1, Math.round(lineW));
+  const opened=_dilate(_erode(paper,W,H,ro),W,H,ro);   // drops the pale fringe along lines and slivers between symbols
+  const filled=_fillHoles(opened,W,H), {lab,n}=_label(filled,W,H);
+  if(!n) return new Uint8Array(N);
+  const area=new Int32Array(n+1), ink=new Int32Array(n+1), tinted=new Int32Array(n+1);
+  for(let i=0;i<N;i++){ const l=lab[i]; if(!l) continue; if(opened[i]) area[l]++; if(src[i]) ink[l]++; if(tint[i]) tinted[l]++; }
+  const minArea=Math.max(1, P.holeMinPx*P.holeMinPx), big=1500*resScale*resScale;
+  const keep=new Uint8Array(n+1);
+  for(let k=1;k<=n;k++){
+    if(area[k]<minArea) continue;
+    if(area[k]<big && ink[k]>0.03*(area[k]+ink[k]+tinted[k])) continue;   // a small white shape with ink in it: a symbol
+    keep[k]=1;
+  }
+  let isle=new Uint8Array(N); for(let i=0;i<N;i++) if(opened[i] && keep[lab[i]]) isle[i]=1;
+  // the footprint is shrunk back by gap bridging afterwards, so the rock is too - that leaves the wall line
+  // around it in the passage, exactly as at the cave's outer edge
+  if(gap>0) isle=_erodeF(isle,W,H,gap);
+  return isle;
+}
 // Decide which enclosed voids are real interior holes vs. fragments of a text/number symbol —
 // e.g. digits inside a station-number circle carve it into several small slivers. A real rock
 // island stands alone; symbol fragments sit in a tight cluster with same-sized siblings.
@@ -2955,7 +3070,7 @@ const _autoOutlineNotes={};
 // classification, connected-component trace), now also erasing+reconnecting wall ink under fill marks and
 // adding any hand-drawn connect-line ink.
 // rejectFrame: true to skip a component that spans almost the whole page (the page border itself).
-function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings, manualLines, rejectFrame, refDim){
+function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings, manualLines, rejectFrame, refDim, tint){
   const N=W*H, resScale=Math.max(W,H)/1400, gap=P.gap;
   if(rejectFrame) bin=_removePageFrames(bin,W,H);
   let src = P.dashes ? _removeDashes(bin.slice(),W,H, Math.max(6,Math.round((P.dashPct/100)*Math.max(W,H)))) : bin.slice();
@@ -2980,27 +3095,39 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
     }
   }
   const closePct = P.closePct==null ? 8 : P.closePct;
-  const {bridged, lineW, caps}=_bridgeOpenEnds(src,W,H,longInk, (closePct/100)*(refDim||0.5*Math.max(W,H)));
-  const wall = gap>0 ? _dilateF(bridged,W,H,gap) : bridged;
-  const solid=_fillHoles(wall,W,H);
-  const isle=new Uint8Array(N);
-  if(P.holes){
-    // judged on the walls as drawn, without the caps: a cap can fence off a corner of the floor (against a
-    // survey shot, say), and that must not read as a rock pillar. A real pillar is closed by its own line.
-    const wallAsDrawn = caps ? (gap>0 ? _dilateF(src,W,H,gap) : src) : wall;
-    const bg=_bgMask(wallAsDrawn,W,H);
-    const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wallAsDrawn[i]&&!bg[i])?1:0;
-    const {lab:el,areas:ea,n:en}=_label(enc,W,H);
-    // ...but "open paper" means outside the capped cave: with an open lead, the uncapped floor is itself
-    // connected to the paper, and every pillar would then count as lying next to it
-    const touch=_voidsAcrossWallFromPaper(wall, caps ? _bgMask(wall,W,H) : bg, el,en,W,H,gap,lineW);
-    const holeMinArea=Math.max(1, P.holeMinPx*P.holeMinPx);
-    const classified=_classifyIslands(el,ea,en,W,H,touch,holeMinArea, 400*resScale*resScale, 26*resScale);
-    for(let i=0;i<N;i++) if(classified[i]) isle[i]=1;
+  const filledMap = !!tint && P.useTint!==false && _isFilledMap(longInk,tint,W,H,resScale);
+  let foot, lineW, caps=0;
+  if(filledMap){
+    lineW=_bridgeOpenEnds(src,W,H,longInk,0).lineW;   // line thickness only (no caps: maxLen 0)
+    foot=_filledFootprint(src,tint,W,H,P,resScale,lineW);
+  } else {
+    foot=_wallFootprint();
   }
-  let foot=new Uint8Array(N); for(let i=0;i<N;i++) foot[i]=(solid[i]&&!isle[i])?1:0;
-  if(gap>0) foot=_erodeF(foot,W,H,gap);
-  foot=_trimSpurs(foot,W,H,wallLine,lineW);
+  // the wall-line rule, for a sheet whose floor is not tinted: the passage is whatever the walls enclose
+  function _wallFootprint(){
+    const br=_bridgeOpenEnds(src,W,H,longInk, (closePct/100)*(refDim||0.5*Math.max(W,H)));
+    const bridged=br.bridged; lineW=br.lineW; caps=br.caps;
+    const wall = gap>0 ? _dilateF(bridged,W,H,gap) : bridged;
+    const solid=_fillHoles(wall,W,H);
+    const isle=new Uint8Array(N);
+    if(P.holes){
+      // judged on the walls as drawn, without the caps: a cap can fence off a corner of the floor (against a
+      // survey shot, say), and that must not read as a rock pillar. A real pillar is closed by its own line.
+      const wallAsDrawn = caps ? (gap>0 ? _dilateF(src,W,H,gap) : src) : wall;
+      const bg=_bgMask(wallAsDrawn,W,H);
+      const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wallAsDrawn[i]&&!bg[i])?1:0;
+      const {lab:el,areas:ea,n:en}=_label(enc,W,H);
+      // ...but "open paper" means outside the capped cave: with an open lead, the uncapped floor is itself
+      // connected to the paper, and every pillar would then count as lying next to it
+      const touch=_voidsAcrossWallFromPaper(wall, caps ? _bgMask(wall,W,H) : bg, el,en,W,H,gap,lineW);
+      const holeMinArea=Math.max(1, P.holeMinPx*P.holeMinPx);
+      const classified=_classifyIslands(el,ea,en,W,H,touch,holeMinArea, 400*resScale*resScale, 26*resScale);
+      for(let i=0;i<N;i++) if(classified[i]) isle[i]=1;
+    }
+    let foot=new Uint8Array(N); for(let i=0;i<N;i++) foot[i]=(solid[i]&&!isle[i])?1:0;
+    if(gap>0) foot=_erodeF(foot,W,H,gap);
+    return _trimSpurs(foot,W,H,wallLine,lineW);
+  }
   const {lab,areas,n}=_label(foot,W,H);
   const minA=N*(P.minPct/100);
   // a "blob" that is nothing but the drawn lines themselves means the walls never closed around anything -
@@ -3029,29 +3156,30 @@ function _detectInkBlobs(bin, W, H, scale, P, manualHolesRings, manualFillsRings
     const detailRings = P.detailed ? _traceDetailInk(src,cfLessHoles,W,H,P) : [];
     out.push({outer, W,H,scale, inside:cf, holeRas, detailRings});
   }
-  out.caps=caps;
+  out.caps=caps; out.filledMap=filledMap;
   return out;
 }
 // If the walls still don't close around anything with the settings as given, try progressively stronger gap
 // bridging before giving up - a rougher outline the user can then refine beats "Nothing traced". `accept`
 // says whether a result counts (for a circled area: at least one blob inside the circle).
-function _detectInkBlobsAdaptive(bin, W, H, scale, P, m, rejectFrame, refDim, accept){
-  let blobs=_detectInkBlobs(bin,W,H,scale,P, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim);
+function _detectInkBlobsAdaptive(bin, W, H, scale, P, m, rejectFrame, refDim, accept, tint){
+  let blobs=_detectInkBlobs(bin,W,H,scale,P, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim, tint);
   let note = blobs.caps ? `drew ${blobs.caps} cap${blobs.caps===1?'':'s'} across open line ends` : '';
   if(!accept(blobs)){
     for(const extra of [2,4,7]){
       const P2=Object.assign({},P,{gap:P.gap+extra});
-      const b2=_detectInkBlobs(bin,W,H,scale,P2, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim);
+      const b2=_detectInkBlobs(bin,W,H,scale,P2, m.manualHoles, m.manualFills, m.manualLines, rejectFrame, refDim, tint);
       if(accept(b2)){ blobs=b2; note=`the walls didn't close at ${P.gap} px gap bridging, so ${P2.gap} px was used`; break; }
     }
   }
+  if(blobs.filledMap) note='tinted floor detected: the outline follows the tint, and blank paper inside the cave is left out as rock';
   if(m && m.name!=null){ if(note) _autoOutlineNotes[m.name]=note; else delete _autoOutlineNotes[m.name]; }
   return blobs;
 }
 // per-map raster prep for a lassoed map in MANUAL mode — the lasso IS the outer boundary, verbatim.
 // Shared by normal export and by stitching multiple maps together.
 function _maskedRingRasters(m,P){
-  const {bin:bin0,W,H,scale}=binarizeImageCached(m.img, P.maxDim), N=W*H;
+  const {bin:bin0,tint,W,H,scale}=binarizeImageCached(m.img, P.maxDim), N=W*H;
   const bin=_applyCropMask(bin0,W,H,m.crop);
   const gap=P.gap, resScale=Math.max(W,H)/1400;
   const manualHolesRas = (m.manualHoles && m.manualHoles.length) ? _rasterizeMask(m.manualHoles,W,H,scale) : null;
@@ -3064,8 +3192,10 @@ function _maskedRingRasters(m,P){
     src = _addManualLines(src,W,H,scale,m.manualLines);
     const wall = gap>0? _dilateF(src,W,H,gap) : src;
     const lineW = P.holes ? _bridgeOpenEnds(src,W,H,_splitInkBySize(src,W,H).longInk,0).lineW : 3;   // drawn line thickness (no caps: maxLen 0)
-    const isle=new Uint8Array(N);
-    if(P.holes){
+    let isle=new Uint8Array(N);
+    const fillIsle = (P.holes && P.useTint!==false) ? _paperVoidsInFill(inside,wall,src,tint,W,H,P,lineW,resScale) : null;
+    if(fillIsle) isle=fillIsle;
+    else if(P.holes){
       const bg=_bgMask(wall,W,H);
       const enc=new Uint8Array(N); for(let i=0;i<N;i++) enc[i]=(!wall[i]&&!bg[i])?1:0;
       const {lab:el,areas:ea,n:en}=_label(enc,W,H);
@@ -3077,7 +3207,7 @@ function _maskedRingRasters(m,P){
     const holeRas=_combinedHoleRas(inside,isle,manualHolesRas,manualFillsRas,W,H);
     let insideLessHoles=inside; if(P.detailed){ insideLessHoles=new Uint8Array(N); for(let i=0;i<N;i++) insideLessHoles[i]=(inside[i]&&!holeRas[i])?1:0; }
     const detailRings = P.detailed ? _traceDetailInk(src,insideLessHoles,W,H,P) : [];
-    return {ring:outerRing, W,H,scale, inside, holeRas, detailRings};
+    return {ring:outerRing, W,H,scale, inside, holeRas, detailRings, detailInWorkPx:true};
   });
 }
 // per-map raster prep for a lassoed map in AUTO mode (default) — the lasso is a FILTER, not the boundary
@@ -3088,11 +3218,13 @@ function _maskedRingRasters(m,P){
 // circle. One circled region can select zero, one, or several blobs. Returns the SAME field shape as
 // _maskedRingRasters so every downstream consumer can treat either preparer's output identically.
 function _maskedRingRastersAuto(m,P){
-  const {bin,W,H,scale}=binarizeImageCached(m.img, P.maxDim);
+  const {bin,tint,W,H,scale}=binarizeImageCached(m.img, P.maxDim);
   const bin0=_applyCropMask(bin,W,H,m.crop);
   const mar=Math.max(2, Math.round((P.marginPct/100)*Math.min(W,H)));   // same paper-edge margin as no-lasso auto
   const bin2=bin0.slice();
-  for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar) bin2[y*W+x]=0; } }
+  const tint2=_applyCropMask(tint,W,H,m.crop).slice(); tint2.off=tint.off; tint2.paperTol=tint.paperTol;
+  for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar){ bin2[y*W+x]=0; tint2[y*W+x]=0; } } }
+  _restrictToRingsBBox(tint2,W,H,scale,m.vecMask);
   _restrictToRingsBBox(bin2,W,H,scale,m.vecMask);   // keep the ink search near what was actually circled — a north arrow/legend/profile view drawn elsewhere on the sheet can't be found at all, let alone included
   const lassoRas=_rasterizeMask(m.vecMask,W,H,scale);
   const overlapsLasso=r=>{ for(let i=0;i<r.inside.length;i++){ if(r.inside[i] && lassoRas[i]) return true; } return false; };
@@ -3100,7 +3232,7 @@ function _maskedRingRastersAuto(m,P){
   let lx0=Infinity,ly0=Infinity,lx1=-Infinity,ly1=-Infinity;
   m.vecMask.forEach(ring=>ring.forEach(([x,y])=>{ if(x<lx0)lx0=x; if(x>lx1)lx1=x; if(y<ly0)ly0=y; if(y>ly1)ly1=y; }));
   const refDim=Math.max(lx1-lx0, ly1-ly0)*scale;
-  const blobs=_detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,refDim, bs=>bs.some(overlapsLasso));
+  const blobs=_detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,refDim, bs=>bs.some(overlapsLasso), tint2);
   const out=[];
   blobs.forEach(r=>{
     if(!overlapsLasso(r)) return;
@@ -3124,17 +3256,23 @@ function _vectorizeEdited(m){
   return m.editedOutline.map(part=>({ kind:'passage', rings:[ _maskRingLL(m,part.outer), ...part.holes.map(h=>_maskRingLL(m,h)) ] }));
 }
 // ---- no cave-area lasso drawn: auto-detect the outline from ink (margin crop, dash removal, page-frame reject) ----
-function _vectorizeAuto(m, P){
-  const {bin,W,H,scale}=binarizeImageCached(m.img, P.maxDim);
+function _autoRasters(m, P){   // same field shape as _maskedRingRasters / _maskedRingRastersAuto
+  const {bin,tint,W,H,scale}=binarizeImageCached(m.img, P.maxDim);
   const bin0=_applyCropMask(bin,W,H,m.crop);
   const mar=Math.max(2, Math.round((P.marginPct/100)*Math.min(W,H)));   // drop paper-edge margin
   const bin2=bin0.slice();
-  for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar) bin2[y*W+x]=0; } }
-  const blobs=_detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,0, bs=>bs.length>0);
+  const tint2=_applyCropMask(tint,W,H,m.crop).slice(); tint2.off=tint.off; tint2.paperTol=tint.paperTol;
+  for(let y=0;y<H;y++){ const edge=(y<mar||y>=H-mar); for(let x=0;x<W;x++){ if(edge||x<mar||x>=W-mar){ bin2[y*W+x]=0; tint2[y*W+x]=0; } } }
+  return _detectInkBlobsAdaptive(bin2,W,H,scale,P,m,true,0, bs=>bs.length>0, tint2).map(r=>({
+    ring:r.outer.map(([x,y])=>[x/scale,y/scale]), W:r.W, H:r.H, scale:r.scale, inside:r.inside, holeRas:r.holeRas,
+    detailRings:(r.detailRings||[]).map(dr=>dr.map(([x,y])=>[x/scale,y/scale]))
+  }));
+}
+function _vectorizeAuto(m, P){
   const feats=[];
-  blobs.forEach(r=>{
-    feats.push({ kind:'passage', rings:[_ringLL(m,r.outer,r.scale), ..._traceHoleRings(r.holeRas,r.W,r.H,P.tol,m,r.scale)] });
-    (r.detailRings||[]).forEach(dr=>feats.push({ kind:'detail', rings:[_ringLL(m,dr,r.scale)] }));
+  _autoRasters(m,P).forEach(r=>{
+    feats.push({ kind:'passage', rings:[_maskRingLL(m,r.ring), ..._traceHoleRings(r.holeRas,r.W,r.H,P.tol,m,r.scale)] });
+    (r.detailRings||[]).forEach(dr=>feats.push({ kind:'detail', rings:[_maskRingLL(m,dr)] }));
   });
   return feats;
 }
@@ -3160,42 +3298,79 @@ function _vectorizeMaskedAuto(m, P){
 }
 // ---- multiple lassoed maps sharing a stitch group: union their outlines (+ holes) on one shared real-world
 // grid, so pages that overlap/touch at the seam become ONE continuous polygon instead of one per page ----
+// Tracing one sheet is the slow part, and depends only on the sheet itself, its own marks and the settings -
+// not on where the sheet sits. So it is kept per sheet: nudging one page of a six-page project re-traces
+// nothing, and changing a mark on one page re-traces only that page.
+const _sheetTraceCache=new WeakMap();
+function _sheetRasters(m,P){
+  const lassoed=!!(m.vecMask && m.vecMask.length);
+  if(m.outlineMode==='manual' && !lassoed) return [];   // hand-trace mode with nothing traced yet
+  const key=JSON.stringify([P, m.crop, m.outlineMode||'', m.vecMask||0, m.manualHoles||0, m.manualFills||0, m.manualLines||0]);
+  const hit=_sheetTraceCache.get(m.img);
+  if(hit && hit.key===key){ if(hit.note) _autoOutlineNotes[m.name]=hit.note; else delete _autoOutlineNotes[m.name]; return hit.prep; }
+  const prep = m.outlineMode==='manual' ? _maskedRingRasters(m,P) : lassoed ? _maskedRingRastersAuto(m,P) : _autoRasters(m,P);
+  _sheetTraceCache.set(m.img,{key, prep, note:_autoOutlineNotes[m.name]||''});
+  return prep;
+}
 function vectorizeStitched(members, P){
   const prepared=[];
-  members.forEach(m=>{
-    if(!(m.vecMask && m.vecMask.length)) return;
-    const prep = (m.outlineMode==='manual') ? _maskedRingRasters(m,P) : _maskedRingRastersAuto(m,P);
-    prep.forEach(r=>prepared.push({m,...r}));
-  });
+  members.forEach(m=>{ _sheetRasters(m,P).forEach(r=>prepared.push({m,...r})); });
   if(!prepared.length) return [];
+  // interior symbols ("+ Symbols") are per-sheet shapes that never straddle a seam: pass them through as they are
+  const detailFeats=[];
+  prepared.forEach(r=>(r.detailRings||[]).forEach(dr=>detailFeats.push({ kind:'detail', rings:[ r.detailInWorkPx ? _ringLL(r.m,dr,r.scale) : _maskRingLL(r.m,dr) ] })));
   if(prepared.length===1){
     const r=prepared[0];
-    return [{ kind:'passage', rings:[_maskRingLL(r.m,r.ring), ..._traceHoleRings(r.holeRas,r.W,r.H,P.tol,r.m,r.scale)] }];
+    return [{ kind:'passage', rings:[_maskRingLL(r.m,r.ring), ..._traceHoleRings(r.holeRas,r.W,r.H,P.tol,r.m,r.scale)] }, ...detailFeats];
   }
-  let mx0=Infinity,my0=Infinity,mx1=-Infinity,my1=-Infinity;
-  prepared.forEach(r=>{ r.ring.forEach(([x,y])=>{ const ll=activeSrcToLatLng(r.m,x,y), p=projM(ll);
-    mx0=Math.min(mx0,p.x); mx1=Math.max(mx1,p.x); my0=Math.min(my0,p.y); my1=Math.max(my1,p.y); }); });
+  let mx0=Infinity,my0=Infinity,mx1=-Infinity,my1=-Infinity, cell=Infinity;
+  prepared.forEach(r=>{
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    r.ring.forEach(([x,y])=>{ const p=projM(activeSrcToLatLng(r.m,x,y)); if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; });
+    r.bb=[x0,y0,x1,y1];
+    mx0=Math.min(mx0,x0); mx1=Math.max(mx1,x1); my0=Math.min(my0,y0); my1=Math.max(my1,y1);
+    // ground size of one of this sheet's working pixels - the shared grid should be no coarser than the finest sheet
+    const a=projM(activeSrcToLatLng(r.m,0,0)), b2=projM(activeSrcToLatLng(r.m,100/r.scale,0));
+    const c=Math.hypot(b2.x-a.x,b2.y-a.y)/100; if(c>0 && c<cell) cell=c;
+  });
   const spanX=Math.max(mx1-mx0,1e-6), spanY=Math.max(my1-my0,1e-6);
-  const gw=spanX>=spanY? P.maxDim : Math.max(2,Math.round(P.maxDim*spanX/spanY));
-  const gh=spanY>spanX? P.maxDim : Math.max(2,Math.round(P.maxDim*spanY/spanX));
+  // One shared ground grid for all sheets. It used to be the Detail-level size stretched over the WHOLE
+  // extent, so six pages got one page's worth of resolution between them; now each sheet keeps roughly its
+  // own working resolution, up to a cap that keeps a many-page project responsive.
+  const maxG=Math.round(P.maxDim*2.5);
+  const dim=Math.max(200, Math.min(maxG, Math.ceil(Math.max(spanX,spanY)/(isFinite(cell)?cell:1))));
+  const gw=spanX>=spanY? dim : Math.max(2,Math.round(dim*spanX/spanY));
+  const gh=spanY>spanX? dim : Math.max(2,Math.round(dim*spanY/spanX));
   const mppx=spanX/gw, mppy=spanY/gh;
   const outerG=new Uint8Array(gw*gh), holeG=new Uint8Array(gw*gh);
-  for(let gy=0; gy<gh; gy++){
-    const mym=my1-(gy+0.5)*mppy;
-    for(let gx=0; gx<gw; gx++){
-      const mxm=mx0+(gx+0.5)*mppx, ll=unprojM(mxm,mym);
-      let inOuter=false, inHole=false;
-      for(const r of prepared){
-        const s=activeLatLngToSrc(r.m, ll), px=Math.round(s.x*r.scale), py=Math.round(s.y*r.scale);
-        if(px<0||py<0||px>=r.W||py>=r.H) continue;
-        const idx=py*r.W+px;
-        if(r.inside[idx]){ inOuter=true; if(r.holeRas[idx]) inHole=true; }
+  // For each sheet, walk only the part of the grid it covers, and work out where each grid cell falls on the
+  // sheet by interpolating between exact positions computed every T cells (the mapping is as good as linear
+  // over a few cells). The old loop did a full map-projection round trip for every cell of the whole grid,
+  // once per sheet - fine for two lassoed pages, far too slow for a whole project at this resolution.
+  const T=16;
+  const srcAt=(r,gx,gy)=>{ const s=activeLatLngToSrc(r.m, unprojM(mx0+(gx+0.5)*mppx, my1-(gy+0.5)*mppy)); return [s.x*r.scale, s.y*r.scale]; };
+  prepared.forEach(r=>{
+    const gx0=Math.max(0, Math.floor((r.bb[0]-mx0)/mppx)-2), gx1=Math.min(gw-1, Math.ceil((r.bb[2]-mx0)/mppx)+2);
+    const gy0=Math.max(0, Math.floor((my1-r.bb[3])/mppy)-2), gy1=Math.min(gh-1, Math.ceil((my1-r.bb[1])/mppy)+2);
+    for(let ty=gy0; ty<=gy1; ty+=T) for(let tx=gx0; tx<=gx1; tx+=T){
+      const c00=srcAt(r,tx,ty), c10=srcAt(r,tx+T,ty), c01=srcAt(r,tx,ty+T), c11=srcAt(r,tx+T,ty+T);
+      const yEnd=Math.min(gy1,ty+T-1), xEnd=Math.min(gx1,tx+T-1);
+      for(let gy=ty; gy<=yEnd; gy++){ const v=(gy-ty)/T;
+        const ax=c00[0]+(c01[0]-c00[0])*v, ay=c00[1]+(c01[1]-c00[1])*v, bx=c10[0]+(c11[0]-c10[0])*v, by=c10[1]+(c11[1]-c10[1])*v;
+        for(let gx=tx; gx<=xEnd; gx++){ const u=(gx-tx)/T;
+          const px=Math.round(ax+(bx-ax)*u), py=Math.round(ay+(by-ay)*u);
+          if(px<0||py<0||px>=r.W||py>=r.H) continue;
+          const idx=py*r.W+px;
+          if(r.inside[idx]){ const gi=gy*gw+gx; outerG[gi]=1; if(r.holeRas[idx]) holeG[gi]=1; }
+        }
       }
-      const gi=gy*gw+gx;
-      if(inOuter){ outerG[gi]=1; if(inHole) holeG[gi]=1; }
     }
-  }
-  const finalOuter=new Uint8Array(gw*gh); for(let i=0;i<gw*gh;i++) finalOuter[i]=(outerG[i]&&!holeG[i])?1:0;
+  });
+  // sheets cropped to meet edge to edge can leave a hairline between them: close gaps up to ~3 cells so a
+  // passage that continues across a seam comes out as one polygon
+  const closedG=_erodeF(_dilateF(outerG,gw,gh,1.5),gw,gh,1.5);
+  for(let i=0;i<gw*gh;i++) if(closedG[i]) outerG[i]=1;
+  const finalOuter=new Uint8Array(gw*gh); for(let i=0;i<gw*gh;i++) finalOuter[i]=(outerG[i]&&!(P.holes&&holeG[i]))?1:0;
   const gridLL=(gx,gy)=>{ const mxm=mx0+(gx+0.5)*mppx, mym=my1-(gy+0.5)*mppy; return unprojM(mxm,mym); };
   const ringLL=(pts)=>{ const r=pts.map(([x,y])=>{ const ll=gridLL(x,y); return {lat:ll.lat,lng:ll.lng}; }); r.push({lat:r[0].lat,lng:r[0].lng}); return r; };
   const {lab,areas,n}=_label(finalOuter,gw,gh), minA=gw*gh*0.0005, feats=[];
@@ -3204,15 +3379,19 @@ function vectorizeStitched(members, P){
     let outer=_trace(lab,gw,gh,k); if(outer.length<8) continue; outer=_dp(outer,1); if(outer.length<4) continue;
     const comp=new Uint8Array(gw*gh); for(let i=0;i<gw*gh;i++) comp[i]=lab[i]===k?1:0;
     const compFilled=_fillHoles(comp,gw,gh);   // solid footprint of this piece, holes filled back in
-    const holesIn=new Uint8Array(gw*gh); for(let i=0;i<gw*gh;i++) holesIn[i]=(compFilled[i]&&holeG[i])?1:0;
+    // Every gap enclosed by the merged footprint is a hole - not only the ones a single sheet had already
+    // marked. Rock ringed by passages that run across a seam is open on each sheet taken alone (the sheet
+    // edge cuts the ring), so no sheet marks it; it only becomes enclosed once the sheets are put together.
+    const holesIn=new Uint8Array(gw*gh); if(P.holes) for(let i=0;i<gw*gh;i++) holesIn[i]=(compFilled[i]&&!comp[i])?1:0;
     const {lab:hl,areas:ha,n:hn}=_label(holesIn,gw,gh);
     const rings=[ringLL(outer)];
-    for(let hk=1;hk<=hn;hk++){ if(ha[hk]<2) continue; let hr=_trace(hl,gw,gh,hk); if(hr.length<8) continue; hr=_dp(hr,1); if(hr.length<4) continue; rings.push(ringLL(hr)); }
+    const holeMinA=Math.max(2, P.holeMinPx*P.holeMinPx);
+    for(let hk=1;hk<=hn;hk++){ if(ha[hk]<holeMinA) continue; let hr=_trace(hl,gw,gh,hk); if(hr.length<8) continue; hr=_dp(hr,1); if(hr.length<4) continue; rings.push(ringLL(hr)); }
     feats.push({kind:'passage', rings});
   }
-  return feats;
+  return feats.concat(detailFeats);
 }
-// note: stitched groups don't currently trace "+ Symbols" detail ink — they merge already-solid per-map
+// note: stitched groups used not to trace "+ Symbols" detail ink — they merge already-solid per-map
 // footprints onto a shared grid, which has dissolved that distinction by this point. Detail mode only
 // applies to standalone (non-stitched) maps.
 // ================= cave-area selection: drawn directly on the map, like Move maps =================
@@ -3424,19 +3603,32 @@ function _currentP(){
     gap:parseFloat($('vecGap').value)||0, tol:parseFloat($('vecTol').value)||0, minPct:parseFloat($('vecMin').value)||0.05,
     holeMinPx:parseFloat($('vecHoleMin').value)||1, dashPct:parseFloat($('vecDashLen').value)||2.5,
     marginPct:parseFloat($('vecMargin').value)||2, maxDim:parseInt($('vecRes').value)||1400,
-    closePct:parseFloat($('vecClose').value)||0,
+    closePct:parseFloat($('vecClose').value)||0, useTint:$('vecTint').checked,
     detailed: vecDetailMode==='detailed'
   };
 }
+// name given to the outline when several sheets are traced as one
+const MERGED_NAME='All maps';
+let _lastMergeCount=0;
 function computeOutlines(){
   const use=maps.filter(m=>m.visible && m.center && m.mpp!=null);
   const P=_currentP();
-  const groups={}, standalone=[];
+  const merge=$('vecMerge').checked;
+  const groups={}, standalone=[], pool=[];
   use.forEach(m=>{
+    // a hand-edited outline is authoritative for its own sheet (see vectorizeMap) and stays on its own
+    if(m.editedOutline && m.editedOutline.length){ standalone.push(m); return; }
+    // Sheets placed side by side are pages of ONE cave, so by default they are traced together: wherever two
+    // sheets touch or overlap, the passage comes out as a single polygon, and rock enclosed by passages that
+    // run across a seam becomes a hole in it. Pieces that don't touch still come out as separate polygons.
+    if(merge){ pool.push(m); return; }
     const key=(m.vecMask && m.vecMask.length && m.stitchGroup && m.stitchGroup.trim()) ? m.stitchGroup.trim() : null;
     if(key) (groups[key]=groups[key]||[]).push(m); else standalone.push(m);
   });
   const feats=[];
+  _lastMergeCount=0;
+  if(pool.length>=2){ _lastMergeCount=pool.length; vectorizeStitched(pool,P).forEach(f=>feats.push({map:MERGED_NAME, kind:f.kind||'passage', rings:f.rings})); }
+  else pool.forEach(m=>standalone.push(m));
   standalone.forEach(m=>{ vectorizeMap(m,P).forEach(f=>feats.push({map:m.name, kind:f.kind||'passage', rings:f.rings})); });
   Object.keys(groups).forEach(key=>{
     const members=groups[key];
@@ -3473,6 +3665,7 @@ function runVecPreview(){
       st.innerHTML=`<span class="v">${passages}</span> polygon(s), ${holes} hole(s)${details?`, <span class="v">${details}</span> detail shape(s)`:''}, ${verts} vertices.`;
       // anything the tracer had to do beyond the settings as given (set as plain text - map names are user-supplied)
       const noted=use.filter(m=>_autoOutlineNotes[m.name] && !(m.editedOutline&&m.editedOutline.length) && m.outlineMode!=='manual');
+      if(_lastMergeCount>1){ const d=document.createElement('div'); d.style.marginTop='3px'; d.textContent=`${_lastMergeCount} maps traced together as one outline.`; st.appendChild(d); }
       noted.forEach(m=>{ const d=document.createElement('div'); d.style.marginTop='3px'; d.textContent=(use.length>1?m.name+': ':'')+_autoOutlineNotes[m.name]+'.'; st.appendChild(d); });
     } else {
       st.textContent='Nothing traced — the walls don\u2019t close around anything. Try raising “Close open passage ends” or “Gap bridging”, lower “Smallest feature”, or use ✎ Connect to draw across an opening by hand.';
@@ -3532,6 +3725,8 @@ function syncVecSubRows(){
   $('vecDashLenRow').style.display = $('vecDash').checked ? 'block':'none';
 }
 syncVecSubRows();
+$('vecMerge').addEventListener('change',()=>scheduleVecPreview(60));
+$('vecTint').addEventListener('change',()=>scheduleVecPreview(60));
 $('vecFill').addEventListener('change',()=>{ syncVecSubRows(); scheduleVecPreview(60); });
 $('vecDash').addEventListener('change',()=>{ syncVecSubRows(); scheduleVecPreview(60); });
 function syncVecModeButtons(){

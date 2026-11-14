@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-11-14-georeferencer-voids-and-merge",
+    "date": "2026-11-14",
+    "title": "Map georeferencer: rock between passages, and one outline for all pages",
+    "changes": [
+      "Where passages split and rejoin or cross, the rock between them is now left out of the outline as a hole. \"Keep interior voids\" is on by default.",
+      "On maps whose passage floor is coloured in, the outline now follows the colour: floor is what is tinted, rock is what is bare paper. This is detected automatically and can be turned off with \"Use floor colour on tinted maps\".",
+      "All the pages you have placed are now traced together as one outline. A passage that runs across the seam between two pages becomes a single shape, and rock enclosed by passages on different pages becomes a hole in it. Untick \"Trace all placed maps as one outline\" to get one outline per page.",
+      "Moving a page no longer re-traces every page, so the preview updates faster on multi-page projects."
+    ]
+  },
+  {
     "id": "2026-11-13-georeferencer-auto-outline",
     "date": "2026-11-13",
     "title": "Map georeferencer: better automatic cave outlines",
