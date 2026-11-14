@@ -17,8 +17,11 @@
   'use strict';
 
   const MAX_CARD_UPDATES = 3;
+  const POLL_MS = 60000;
   let cache = null;         // last GET /api/site-updates response
   let newIds = new Set();   // updates that were new for this account at login
+  let pollTimer = null;     // periodic re-check while logged in, so a brand
+                             // new update shows up without needing a reload
 
   const token = () => sessionStorage.getItem('sessionToken');
   const role = () => localStorage.getItem('role') || sessionStorage.getItem('role');
@@ -307,6 +310,43 @@
     } catch (err) {
       console.warn('Could not load site updates:', err);
     }
+    startPolling();
+  }
+
+  // Re-checks for a new update every POLL_MS while logged in, so one
+  // posted while someone is already using the site shows up on its own -
+  // without this, the list was only ever fetched once, right after login,
+  // and stayed stale (even across a refresh + re-login, since a fresh
+  // login re-fetches but immediately marks everything then-current as
+  // "at login" and still wouldn't notice anything posted afterward until
+  // the next full page load). Paused while the tab is backgrounded;
+  // stopped entirely on logout - see stopPolling() and its caller in
+  // portal.html's logout handler.
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const previousIds = new Set((cache && cache.updates || []).map(u => u.id));
+        const data = await fetchUpdates();
+        if (!data || !data.updates) return;
+        renderTimeline(); // keep the tab current if it's open right now
+
+        const justAdded = data.updates.filter(u => !previousIds.has(u.id));
+        if (!justAdded.length || document.getElementById('site-updates-card')) return;
+        const unseen = unseenOf(data).filter(u => justAdded.some(a => a.id === u.id));
+        if (unseen.length) {
+          justAdded.forEach(u => newIds.add(u.id));
+          showCard(unseen, data.updates[0].id, data.updates.map(u => u.id));
+        }
+      } catch (err) {
+        console.warn('Could not check for new site updates:', err);
+      }
+    }, POLL_MS);
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
   // Fill the Site Updates tab with the full timeline, newest first
@@ -498,5 +538,5 @@
     if (tab) tab.addEventListener('click', () => { cache = null; renderTimeline(); renderFeedback(); });
   });
 
-  window.SiteUpdates = { checkAfterLogin, renderTimeline, renderFeedback, hide };
+  window.SiteUpdates = { checkAfterLogin, renderTimeline, renderFeedback, hide, stopPolling };
 })();

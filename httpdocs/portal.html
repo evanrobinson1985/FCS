@@ -1480,7 +1480,7 @@
 <!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
 <script src="js/terrain3d.js?v=11"></script>
 <!-- "What's new" card after login + the Site Updates tab -->
-<script src="js/site-updates.js?v=5"></script>
+<script src="js/site-updates.js?v=6"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
 <script src="js/membership.js?v=7"></script>
 
@@ -8559,7 +8559,7 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('twoFactorEnabled');
         sessionStorage.removeItem('isTreasurer');
         stopSecurityLogsPolling();
-        if (window.SiteUpdates) SiteUpdates.hide();
+        if (window.SiteUpdates) { SiteUpdates.hide(); SiteUpdates.stopPolling(); }
         if (window.Membership) Membership.hide();
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;

@@ -1,5 +1,43 @@
 [
   {
+    "id": "2026-11-14-site-updates-live",
+    "date": "2026-11-14",
+    "title": "Site Updates now shows new posts live",
+    "changes": [
+      "If you're already logged in when a new update is posted, it now shows up on its own within about a minute - no refresh or re-login needed.",
+      "The Site Updates tab stays current the same way, even if it's not the tab you're looking at when a new one is posted."
+    ]
+  },
+  {
+    "id": "2026-11-14-cave-editing-fixes",
+    "date": "2026-11-14",
+    "title": "Cave editing fixes",
+    "changes": [
+      "Saving an edited cave no longer fails with a coordinates-format error when the stored coordinates have more decimal precision than usual - this was blocking most real edits.",
+      "A save that actually succeeded is no longer sometimes reported as failed.",
+      "Moving a cave's pin on the map saves more reliably, especially on a mobile connection, and saves now retry automatically on a brief connection hiccup instead of failing outright.",
+      "Removed the State field from Edit Cave Data - picking a county is enough, since this site only hosts Florida caves."
+    ]
+  },
+  {
+    "id": "2026-11-14-3d-view-reliability",
+    "date": "2026-11-14",
+    "title": "3D terrain view reliability fix",
+    "changes": [
+      "Fixed the 3D terrain view sometimes hanging forever partway through downloading elevation data. It now retries automatically and shows a clear error if it truly can't finish."
+    ]
+  },
+  {
+    "id": "2026-11-14-security-patches",
+    "date": "2026-11-14",
+    "title": "Security patches",
+    "webmasterOnly": true,
+    "changes": [
+      "Patched several known vulnerabilities in site dependencies, including a critical one that could have let an attacker's IP address evade the login rate-limit and lockout protections.",
+      "Fixed the Account Management search box showing an old, unrelated value saved by the browser's autofill."
+    ]
+  },
+  {
     "id": "2026-11-14-georeferencer-voids-and-merge",
     "date": "2026-11-14",
     "title": "Map georeferencer: rock between passages, and one outline for all pages",
