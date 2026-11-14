@@ -1753,6 +1753,59 @@ const submissionLimiter = perAccountLimiter(60, "submissions");
 const narrativeLimiter = perAccountLimiter(60, "narrative changes");
 const photoUploadLimiter = perAccountLimiter(200, "photos");
 
+// ---- Active session tracking ("who's online" notice) ----------------------
+// In-memory only, by design - this is "right now" information, so losing it
+// on a restart is fine (every genuinely active session touches an endpoint
+// again within ACTIVE_SESSION_WINDOW_MS and is simply re-added). Never
+// written to disk.
+const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000; // no activity for 5 min drops someone from the count
+const MAX_RECENT_LOGINS = 50;
+const activeSessions = new Map(); // username -> { role, lastSeen }
+const recentLogins = []; // [{ seq, username, fullName, role, at }], oldest first, capped
+let loginEventSeq = 0;
+
+function touchActiveSession(username, role) {
+  activeSessions.set(username, { role, lastSeen: Date.now() });
+}
+
+function endActiveSession(username) {
+  activeSessions.delete(username);
+}
+
+// A real login (not just any authenticated request) - also records the
+// event so GET /api/active-sessions can tell an already-connected
+// webmaster/admin/Treasurer "so-and-so just logged in" rather than just a
+// raw count. user is the full user record, so the event can carry a
+// display name.
+function recordLogin(user) {
+  touchActiveSession(user.username, user.role);
+  loginEventSeq++;
+  recentLogins.push({ seq: loginEventSeq, username: user.username, fullName: user.fullName || user.username, role: user.role, at: Date.now() });
+  if (recentLogins.length > MAX_RECENT_LOGINS) recentLogins.shift();
+}
+
+// Active accounts right now, pruning anything stale as a side effect.
+function getActiveSessions() {
+  const cutoff = Date.now() - ACTIVE_SESSION_WINDOW_MS;
+  const active = [];
+  for (const [username, info] of activeSessions) {
+    if (info.lastSeen >= cutoff) active.push({ username, role: info.role });
+    else activeSessions.delete(username);
+  }
+  return active;
+}
+
+// Webmaster, admin, or the Treasurer - the roles the "who's online" notice
+// is for. Same live-lookup pattern requireDuesManager uses for the
+// Treasurer flag, since that isn't a role authenticateToken already puts
+// on req.user.
+function requireActiveSessionsViewer(req, res, next) {
+  if (req.user && (req.user.role === "webmaster" || req.user.role === "admin")) return next();
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  if (me && me.status === "active" && isTreasurerAccount(me)) return next();
+  return res.status(403).json({ error: "Only webmasters, admins, and the Treasurer can view active sessions." });
+}
+
 // --- Auth middleware -------------------------------------------------------
 
 // Requires a valid, unexpired JWT on the Authorization header. Populates
@@ -1818,6 +1871,7 @@ function authenticateToken(req, res, next) {
       return res.status(401).json({ error: "Your session has ended. Please log in again." });
     }
     req.user = { ...decoded, role: liveUser.role };
+    touchActiveSession(liveUser.username, liveUser.role);
     // Dues access switch (Account Management, off by default): a member
     // whose recorded membership has expired can only reach the few routes
     // needed to see their status, pay, and get back in. Never applies to
@@ -1984,6 +2038,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     saveUsers(users, { backup: false });
 
     const token = issueSessionToken(user);
+    recordLogin(user);
 
     res.json({
       success: true,
@@ -2059,6 +2114,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     saveUsers(users, { backup: false });
 
     const token = issueSessionToken(user);
+    recordLogin(user);
 
     res.json({
       success: true,
@@ -2076,6 +2132,34 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     console.error("2FA verification error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// Lets the client end its own active-session entry right away on logout,
+// rather than waiting up to ACTIVE_SESSION_WINDOW_MS for it to age out -
+// logout itself is otherwise purely client-side (clearing the stored
+// token), so without this the "who's online" count stays stale for a
+// few minutes after someone actually leaves. Best-effort: the client
+// fires this and clears its own session regardless of whether it succeeds.
+app.post("/api/logout", authenticateToken, (req, res) => {
+  endActiveSession(req.user.username);
+  res.json({ success: true });
+});
+
+// "Who's online" notice for webmaster/admin/Treasurer: the current active
+// count plus any login events newer than ?since= (the client's own last-
+// seen sequence number), so it can show "so-and-so just logged in" only
+// once, for only genuinely new logins, instead of re-announcing the same
+// ones every poll.
+app.get("/api/active-sessions", authenticateToken, requireActiveSessionsViewer, (req, res) => {
+  const since = parseInt(req.query.since, 10) || 0;
+  const active = getActiveSessions();
+  res.set("Cache-Control", "no-store");
+  res.json({
+    count: active.length,
+    users: active.map((u) => ({ username: u.username, role: u.role })),
+    events: recentLogins.filter((e) => e.seq > since),
+    latestSeq: loginEventSeq,
+  });
 });
 
 // Re-sends a fresh code for a login already in progress (the pending token

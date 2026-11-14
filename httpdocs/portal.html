@@ -1483,6 +1483,8 @@
 <script src="js/site-updates.js?v=6"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
 <script src="js/membership.js?v=7"></script>
+<!-- "Who's online" notice for webmaster/admin/Treasurer -->
+<script src="js/active-sessions.js?v=1"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.1/chart.min.js"></script>
@@ -8134,6 +8136,9 @@ window.addEventListener('error', function(e) {
     if (window.SiteUpdates) SiteUpdates.checkAfterLogin();
     // Membership dues status by "Logged in as" (see js/membership.js)
     if (window.Membership) Membership.afterLogin();
+    // "Who's online" notice (webmaster/admin/Treasurer only - see
+    // js/active-sessions.js, which no-ops for everyone else)
+    if (window.ActiveSessions) ActiveSessions.start();
 
     // One status fetch, two uses: applyHiddenTabs() runs for every role
     // (unlike the maintenance block below, hidden tabs apply to
@@ -8547,6 +8552,17 @@ window.addEventListener('error', function(e) {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
       logoutBtn.addEventListener('click', function() {
+        // Best-effort: tells the server to drop this account from the
+        // "who's online" count right away instead of waiting for it to
+        // age out. Fired before the token below is cleared (it's what
+        // authenticates the call) and never awaited - logout proceeds
+        // immediately either way.
+        const sessionToken = sessionStorage.getItem('sessionToken');
+        if (sessionToken) {
+          fetch('/api/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + sessionToken } })
+            .catch(() => {});
+        }
+
         // Clear every piece of session state, not just the username - the
         // session token in particular must not survive logout, or it would
         // stay valid (and usable) for up to 8 hours after someone thought
@@ -8561,6 +8577,7 @@ window.addEventListener('error', function(e) {
         stopSecurityLogsPolling();
         if (window.SiteUpdates) { SiteUpdates.hide(); SiteUpdates.stopPolling(); }
         if (window.Membership) Membership.hide();
+        if (window.ActiveSessions) ActiveSessions.stop();
         window.caveDatabase = undefined;
         window.caveDataStore = undefined;
         document.title = 'Florida Cave Survey';

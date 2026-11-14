@@ -141,6 +141,87 @@ describe("login", () => {
   });
 });
 
+// The "who's online" notice (a live count + "so-and-so just logged in") on
+// Account Management - visible to webmaster, admin, and the Treasurer.
+describe("active sessions / who's online (GET /api/active-sessions)", () => {
+  before(async () => {
+    await seedUser({ username: "sessions-admin", password: "SessionsAdminPass123!", role: "admin" });
+    await seedUser({ username: "sessions-treasurer", password: "SessionsTreasurerPass123!", role: "member" });
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/users/sessions-treasurer/treasurer").set(wm).send({ isTreasurer: true });
+  });
+
+  test("rejects a plain member", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app).get("/api/active-sessions");
+    assert.equal(res.status, 401);
+  });
+
+  test("allows webmaster, admin, and the Treasurer", async () => {
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const adminToken = await login("sessions-admin", "SessionsAdminPass123!");
+    const treasurerToken = await login("sessions-treasurer", "SessionsTreasurerPass123!");
+    for (const token of [wmToken, adminToken, treasurerToken]) {
+      const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.equal(typeof res.body.count, "number");
+    }
+  });
+
+  test("logging in adds the account to the active count and users list", async () => {
+    await seedUser({ username: "sessions-newuser", password: "SessionsNewUserPass123!", role: "member" });
+    await login("sessions-newuser", "SessionsNewUserPass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.users.some((u) => u.username === "sessions-newuser"));
+    assert.ok(res.body.count >= 1);
+  });
+
+  test("a login event appears once via ?since= and never again on a later poll", async () => {
+    await seedUser({ username: "sessions-eventuser", password: "SessionsEventUserPass123!", role: "member" });
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const before = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    const sinceSeq = before.body.latestSeq;
+
+    await login("sessions-eventuser", "SessionsEventUserPass123!");
+
+    const after = await request(app)
+      .get("/api/active-sessions")
+      .query({ since: sinceSeq })
+      .set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(after.body.events.some((e) => e.username === "sessions-eventuser"));
+
+    const again = await request(app)
+      .get("/api/active-sessions")
+      .query({ since: after.body.latestSeq })
+      .set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(!again.body.events.some((e) => e.username === "sessions-eventuser"));
+  });
+
+  test("POST /api/logout removes the account from the active count right away", async () => {
+    await seedUser({ username: "sessions-logout", password: "SessionsLogoutPass123!", role: "member" });
+    const userToken = await login("sessions-logout", "SessionsLogoutPass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const before = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(before.body.users.some((u) => u.username === "sessions-logout"));
+
+    const logoutRes = await request(app).post("/api/logout").set("Authorization", `Bearer ${userToken}`);
+    assert.equal(logoutRes.status, 200);
+
+    const after = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(!after.body.users.some((u) => u.username === "sessions-logout"));
+  });
+});
+
 describe("route protection", () => {
   test("rejects unauthenticated access to the cave database", async () => {
     const res = await request(app).get("/api/cave-database");
