@@ -1,0 +1,3849 @@
+// Server-side test suite. Run with `npm test` (node --test test/).
+//
+// Every mutable data path (users, cave database, submissions, narratives,
+// cave maps, cave pictures) is redirected into a throwaway temp directory
+// before server.js is ever required, via the env-var overrides added to
+// server.js for exactly this purpose - these tests can never read or write
+// real application data.
+
+const { test, describe, before, after } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const bcrypt = require("bcryptjs");
+const XLSX = require("xlsx");
+
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "fcs-test-"));
+
+process.env.JWT_SECRET = "test-jwt-secret-not-for-real-use-0123456789abcdef";
+process.env.DATA_DIR = path.join(TEST_ROOT, "data");
+process.env.SUBMISSIONS_FILE = path.join(TEST_ROOT, "pending-submissions.json");
+process.env.NARRATIVE_DIR = path.join(TEST_ROOT, "narratives");
+process.env.CAVE_MAPS_DIR = path.join(TEST_ROOT, "cave-maps");
+process.env.CAVE_PICTURES_DIR = path.join(TEST_ROOT, "cave-pictures");
+process.env.SITE_UPDATES_FILE = path.join(TEST_ROOT, "site-updates.json");
+fs.writeFileSync(
+  process.env.SITE_UPDATES_FILE,
+  JSON.stringify([
+    { id: "older", date: "2026-01-01", title: "Older update", changes: ["a"] },
+    { id: "newest", date: "2026-03-01", title: "Newest update", changes: ["b", "c"] },
+    { id: "bad-date", date: "March", title: "Malformed", changes: [] },
+    { id: "middle", date: "2026-02-01", title: "Middle update", changes: [] },
+    {
+      id: "webmaster-secret",
+      date: "2026-04-01",
+      title: "Webmaster secret update",
+      changes: ["x"],
+      webmasterOnly: true,
+    },
+  ])
+);
+process.env.NODE_ENV = "test";
+process.env.ALLOWED_ORIGINS = "http://localhost:3000";
+
+const request = require("supertest");
+const app = require("../server");
+
+const WEBMASTER_PASSWORD = "WebmasterPass123!";
+const MEMBER_PASSWORD = "MemberPass123!";
+
+function usersFilePath() {
+  return path.join(process.env.DATA_DIR, "users.json");
+}
+
+async function seedUser({ username, password, role, status = "active", allowedStates = [] }) {
+  const file = usersFilePath();
+  const users = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  users.push({
+    id: `${role}-${username}`,
+    username,
+    email: `${username}@example.com`,
+    passwordHash: await bcrypt.hash(password, 10),
+    fullName: username,
+    role,
+    status,
+    allowedStates,
+    created: new Date().toISOString(),
+    lastLogin: null,
+    loginAttempts: 0,
+    isEmailVerified: true,
+    loginIPs: [],
+  });
+  fs.writeFileSync(file, JSON.stringify(users, null, 2));
+}
+
+async function login(username, password) {
+  const res = await request(app).post("/api/login").send({ username, password });
+  assert.equal(res.status, 200, `login failed for ${username}: ${JSON.stringify(res.body)}`);
+  return res.body.token;
+}
+
+before(async () => {
+  await seedUser({ username: "webmaster1", password: WEBMASTER_PASSWORD, role: "webmaster" });
+  // Florida access (matching every pre-multi-state test's implicit
+  // assumption that member1 operates in a Florida-only world) plus Georgia
+  // (used by the non-Florida-state submission test below). Tests that
+  // specifically exercise state *restriction* use their own dedicated,
+  // narrowly-scoped user instead - see "allowed states" describe block.
+  await seedUser({ username: "member1", password: MEMBER_PASSWORD, role: "member", allowedStates: ["FL", "GA"] });
+});
+
+after(() => {
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+});
+
+describe("login", () => {
+  test("rejects missing credentials", async () => {
+    const res = await request(app).post("/api/login").send({});
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a wrong password with a generic error (no user-enumeration hint)", async () => {
+    const res = await request(app)
+      .post("/api/login")
+      .send({ username: "webmaster1", password: "wrong-password" });
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error, "Invalid username or password");
+  });
+
+  test("rejects a username that doesn't exist with the same generic error", async () => {
+    const res = await request(app)
+      .post("/api/login")
+      .send({ username: "does-not-exist", password: "whatever123" });
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error, "Invalid username or password");
+  });
+
+  test("logs in with correct credentials and returns a usable JWT", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    assert.equal(token.split(".").length, 3);
+  });
+
+  test("locks the account out after repeated failed attempts", async () => {
+    await seedUser({ username: "lockout-target", password: "CorrectPass123!", role: "member" });
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app)
+        .post("/api/login")
+        .send({ username: "lockout-target", password: "wrong" });
+      assert.equal(res.status, 401);
+    }
+    const lockedRes = await request(app)
+      .post("/api/login")
+      .send({ username: "lockout-target", password: "wrong" });
+    assert.equal(lockedRes.status, 429);
+
+    // Even the *correct* password is refused while locked out.
+    const correctButLocked = await request(app)
+      .post("/api/login")
+      .send({ username: "lockout-target", password: "CorrectPass123!" });
+    assert.equal(correctButLocked.status, 429);
+  });
+});
+
+// The "who's online" notice (a live count + "so-and-so just logged in") on
+// Account Management - visible to webmaster, admin, and the Treasurer.
+describe("active sessions / who's online (GET /api/active-sessions)", () => {
+  before(async () => {
+    await seedUser({ username: "sessions-admin", password: "SessionsAdminPass123!", role: "admin" });
+    await seedUser({ username: "sessions-treasurer", password: "SessionsTreasurerPass123!", role: "member" });
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/users/sessions-treasurer/treasurer").set(wm).send({ isTreasurer: true });
+  });
+
+  test("rejects a plain member", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app).get("/api/active-sessions");
+    assert.equal(res.status, 401);
+  });
+
+  test("allows webmaster, admin, and the Treasurer", async () => {
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const adminToken = await login("sessions-admin", "SessionsAdminPass123!");
+    const treasurerToken = await login("sessions-treasurer", "SessionsTreasurerPass123!");
+    for (const token of [wmToken, adminToken, treasurerToken]) {
+      const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.equal(typeof res.body.count, "number");
+    }
+  });
+
+  test("logging in adds the account to the active count and users list", async () => {
+    await seedUser({ username: "sessions-newuser", password: "SessionsNewUserPass123!", role: "member" });
+    await login("sessions-newuser", "SessionsNewUserPass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.users.some((u) => u.username === "sessions-newuser"));
+    assert.ok(res.body.count >= 1);
+  });
+
+  test("a login event appears once via ?since= and never again on a later poll", async () => {
+    await seedUser({ username: "sessions-eventuser", password: "SessionsEventUserPass123!", role: "member" });
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const before = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    const sinceSeq = before.body.latestSeq;
+
+    await login("sessions-eventuser", "SessionsEventUserPass123!");
+
+    const after = await request(app)
+      .get("/api/active-sessions")
+      .query({ since: sinceSeq })
+      .set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(after.body.events.some((e) => e.username === "sessions-eventuser"));
+
+    const again = await request(app)
+      .get("/api/active-sessions")
+      .query({ since: after.body.latestSeq })
+      .set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(!again.body.events.some((e) => e.username === "sessions-eventuser"));
+  });
+
+  test("POST /api/logout removes the account from the active count right away", async () => {
+    await seedUser({ username: "sessions-logout", password: "SessionsLogoutPass123!", role: "member" });
+    const userToken = await login("sessions-logout", "SessionsLogoutPass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const before = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(before.body.users.some((u) => u.username === "sessions-logout"));
+
+    const logoutRes = await request(app).post("/api/logout").set("Authorization", `Bearer ${userToken}`);
+    assert.equal(logoutRes.status, 200);
+
+    const after = await request(app).get("/api/active-sessions").set("Authorization", `Bearer ${wmToken}`);
+    assert.ok(!after.body.users.some((u) => u.username === "sessions-logout"));
+  });
+});
+
+describe("route protection", () => {
+  test("rejects unauthenticated access to the cave database", async () => {
+    const res = await request(app).get("/api/cave-database");
+    assert.equal(res.status, 401);
+  });
+
+  test("allows authenticated access to the cave database", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
+  });
+
+  test("rejects a forged/garbage bearer token", async () => {
+    const res = await request(app)
+      .get("/api/cave-database")
+      .set("Authorization", "Bearer not-a-real-token");
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects a member on a webmaster-only route", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/users").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 403);
+  });
+
+  test("allows a webmaster on a webmaster-only route", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/users").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+  });
+
+  test("rejects a member from writing the cave database (admin/webmaster only)", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "01", name: "Should Not Be Created" } });
+    assert.equal(res.status, 403);
+  });
+});
+
+// A JWT's role/status claims are a snapshot from login time, trusted for up
+// to 8 hours unless re-checked. authenticateToken re-verifies against the
+// live account on every request so a webmaster cutting someone off takes
+// effect immediately, not whenever that person's existing token happens to
+// expire.
+describe("an account's existing session is revoked the moment it's disabled, deleted, or demoted", () => {
+  test("disabling an account immediately invalidates its already-issued token", async () => {
+    await seedUser({ username: "revoke-on-disable", password: "RevokeOnDisablePass123!", role: "member" });
+    const victimToken = await login("revoke-on-disable", "RevokeOnDisablePass123!");
+    const before = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(before.status, 200);
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const disable = await request(app)
+      .post("/api/toggle-user-status")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "revoke-on-disable", isActive: false });
+    assert.equal(disable.status, 200);
+
+    const after = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(after.status, 401);
+  });
+
+  test("deleting an account immediately invalidates its already-issued token", async () => {
+    await seedUser({ username: "revoke-on-delete", password: "RevokeOnDeletePass123!", role: "member" });
+    const victimToken = await login("revoke-on-delete", "RevokeOnDeletePass123!");
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const del = await request(app)
+      .delete("/api/delete-user")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "revoke-on-delete" });
+    assert.equal(del.status, 200);
+
+    const after = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${victimToken}`);
+    assert.equal(after.status, 401);
+  });
+
+  test("a role change takes effect on the account's existing token immediately, not just on future logins", async () => {
+    await seedUser({ username: "promote-live", password: "PromoteLivePass123!", role: "member" });
+    const promotedToken = await login("promote-live", "PromoteLivePass123!");
+    const before = await request(app).get("/api/users").set("Authorization", `Bearer ${promotedToken}`);
+    assert.equal(before.status, 403); // still a member's token, per the stale JWT role claim
+
+    const wmToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const promote = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${wmToken}`)
+      .send({ username: "promote-live", newRole: "webmaster" });
+    assert.equal(promote.status, 200);
+
+    // Same token string as `before` - only the live account's role changed.
+    const after = await request(app).get("/api/users").set("Authorization", `Bearer ${promotedToken}`);
+    assert.equal(after.status, 200);
+  });
+});
+
+// Webmaster accounts sit at the top of the permission ladder and never hold
+// any other role - the Account Management UI doesn't offer a role/status/
+// delete control for webmaster rows at all, and these routes enforce the
+// same rule server-side so a direct API call can't do what the UI hides.
+describe("webmaster accounts are protected from other webmasters", () => {
+  before(async () => {
+    await seedUser({ username: "protectedwebmaster", password: "ProtectedPass123!", role: "webmaster" });
+  });
+
+  test("a webmaster cannot change another webmaster's role", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster", newRole: "member" });
+    assert.equal(res.status, 403);
+
+    const usersRes = await request(app).get("/api/users").set("Authorization", `Bearer ${token}`);
+    const stillWebmaster = usersRes.body.find((u) => u.username === "protectedwebmaster");
+    assert.equal(stillWebmaster.role, "webmaster");
+  });
+
+  test("a webmaster cannot disable another webmaster's account", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/toggle-user-status")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster", isActive: false });
+    assert.equal(res.status, 403);
+  });
+
+  test("a webmaster cannot delete another webmaster's account", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .delete("/api/delete-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "protectedwebmaster" });
+    assert.equal(res.status, 403);
+  });
+
+  test("a webmaster can still change a non-webmaster's role", async () => {
+    await seedUser({ username: "promotable", password: "PromotablePass123!", role: "member" });
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-role")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ username: "promotable", newRole: "admin" });
+    assert.equal(res.status, 200);
+  });
+});
+
+describe("password hashing", () => {
+  test("stores a bcrypt hash, never the plaintext password, on self-registration", async () => {
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      username: "newmember",
+      email: "newmember@example.com",
+      password: "SomeStrongPass123!",
+    });
+    assert.equal(res.status, 200);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "newmember");
+    assert.ok(created, "new user should be present in users.json");
+    assert.equal(created.password, undefined, "plaintext password must never be stored");
+    assert.ok(created.passwordHash.startsWith("$2"), "should store a bcrypt hash");
+    assert.equal(created.status, "pending", "self-registration should start pending, not active");
+  });
+
+  test("rejects a password shorter than the minimum length", async () => {
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      username: "shortpw",
+      email: "shortpw@example.com",
+      password: "short1",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  // Regression test for a stored-XSS chain: this route is unauthenticated,
+  // and username/email are later rendered in the webmaster's Account
+  // Management table - a username containing HTML/script syntax must never
+  // be accepted in the first place (defense-in-depth alongside escaping it
+  // on render).
+  test("rejects a username containing HTML/script syntax", async () => {
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      username: '<img src=x onerror=alert(1)>',
+      email: "xssattempt@example.com",
+      password: "SomeStrongPass123!",
+    });
+    assert.equal(res.status, 400);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    assert.ok(!users.some((u) => u.email === "xssattempt@example.com"), "no account should have been created");
+  });
+
+  test("rejects an email address containing HTML/script syntax", async () => {
+    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      username: "emailxssattempt",
+      email: '"><script>alert(1)</script>@example.com',
+      password: "SomeStrongPass123!",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("a freshly hashed password actually verifies on login", async () => {
+    await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      username: "roundtrip",
+      email: "roundtrip@example.com",
+      password: "RoundTripPass123!",
+    });
+    // Activate the pending account directly (no client-facing endpoint
+    // creates an already-active account other than webmaster-managed ones).
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const user = users.find((u) => u.username === "roundtrip");
+    user.status = "active";
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const token = await login("roundtrip", "RoundTripPass123!");
+    assert.ok(token);
+  });
+});
+
+describe("admin notification emails", () => {
+  // No SMTP is configured in the test env, so these log to the console
+  // instead of actually emailing (see sendAdminNotification in server.js) -
+  // same capture pattern as the password-reset tests above.
+  async function captureNotificationLog(action) {
+    const originalLog = console.log;
+    let capturedLine = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      if (line.startsWith('[DEV] Admin notification "')) capturedLine = line;
+      originalLog(...args);
+    };
+    try {
+      await action();
+    } finally {
+      console.log = originalLog;
+    }
+    return capturedLine;
+  }
+
+  before(async () => {
+    await seedUser({ username: "notifyadmin", password: "NotifyAdminPass123!", role: "admin" });
+    await seedUser({
+      username: "notifypendingwebmaster",
+      password: "NotifyPendingWmPass123!",
+      role: "webmaster",
+      status: "pending",
+    });
+    await seedUser({ username: "notifytreasurer", password: "NotifyTreasurerPass123!", role: "member" });
+    await seedUser({
+      username: "notifyinactivetreasurer",
+      password: "NotifyInactiveTreasurerPass123!",
+      role: "member",
+      status: "inactive",
+    });
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/users/notifytreasurer/treasurer").set(wm).send({ isTreasurer: true });
+    await request(app).post("/api/users/notifyinactivetreasurer/treasurer").set(wm).send({ isTreasurer: true });
+  });
+
+  test("a new self-registration notifies active webmasters and the Treasurer, not admins or inactive accounts", async () => {
+    const line = await captureNotificationLog(async () => {
+      const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+        username: "notifytestaccount",
+        email: "notifytestaccount@example.com",
+        password: "SomeStrongPass123!",
+      });
+      assert.equal(res.status, 200);
+    });
+
+    assert.ok(line, "expected a [DEV] admin notification to be logged");
+    assert.match(line, /New Account Awaiting Approval/);
+    assert.match(line, /webmaster1@example\.com/);
+    assert.match(line, /notifytreasurer@example\.com/, "the Treasurer should be notified of a new account");
+    assert.doesNotMatch(line, /notifyadmin@example\.com/, "admin should not be notified of a new account");
+    assert.doesNotMatch(
+      line,
+      /notifypendingwebmaster@example\.com/,
+      "a pending (not yet active) webmaster should not be notified"
+    );
+    assert.doesNotMatch(
+      line,
+      /notifyinactivetreasurer@example\.com/,
+      "an inactive Treasurer should not be notified"
+    );
+  });
+
+  test("a new pending submission notifies both active webmasters and admins", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+
+    const line = await captureNotificationLog(async () => {
+      const res = await request(app)
+        .post("/api/pending-submissions")
+        .set("Authorization", `Bearer ${memberToken}`)
+        .send({
+          type: "new_cave",
+          caveId: "F01NOTIFYTEMP",
+          county: "AL",
+          proposedData: { name: "Notification Test Cave", county: "AL", type: "Land Cave", lat: 29.1, lng: -82.1 },
+        });
+      assert.equal(res.status, 200);
+    });
+
+    assert.ok(line, "expected a [DEV] admin notification to be logged");
+    assert.match(line, /Submission Pending Review/);
+    assert.match(line, /webmaster1@example\.com/);
+    assert.match(line, /notifyadmin@example\.com/);
+  });
+});
+
+describe("webmaster-created user accounts (POST /api/create-user)", () => {
+  test("a webmaster can create an active member account directly", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ firstName: "Test", lastName: "Member", username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
+    assert.equal(res.status, 200);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "webcreated1");
+    assert.ok(created, "new user should be present in users.json");
+    assert.equal(created.role, "member");
+    assert.equal(created.status, "active", "webmaster-created accounts should be active immediately, not pending");
+    assert.equal(created.password, undefined, "plaintext password must never be stored");
+    assert.ok(created.passwordHash.startsWith("$2"), "should store a bcrypt hash");
+
+    // And it can actually log in right away, with no separate approval step.
+    const loginToken = await login("webcreated1", "WebCreatedPass123!");
+    assert.ok(loginToken);
+  });
+
+  test("requires a first and last name, and builds the full name from them", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const missing = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", wm)
+      .send({ username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
+    assert.equal(missing.status, 400);
+
+    await request(app)
+      .post("/api/create-user")
+      .set("Authorization", wm)
+      .send({ firstName: "Dana", lastName: "Rivers", username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const created = users.find((u) => u.username === "nofullname");
+    assert.equal(created.firstName, "Dana");
+    assert.equal(created.lastName, "Rivers");
+    assert.equal(created.fullName, "Dana Rivers");
+  });
+
+  test("a member cannot create a user account", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ firstName: "Test", lastName: "Member", username: "shouldnotexist", email: "shouldnotexist@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app)
+      .post("/api/create-user")
+      .send({ username: "noauth", email: "noauth@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects a duplicate username", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ firstName: "Test", lastName: "Member", username: "member1", email: "different@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a password shorter than the minimum length", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ firstName: "Test", lastName: "Member", username: "shortpwweb", email: "shortpwweb@example.com", password: "short1" });
+    assert.equal(res.status, 400);
+  });
+
+  // Same regression as public self-registration: this username/email is
+  // rendered in the Account Management table too.
+  test("rejects a username containing HTML/script syntax", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/create-user")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ firstName: "Test", lastName: "Member", username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
+    assert.equal(res.status, 400);
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    assert.ok(!users.some((u) => u.email === "webxss@example.com"), "no account should have been created");
+  });
+});
+
+describe("statistics card preferences (GET/POST /api/stats-preferences)", () => {
+  test("defaults to empty hidden/order before anything is ever saved", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { hidden: [], order: [] });
+  });
+
+  test("a member (not just admin/webmaster) can save and read back their own layout", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const saveRes = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: ["equipment", "geology"], order: ["nationwide", "summary"] });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(getRes.status, 200);
+    assert.deepEqual(getRes.body, { hidden: ["equipment", "geology"], order: ["nationwide", "summary"] });
+  });
+
+  test("one account's saved layout doesn't affect another's", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ hidden: ["dimensions"], order: [] });
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/stats-preferences").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.hidden.includes("dimensions"), "webmaster1's own layout should be unaffected by member1's save");
+  });
+
+  test("rejects an unrecognized card id", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: ["not-a-real-card"], order: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a non-array hidden/order", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/stats-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ hidden: "summary", order: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects an unauthenticated request on both routes", async () => {
+    const getRes = await request(app).get("/api/stats-preferences");
+    assert.equal(getRes.status, 401);
+    const postRes = await request(app).post("/api/stats-preferences").send({ hidden: [], order: [] });
+    assert.equal(postRes.status, 401);
+  });
+});
+
+describe("interactive map display preferences (GET/POST /api/map-preferences)", () => {
+  test("defaults to an empty object before anything is ever saved", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, {});
+  });
+
+  test("a member (not just admin/webmaster) can save and read back their own settings", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const prefs = {
+      basemap: "topo",
+      multiAngleHillshade: true,
+      hillshadeOpacity: 40,
+      showWaypoints: false,
+      waypointSize: 10,
+      waypointsHeatmap: true,
+      heatmapOpacity: 75,
+      heatmapGradient: "vivid",
+      contourInterval: 9,
+      contourColor: "#AABBCC",
+      labelSize: 12,
+      labelOpacity: 60,
+    };
+    const saveRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send(prefs);
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${token}`);
+    assert.equal(getRes.status, 200);
+    assert.deepEqual(getRes.body, prefs);
+  });
+
+  test("accepts osm as a valid basemap", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ basemap: "osm" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.mapPreferences.basemap, "osm");
+  });
+
+  test("accepts classic and vivid as the only valid heatmap gradient styles", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const classicRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ heatmapGradient: "classic" });
+    assert.equal(classicRes.status, 200);
+    assert.equal(classicRes.body.mapPreferences.heatmapGradient, "classic");
+
+    const invalidRes = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ heatmapGradient: "rainbow" });
+    assert.equal(invalidRes.status, 200);
+    assert.equal(invalidRes.body.mapPreferences.heatmapGradient, undefined);
+  });
+
+  test("one account's saved settings don't affect another's", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ basemap: "hillshade" });
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+    assert.notEqual(res.body.basemap, "hillshade");
+  });
+
+  test("silently drops unrecognized/invalid fields instead of rejecting the save", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        basemap: "not-a-real-basemap",
+        waypointSize: 999,
+        contourColor: "javascript:alert(1)",
+        showWaypoints: true,
+      });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.mapPreferences, { showWaypoints: true });
+  });
+
+  test("rejects a non-object body", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send([1, 2, 3]);
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects an unauthenticated request on both routes", async () => {
+    const getRes = await request(app).get("/api/map-preferences");
+    assert.equal(getRes.status, 401);
+    const postRes = await request(app).post("/api/map-preferences").send({});
+    assert.equal(postRes.status, 401);
+  });
+});
+
+describe("change password", () => {
+  before(async () => {
+    await seedUser({ username: "changepassuser", password: "OldPassword123!", role: "member" });
+  });
+
+  test("changes the password given the correct current password, and the old password stops working", async () => {
+    const token = await login("changepassuser", "OldPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "OldPassword123!", newPassword: "BrandNewPassword123!" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+
+    const newLogin = await login("changepassuser", "BrandNewPassword123!");
+    assert.ok(newLogin);
+
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "changepassuser", password: "OldPassword123!" });
+    assert.equal(oldLoginRes.status, 401);
+  });
+
+  test("rejects an incorrect current password", async () => {
+    const token = await login("changepassuser", "BrandNewPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "TotallyWrongPassword!", newPassword: "AnotherNewPassword123!" });
+    assert.equal(res.status, 401);
+
+    // The password must not have changed.
+    const stillWorks = await login("changepassuser", "BrandNewPassword123!");
+    assert.ok(stillWorks);
+  });
+
+  test("requires authentication", async () => {
+    const res = await request(app)
+      .post("/api/change-password")
+      .send({ currentPassword: "BrandNewPassword123!", newPassword: "AnotherNewPassword123!" });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects a new password shorter than the minimum length", async () => {
+    const token = await login("changepassuser", "BrandNewPassword123!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ currentPassword: "BrandNewPassword123!", newPassword: "short1" });
+    assert.equal(res.status, 400);
+  });
+});
+
+describe("change username (POST /api/change-username)", () => {
+  before(async () => {
+    await seedUser({ username: "changeunameuser", password: "ChangeUnamePass123!", role: "member" });
+    await seedUser({ username: "unametaken", password: "UnameTakenPass123!", role: "member" });
+  });
+
+  test("a member (not just admin/webmaster) can change their own username given the correct password", async () => {
+    const token = await login("changeunameuser", "ChangeUnamePass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "renameduser1", currentPassword: "ChangeUnamePass123!" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.username, "renameduser1");
+    assert.ok(res.body.token, "should issue a fresh token carrying the new username");
+
+    // The old username no longer exists; the new one works, same password.
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "changeunameuser", password: "ChangeUnamePass123!" });
+    assert.equal(oldLoginRes.status, 401);
+    const newLoginToken = await login("renameduser1", "ChangeUnamePass123!");
+    assert.ok(newLoginToken);
+  });
+
+  test("the freshly issued token actually authenticates as the new username", async () => {
+    const token = await login("renameduser1", "ChangeUnamePass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "renameduser2", currentPassword: "ChangeUnamePass123!" });
+    assert.equal(res.status, 200);
+
+    // Use the token the rename itself returned - not a fresh login - to
+    // prove the new token is immediately valid for the renamed account,
+    // the way the client is expected to swap it in without re-logging in.
+    const changePassRes = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${res.body.token}`)
+      .send({ currentPassword: "ChangeUnamePass123!", newPassword: "StillWorksPass123!" });
+    assert.equal(changePassRes.status, 200);
+  });
+
+  test("rejects an incorrect current password", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "shouldnotapply", currentPassword: "TotallyWrongPassword!" });
+    assert.equal(res.status, 401);
+
+    const stillWorks = await login("unametaken", "UnameTakenPass123!");
+    assert.ok(stillWorks);
+  });
+
+  test("rejects a username that's already taken", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: "member1", currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a username containing HTML/script syntax", async () => {
+    const token = await login("unametaken", "UnameTakenPass123!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ newUsername: '<img src=x onerror=alert(1)>', currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("requires authentication", async () => {
+    const res = await request(app)
+      .post("/api/change-username")
+      .send({ newUsername: "shouldnotapply", currentPassword: "UnameTakenPass123!" });
+    assert.equal(res.status, 401);
+  });
+});
+
+describe("password reset", () => {
+  // No SMTP is configured in the test env, so the server logs the reset
+  // link to the console instead of emailing it (see sendPasswordResetEmail
+  // in server.js) - capture that console.log call to get a real, valid
+  // token to drive the rest of the flow with.
+  async function requestResetToken(email) {
+    const originalLog = console.log;
+    let capturedUrl = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      const match = line.match(/\[DEV\] Password reset link for [^:]+: (\S+)/);
+      if (match) capturedUrl = match[1];
+      originalLog(...args);
+    };
+    try {
+      const res = await request(app).post("/api/forgot-password").send({ email });
+      assert.equal(res.status, 200);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(capturedUrl, "expected a [DEV] reset link to be logged");
+    return new URL(capturedUrl).searchParams.get("resetToken");
+  }
+
+  before(async () => {
+    await seedUser({ username: "resetuser", password: "OldPassword123!", role: "member" });
+  });
+
+  test("returns the same generic response whether or not the email exists (no account enumeration)", async () => {
+    const known = await request(app).post("/api/forgot-password").send({ email: "resetuser@example.com" });
+    const unknown = await request(app).post("/api/forgot-password").send({ email: "nobody@example.com" });
+    assert.equal(known.status, 200);
+    assert.equal(unknown.status, 200);
+    assert.deepEqual(known.body, unknown.body);
+  });
+
+  test("resets the password with a valid token, and the new password works on login", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    assert.ok(token);
+
+    const resetRes = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "BrandNewPassword123!" });
+    assert.equal(resetRes.status, 200);
+
+    const newToken = await login("resetuser", "BrandNewPassword123!");
+    assert.ok(newToken);
+
+    // The old password must no longer work.
+    const oldLoginRes = await request(app)
+      .post("/api/login")
+      .send({ username: "resetuser", password: "OldPassword123!" });
+    assert.equal(oldLoginRes.status, 401);
+  });
+
+  test("rejects a reset token that has already been used once", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    const first = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "FirstUsePass123!" });
+    assert.equal(first.status, 200);
+
+    const second = await request(app)
+      .post("/api/reset-password")
+      .send({ token, newPassword: "SecondUsePass123!" });
+    assert.equal(second.status, 400);
+  });
+
+  test("rejects a garbage/forged reset token", async () => {
+    const res = await request(app)
+      .post("/api/reset-password")
+      .send({ token: "not-a-real-token", newPassword: "WhateverPass123!" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new password shorter than the minimum length", async () => {
+    const token = await requestResetToken("resetuser@example.com");
+    const res = await request(app).post("/api/reset-password").send({ token, newPassword: "short1" });
+    assert.equal(res.status, 400);
+  });
+});
+
+describe("cave database storage", () => {
+  test("round-trips a cave name containing a double quote safely (regression for the old eval-based storage)", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const saveRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        action: "createNew",
+        cave: { county: "01", name: 'Cave "Quoted" Name', latitude: 29.1, longitude: -82.3 },
+      });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const stored = getRes.body.find((c) => c.name === 'Cave "Quoted" Name');
+    assert.ok(stored, "cave with an embedded quote should be stored and readable as plain data");
+  });
+
+  test("creates a backup file before overwriting the cave database", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const backupDir = path.join(process.env.DATA_DIR, "backups");
+    const before = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).length : 0;
+
+    await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "02", name: "Backup Trigger Cave" } });
+
+    const afterCount = fs.readdirSync(backupDir).length;
+    assert.ok(afterCount > before, "expected a new backup file after the write");
+  });
+
+  test("defaults a new cave to Florida when no state is given (backward compatibility)", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "AL", name: "No State Given Cave" } });
+    assert.equal(res.status, 200);
+    assert.match(res.body.caveId, /^FAL\d{3}$/);
+  });
+
+  test("generates a state-prefixed ID for a non-Florida state, numbered independently of Florida's same county code", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    // Seed a Florida cave in county "AL" first...
+    const flRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "FL", county: "AL", name: "Florida Alachua Cave" } });
+    assert.equal(flRes.status, 200);
+
+    // ...then a Georgia cave that happens to reuse "AL" as its own county
+    // code (Georgia's real code for Allen County) - must not collide with
+    // or continue Florida's numbering for that same county-code string.
+    const gaRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "GA", county: "AL", name: "Georgia Allen Cave" } });
+    assert.equal(gaRes.status, 200);
+    assert.match(gaRes.body.caveId, /^GAAL\d{3}$/);
+    assert.notEqual(gaRes.body.caveId, flRes.body.caveId);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const gaCave = dbRes.body.find((c) => c.id === gaRes.body.caveId);
+    assert.equal(gaCave.state, "GA");
+    assert.equal(gaCave.county, "AL");
+  });
+});
+
+// The map's "Move" tool (initiateMove() in portal.html) uses this route to
+// save a cave's new position - a small, purpose-built request instead of
+// re-uploading the entire cave database just to change one cave's
+// coordinates, which used to be how a move was saved and was both needless
+// load on the server and far more likely to fail outright on a slow or
+// unstable connection than this one small, fast request is.
+describe("moving a cave's pin on the map (POST /api/update-cave-location)", () => {
+  let moveCaveId;
+  before(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "03", name: "Movable Cave", latitude: 29.1, longitude: -82.3 } });
+    moveCaveId = res.body.caveId;
+  });
+
+  test("updates both coordinate property names and persists them", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 30.123456, longitude: -83.654321 });
+    assert.equal(res.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const moved = dbRes.body.find((c) => c.id === moveCaveId);
+    assert.equal(moved.latitude, 30.123456);
+    assert.equal(moved.longitude, -83.654321);
+    assert.equal(moved.lat, 30.123456);
+    assert.equal(moved.lng, -83.654321);
+  });
+
+  test("creates a backup file before moving a cave, same as a full database save", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const backupDir = path.join(process.env.DATA_DIR, "backups");
+    const before = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).length : 0;
+
+    await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+
+    const afterCount = fs.readdirSync(backupDir).length;
+    assert.ok(afterCount > before, "expected a new backup file after the move");
+  });
+
+  test("rejects a member (admin/webmaster only)", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects missing or non-numeric coordinates", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const noCoords = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId });
+    assert.equal(noCoords.status, 400);
+
+    const stringCoords = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: "29.5", longitude: "-82.5" });
+    assert.equal(stringCoords.status, 400);
+  });
+
+  test("404s for a cave ID that doesn't exist", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "NOT-A-REAL-CAVE-ID", latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 404);
+  });
+});
+
+// The "Nationwide Overview"/"Caves by State" cards (and the
+// GET /api/cave-database/state-counts route that backed them) were removed
+// along with the rest of the site's multi-state machinery - this site only
+// ever hosts Florida data, so a nationwide/per-state breakdown no longer
+// has a purpose.
+describe("nationwide cave counts have been removed", () => {
+  test("GET /api/cave-database/state-counts no longer exists", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/cave-database/state-counts").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 404);
+  });
+});
+
+describe("public Florida cave count (header banner)", () => {
+  test("GET /api/cave-count is public - no login token needed, for the logged-out login screen", async () => {
+    const res = await request(app).get("/api/cave-count");
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.body.count, "number");
+  });
+
+  test("counts distinct Florida caves only - adding one Florida cave increases it by exactly one, regardless of its entrance count", async () => {
+    const before = await request(app).get("/api/cave-count");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        action: "createNew",
+        cave: {
+          state: "FL",
+          county: "AL",
+          name: "Cave Count Banner Test Cave",
+          entrances: [{ name: "Second Entrance" }, { name: "Third Entrance" }],
+        },
+      });
+    assert.equal(createRes.status, 200);
+
+    const after = await request(app).get("/api/cave-count");
+    assert.equal(after.body.count, before.body.count + 1, "extra entrances on the same cave must not inflate the count");
+  });
+
+  test("does not count other states - adding a Wyoming cave leaves the Florida count unchanged", async () => {
+    const before = await request(app).get("/api/cave-count");
+
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { state: "WY", county: "AL", name: "Cave Count Banner Wyoming Cave" } });
+    assert.equal(createRes.status, 200);
+
+    const after = await request(app).get("/api/cave-count");
+    assert.equal(after.body.count, before.body.count, "a non-Florida cave must not change the Florida count");
+  });
+
+  test("collapses legacy lettered-suffix sibling records (FJK0227a/FJK0227b) into one cave", () => {
+    const caves = [
+      { id: "FJK0227a", name: "Jackson Blue Spring" },
+      { id: "FJK0227b", name: "Source Nuveau" },
+      { id: "FAL0001", name: "Alligator Hole" },
+    ];
+    assert.equal(app.countDistinctCaves(caves), 2, "the lettered pair must count as one cave, plus the unrelated one");
+  });
+
+  test("countTotalEntrances counts every entrance, nested or lettered-suffix, unlike countDistinctCaves", () => {
+    const caves = [
+      { id: "FJK0227a", name: "Jackson Blue Spring" },
+      { id: "FJK0227b", name: "Source Nuveau" },
+      { id: "FAL0001", name: "Alligator Hole", entrances: [{ name: "Second Entrance" }, { name: "Third Entrance" }] },
+    ];
+    assert.equal(app.countDistinctCaves(caves), 2);
+    assert.equal(app.countTotalEntrances(caves), 2 + 3, "the lettered pair is 2 entrances, the nested-entrance cave is 1 + 2");
+  });
+
+  test("caveBaseId only strips a trailing lowercase letter after a digit, not a normal ID", () => {
+    assert.equal(app.caveBaseId("FJK0227a"), "FJK0227");
+    assert.equal(app.caveBaseId("FJK0227"), "FJK0227");
+    assert.equal(app.caveBaseId(""), "");
+    assert.equal(app.caveBaseId(null), null);
+  });
+
+  test("resolveCaveStateAndCounty resolves a lettered-suffix sibling (no explicit state/county) the same as its unsuffixed peer", () => {
+    const plain = app.resolveCaveStateAndCounty({ id: "FJK0227" });
+    const suffixed = app.resolveCaveStateAndCounty({ id: "FJK0227a" });
+    assert.deepEqual(plain, { state: "FL", county: "JK" });
+    assert.deepEqual(
+      suffixed,
+      plain,
+      "a lettered-suffix sibling record predates the explicit state/county fields just like its unsuffixed peer, " +
+        "and must resolve the same way - otherwise it silently drops out of every state-scoped cave count"
+    );
+  });
+});
+
+describe("state/county reference config", () => {
+  test("GET /api/states is public (no login token) - the create-account form needs it before anyone is logged in", async () => {
+    const res = await request(app).get("/api/states");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
+  });
+
+  test("GET /api/states returns all 50 states with Florida's counties intact", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
+
+    const florida = res.body.find((s) => s.code === "FL");
+    assert.ok(florida, "Florida must be present");
+    assert.equal(florida.caveIdPrefix, "F");
+    assert.equal(florida.counties.length, 67);
+    assert.ok(florida.counties.some((c) => c.code === "AL" && c.name === "Alachua"));
+
+    // Every state has a unique 2-letter county code within itself, and a
+    // non-empty county list - a regenerated config that broke either of
+    // these would silently corrupt cave ID generation.
+    for (const state of res.body) {
+      assert.ok(state.counties.length > 0, `${state.code} has no counties`);
+      const codes = state.counties.map((c) => c.code);
+      assert.equal(new Set(codes).size, codes.length, `${state.code} has duplicate county codes`);
+    }
+  });
+
+  test("a member (not just webmaster) can read the reference data", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/states").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 50);
+  });
+});
+
+// Uses Texas throughout (never touched by any other test in this file) so
+// these tests can assert on exact generated cave IDs without needing to
+// know what other tests already did to Florida/Georgia's county numbering.
+// The bulk Excel-import admin tool (and its now-removed
+// GET /api/cave-database/import-template / POST /api/cave-database/import
+// routes) was removed along with the rest of the multi-state machinery -
+// this site only ever hosts Florida data, so a tool for onboarding a new
+// state's spreadsheet no longer has a purpose.
+describe("cave database Excel import has been removed", () => {
+  test("GET /api/cave-database/import-template no longer exists", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .get("/api/cave-database/import-template?state=FL")
+      .set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 404);
+  });
+
+  test("POST /api/cave-database/import no longer exists", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/cave-database/import")
+      .set("Authorization", `Bearer ${token}`)
+      .field("state", "FL");
+    assert.equal(res.status, 404);
+  });
+});
+
+// This site only ever hosts Florida data, so there is nothing left to
+// restrict any account to - every user, regardless of role or whatever
+// may be stored in their own allowedStates field, is unrestricted (see
+// getAllowedStatesForUser in server.js). There is no longer a route to
+// set a per-user restriction (POST /api/change-user-states was removed
+// along with the Account Management/account-creation UI that drove it).
+describe("every account is unrestricted (this site only hosts Florida)", () => {
+  before(async () => {
+    // Even a user record that still has a leftover allowedStates array
+    // (e.g. from data predating this change) must come back unrestricted.
+    await seedUser({ username: "leftoverscopeduser", password: "ScopedPass123!", role: "member", allowedStates: ["FL"] });
+  });
+
+  test("GET /api/users reports null (unrestricted) for every account", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/users").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(res.status, 200);
+
+    const wm = res.body.find((u) => u.username === "webmaster1");
+    assert.equal(wm.allowedStates, null);
+
+    const leftover = res.body.find((u) => u.username === "leftoverscopeduser");
+    assert.equal(leftover.allowedStates, null);
+  });
+
+  test("POST /api/change-user-states no longer exists", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/change-user-states")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ username: "leftoverscopeduser", allowedStates: ["FL", "GA"] });
+    assert.equal(res.status, 404);
+  });
+
+  test("a member with a leftover allowedStates array can still see every cave", async () => {
+    const memberToken = await login("leftoverscopeduser", "ScopedPass123!");
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${memberToken}`);
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
+  });
+});
+
+describe("two-factor authentication", () => {
+  // No SMTP is configured in the test env, so the server logs the code to
+  // the console instead of emailing it (see sendTwoFactorCode in server.js).
+  async function captureDevLog(pattern, action) {
+    const originalLog = console.log;
+    let captured = null;
+    console.log = (...args) => {
+      const line = args.join(" ");
+      const match = line.match(pattern);
+      if (match) captured = match[1];
+      originalLog(...args);
+    };
+    let result;
+    try {
+      result = await action();
+    } finally {
+      console.log = originalLog;
+    }
+    return { result, captured };
+  }
+
+  const CODE_PATTERN = /\[DEV\] Two-factor code for [^:]+: (\d{6})/;
+
+  async function loginCapturingCode(username, password) {
+    const { result, captured } = await captureDevLog(CODE_PATTERN, () =>
+      request(app).post("/api/login").send({ username, password })
+    );
+    return { res: result, code: captured };
+  }
+
+  before(async () => {
+    await seedUser({ username: "twofauser", password: "TwoFaPass123!", role: "member" });
+    const loginToken = await login("twofauser", "TwoFaPass123!");
+    const enableRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${loginToken}`)
+      .send({ enabled: true });
+    assert.equal(enableRes.status, 200);
+    assert.equal(enableRes.body.twoFactorEnabled, true);
+  });
+
+  test("a login attempt on a 2FA-enabled account returns a pending token instead of a session, and emails a code", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.twoFactorRequired, true);
+    assert.ok(res.body.twoFactorToken);
+    assert.equal(res.body.success, undefined);
+    assert.equal(res.body.token, undefined);
+    assert.ok(code, "expected a [DEV] two-factor code to be logged");
+  });
+
+  test("a pending 2FA token cannot be used as a session token on a normal protected route", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const dbRes = await request(app)
+      .get("/api/cave-database")
+      .set("Authorization", `Bearer ${res.body.twoFactorToken}`);
+    assert.equal(dbRes.status, 401);
+  });
+
+  test("verify-2fa rejects an incorrect code", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code: "000000" });
+    assert.equal(verifyRes.status, 401);
+  });
+
+  test("verify-2fa issues a real, working session token for the correct code", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code });
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.body.success, true);
+    assert.ok(verifyRes.body.token);
+
+    const dbRes = await request(app)
+      .get("/api/cave-database")
+      .set("Authorization", `Bearer ${verifyRes.body.token}`);
+    assert.equal(dbRes.status, 200);
+  });
+
+  test("verify-2fa locks out after too many incorrect attempts", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const pendingToken = res.body.twoFactorToken;
+
+    let lastRes;
+    for (let i = 0; i < 6; i++) {
+      lastRes = await request(app)
+        .post("/api/verify-2fa")
+        .send({ twoFactorToken: pendingToken, code: "111111" });
+    }
+    assert.equal(lastRes.status, 429);
+  });
+
+  test("resend-2fa issues a new code that also works to complete login", async () => {
+    const { res } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const pendingToken = res.body.twoFactorToken;
+
+    const { result: resendRes, captured: newCode } = await captureDevLog(CODE_PATTERN, () =>
+      request(app).post("/api/resend-2fa").send({ twoFactorToken: pendingToken })
+    );
+    assert.equal(resendRes.status, 200);
+    assert.ok(newCode);
+
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: pendingToken, code: newCode });
+    assert.equal(verifyRes.status, 200);
+  });
+
+  test("disabling 2FA requires the correct current password", async () => {
+    const { res, code } = await loginCapturingCode("twofauser", "TwoFaPass123!");
+    const verifyRes = await request(app)
+      .post("/api/verify-2fa")
+      .send({ twoFactorToken: res.body.twoFactorToken, code });
+    const sessionToken = verifyRes.body.token;
+
+    const wrongPasswordRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${sessionToken}`)
+      .send({ enabled: false, password: "WrongPassword123!" });
+    assert.equal(wrongPasswordRes.status, 401);
+
+    const rightPasswordRes = await request(app)
+      .post("/api/toggle-2fa")
+      .set("Authorization", `Bearer ${sessionToken}`)
+      .send({ enabled: false, password: "TwoFaPass123!" });
+    assert.equal(rightPasswordRes.status, 200);
+    assert.equal(rightPasswordRes.body.twoFactorEnabled, false);
+
+    // 2FA is off again, so login should succeed directly, no code needed.
+    const directRes = await request(app)
+      .post("/api/login")
+      .send({ username: "twofauser", password: "TwoFaPass123!" });
+    assert.equal(directRes.status, 200);
+    assert.equal(directRes.body.success, true);
+    assert.ok(directRes.body.token);
+  });
+});
+
+describe("pending submissions", () => {
+  test("a member's submission records the authenticated username, ignoring a spoofed submittedBy", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F01TEMP",
+        county: "AL",
+        submittedBy: "someone-else",
+        proposedData: { name: "Submission Test Cave", county: "AL", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.submission.submittedBy, "member1");
+    assert.equal(res.body.submission.status, "pending");
+  });
+
+  test("a member cannot approve or reject a submission", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F01TEMP2",
+        county: "AL",
+        proposedData: { name: "Member Cannot Approve Cave", county: "AL", type: "Land Cave", lat: 29.2, lng: -82.2 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const patchRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ status: "approved" });
+    assert.equal(patchRes.status, 403);
+  });
+
+  test("approving a new_cave submission assigns a real cave ID and writes it into the cave database", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F03TEMP",
+        county: "BF",
+        proposedData: { name: "Approved New Cave", county: "BF", type: "Land Cave", lat: 29.3, lng: -82.3 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved", approvedBy: "spoofed-approver" });
+    assert.equal(approveRes.status, 200);
+    assert.equal(approveRes.body.submission.approvedBy, "webmaster1"); // never the spoofed body value
+    const assignedId = approveRes.body.submission.assignedCaveId;
+    assert.ok(assignedId && assignedId.startsWith("FBF"), `expected an assigned FBF cave id, got ${assignedId}`);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === assignedId);
+    assert.ok(stored, "approved new cave should be written into the cave database");
+    assert.equal(stored.name, "Approved New Cave");
+  });
+
+  test("approving a new_cave submission for a non-Florida state assigns that state's ID prefix", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "GATEMP",
+        state: "GA",
+        county: "BA",
+        proposedData: { name: "Georgia Bacon County Cave", state: "GA", county: "BA", type: "Land Cave", lat: 31.7, lng: -82.4 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+    assert.equal(submitRes.body.submission.state, "GA");
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+    const assignedId = approveRes.body.submission.assignedCaveId;
+    assert.match(assignedId, /^GABA\d{3}$/);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === assignedId);
+    assert.equal(stored.state, "GA");
+    assert.equal(stored.county, "BA");
+  });
+
+  test("approving an edit_cave submission merges proposedData into the existing cave", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { county: "04", name: "Original Name", notes: "original notes" } });
+    const caveId = createRes.body.caveId;
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "edit_cave",
+        caveId,
+        proposedData: { name: "Edited Name", notes: "edited notes" },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = dbRes.body.find((c) => c.id === caveId);
+    assert.equal(stored.name, "Edited Name");
+    assert.equal(stored.notes, "edited notes");
+    assert.equal(stored.id, caveId); // id itself is never overwritten by proposedData
+  });
+
+  test("rejecting a submission records the reason and leaves the cave database untouched", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const beforeDb = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const beforeCount = beforeDb.body.length;
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F05TEMP",
+        county: "BK",
+        proposedData: { name: "Rejected Cave", county: "BK", type: "Land Cave", lat: 29.5, lng: -82.5 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const rejectRes = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "rejected", rejectionReason: "Needs more detail", rejectedBy: "spoofed-rejector" });
+    assert.equal(rejectRes.status, 200);
+    assert.equal(rejectRes.body.submission.rejectedBy, "webmaster1");
+    assert.equal(rejectRes.body.submission.rejectionReason, "Needs more detail");
+
+    const afterDb = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(afterDb.body.length, beforeCount);
+  });
+
+  test("a submission cannot be approved twice", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+
+    const submitRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "F06TEMP",
+        county: "BR",
+        proposedData: { name: "Double Approve Cave", county: "BR", type: "Land Cave", lat: 29.6, lng: -82.6 },
+      });
+    const submissionId = submitRes.body.submission.submissionId;
+
+    const firstApprove = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(firstApprove.status, 200);
+
+    const secondApprove = await request(app)
+      .patch(`/api/pending-submissions/${submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(secondApprove.status, 409);
+  });
+
+  // Regression test for a stored-XSS chain: a new_cave submission's county
+  // used to be stored verbatim with no validation, and once approved it
+  // gets baked unescaped into the new cave's ID (see generateNextCaveId)
+  // - which is rendered unescaped in the interactive map's popup, including
+  // inside onclick="...('...')" attributes. A member submitting a crafted
+  // county could execute JS in whatever webmaster/admin next opened the
+  // map. Must be rejected at submission time, not just escaped on render.
+  test("rejects a new_cave submission whose county isn't a real code for the state", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FXSSTEMP",
+        county: "X'-alert(document.cookie)-'",
+        proposedData: { name: "XSS Attempt Cave", county: "X'-alert(document.cookie)-'", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new_cave submission with a plausible-looking but unrecognized county code", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FZZTEMP",
+        county: "ZZ",
+        proposedData: { name: "Bad County Code Cave", county: "ZZ", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a new_cave submission with no county at all", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({
+        type: "new_cave",
+        caveId: "FNOCOUNTYTEMP",
+        proposedData: { name: "No County Cave", type: "Land Cave", lat: 29.1, lng: -82.1 },
+      });
+    assert.equal(res.status, 400);
+  });
+});
+
+describe("cave-data routes are unrestricted (no per-user state scoping)", () => {
+  let gaCaveId;
+
+  before(async () => {
+    await seedUser({ username: "flonlymember", password: "FlOnlyPass123!", role: "member", allowedStates: ["FL"] });
+
+    // Seed one Florida cave and one "other state" cave - even though this
+    // site only ever hosts Florida data in practice, nothing should choke
+    // on a stray non-FL record, and a member must be able to see it.
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { state: "FL", county: "SC", name: "Scoping Test FL Cave" } });
+    const gaRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { state: "GA", county: "SC", name: "Scoping Test GA Cave" } });
+    gaCaveId = gaRes.body.caveId;
+  });
+
+  test("GET /api/cave-database returns every cave to every account, regardless of their own allowedStates", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((c) => c.name === "Scoping Test FL Cave"));
+    assert.ok(res.body.some((c) => c.name === "Scoping Test GA Cave"));
+  });
+
+  test("a member can submit a proposal for any state, not just their own stored allowedStates", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "new_cave",
+        caveId: "GATEMP2",
+        state: "GA",
+        county: "SC",
+        proposedData: { name: "No Longer Rejected Cave", state: "GA", county: "SC" },
+      });
+    assert.equal(res.status, 200);
+  });
+
+  // edit_cave submission state is still resolved from the real cave server-
+  // side, never trusted from the client - unrelated to allowedStates (there
+  // is no longer any restriction to bypass), this just confirms the stored
+  // submission accurately records which cave it's actually for.
+  test("edit_cave submission state is resolved from the real cave, ignoring a mismatched client-supplied state", async () => {
+    const token = await login("flonlymember", "FlOnlyPass123!");
+    const res = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        type: "edit_cave",
+        caveId: gaCaveId,
+        state: "FL", // mismatched on purpose - must be ignored in favor of the cave's real state
+        county: "SC",
+        proposedData: { name: "Legitimate GA Edit" },
+      });
+    assert.equal(res.status, 200);
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const listRes = await request(app).get("/api/pending-submissions").set("Authorization", `Bearer ${webmasterToken}`);
+    const stored = listRes.body.find((s) => s.caveId === gaCaveId && s.caveName === "Legitimate GA Edit");
+    assert.ok(stored, "submission should exist");
+    assert.equal(stored.state, "GA", "stored state must be the cave's real state, not the client-supplied FL");
+  });
+});
+
+describe("X-Forwarded-Proto parsing (HTTPS-redirect middleware)", () => {
+  // Regression test for a real production bug: this deployment's proxy
+  // chain (nginx -> Apache) sends X-Forwarded-Proto as "https, https" (each
+  // hop appends rather than replaces), not plain "https" - an exact-match
+  // comparison against the header redirected every single request to
+  // itself forever, even though the request genuinely was HTTPS
+  // end-to-end. See the comment above isRequestOverHttps in server.js.
+  const isRequestOverHttps = app.locals.isRequestOverHttps;
+
+  test("treats a duplicated proxy chain value as HTTPS", () => {
+    assert.equal(isRequestOverHttps("https, https"), true);
+  });
+  test("treats a plain value as HTTPS", () => {
+    assert.equal(isRequestOverHttps("https"), true);
+  });
+  test("treats a value with mixed case/whitespace as HTTPS", () => {
+    assert.equal(isRequestOverHttps(" HTTPS , http"), true);
+  });
+  test("treats plain http as not HTTPS", () => {
+    assert.equal(isRequestOverHttps("http"), false);
+  });
+  test("treats a chain starting with http as not HTTPS", () => {
+    assert.equal(isRequestOverHttps("http, https"), false);
+  });
+  test("returns null (no opinion) when the header is absent", () => {
+    assert.equal(isRequestOverHttps(undefined), null);
+  });
+});
+
+describe("path traversal protection", () => {
+  test("does not escape the narrative-image directory via a traversal filename", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .get("/download-narrative-image/..%2f..%2f..%2fetc%2fpasswd")
+      .set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 404); // sanitized to a nonexistent filename, never a leak
+  });
+});
+
+describe("narrative content", () => {
+  test("strips <script> and event-handler attributes from saved narrative HTML", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const saveRes = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        id: "F01001",
+        name: "Test Cave",
+        html: '<p>Trip report</p><script>alert(1)</script><img src="x" onerror="alert(2)">',
+        images: [],
+      });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await request(app)
+      .get("/get-narrative?id=F01001")
+      .set("Authorization", `Bearer ${token}`);
+    const saved = getRes.body[0];
+    assert.ok(!saved.html.includes("<script"), "script tag must be stripped");
+    assert.ok(!saved.html.includes("onerror"), "event-handler attribute must be stripped");
+  });
+
+  test("attributes a narrative to the authenticated user, ignoring a client-supplied one", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "F01002", name: "Test Cave 2", html: "<p>hi</p>", user: "someone-else", images: [] });
+
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const getRes = await request(app)
+      .get("/get-narrative?id=F01002")
+      .set("Authorization", `Bearer ${webmasterToken}`);
+    assert.equal(getRes.body[0].user, "member1");
+  });
+
+  test("rejects an unsafe cave id instead of writing outside the narratives directory", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "../../etc/evil", name: "x", html: "<p>hi</p>", images: [] });
+    assert.equal(res.status, 400);
+  });
+});
+
+// Regression tests for a file-upload vulnerability: the route used to trust
+// the client-supplied Content-Type of the uploaded part and the extension
+// of the client-supplied filename, so a script-capable file (e.g. an SVG
+// document containing an inline <script>) could be uploaded as a fake
+// "image/png" and stored/served with its real, executable .svg extension.
+// The fix sniffs the actual file bytes and derives the stored extension
+// from that, never from anything the client claims.
+describe("narrative image upload validates real file content", () => {
+  test("rejects an SVG (script-capable) file even when declared as image/png", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const svgBuffer = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", svgBuffer, { filename: "poison.svg", contentType: "image/png" });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects plain text declared as an image", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", Buffer.from("just some text, not an image"), {
+        filename: "notreally.jpg",
+        contentType: "image/jpeg",
+      });
+    assert.equal(res.status, 400);
+  });
+
+  test("accepts a real PNG and stores it with a .png extension regardless of the claimed filename", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    // Minimal valid 1x1 PNG (magic bytes + IHDR/IDAT/IEND chunks).
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const pngBuffer = Buffer.from(pngBase64, "base64");
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      // Deliberately mismatched extension/claimed type - the response must
+      // still reflect the DETECTED type (.png), not this claim.
+      .attach("image", pngBuffer, { filename: "whatever.svg", contentType: "image/svg+xml" });
+    assert.equal(res.status, 200);
+    assert.match(res.body.imageUrl, /^\/cave-pictures\/\d+-\d+\.png$/);
+  });
+});
+
+describe("disable large files mode", () => {
+  after(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false, disableLargeFilesMessage: "" });
+  });
+
+  test("blocks uploading a narrative photo, even for a webmaster", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true, disableLargeFilesMessage: "Large files are off for testing." });
+
+    const pngBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", pngBuffer, { filename: "whatever.png", contentType: "image/png" });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.largeFilesDisabled, true);
+    assert.equal(res.body.error, "Large files are off for testing.");
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false, disableLargeFilesMessage: "" });
+  });
+
+  test("blocks uploading a cave map file", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true });
+
+    const res = await request(app)
+      .post("/api/cave-maps/upload")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("mapFiles", Buffer.from("not a real geotiff"), { filename: "test.tif", contentType: "image/tiff" });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.largeFilesDisabled, true);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false });
+  });
+
+  test("blocks viewing/downloading an already-uploaded narrative photo", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const pngBuffer = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const uploadRes = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", pngBuffer, { filename: "whatever.png", contentType: "image/png" });
+    assert.equal(uploadRes.status, 200);
+    const imageUrl = uploadRes.body.imageUrl;
+
+    // Sanity check: viewable normally before the toggle.
+    const beforeRes = await request(app).get(imageUrl).set("Authorization", `Bearer ${token}`);
+    assert.equal(beforeRes.status, 200);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: true });
+
+    const afterRes = await request(app).get(imageUrl).set("Authorization", `Bearer ${token}`);
+    assert.equal(afterRes.status, 403);
+    assert.equal(afterRes.body.largeFilesDisabled, true);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ disableLargeFiles: false });
+  });
+
+  test("does not block submitting a new cave proposal or saving a narrative", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ disableLargeFiles: true });
+
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const submissionRes = await request(app)
+      .post("/api/pending-submissions")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ type: "new_cave", caveId: "FLGTEMP", state: "FL", county: "AL", proposedData: { name: "Large Files Off Test Cave" } });
+    assert.equal(submissionRes.status, 200);
+
+    const narrativeRes = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ id: "FAL001", html: "<p>Written while large files are disabled.</p>" });
+    assert.equal(narrativeRes.status, 200);
+
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ disableLargeFiles: false });
+  });
+});
+
+// Deliberately last in the file: maintenance mode is a single global
+// toggle (not partitionable the way a dedicated test state/user is for
+// other describe blocks), so a test here that left it "on" would break
+// every other describe block's member/unauthenticated-role assertions.
+// The after() hook unconditionally restores the default (off) config,
+// whatever happened in the tests above it.
+describe("website management: site status, banner, and maintenance mode", () => {
+  after(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ maintenanceMode: false, maintenanceMessage: "", bannerEnabled: false, bannerMessage: "", bannerColor: "yellow" });
+  });
+
+  test("GET /api/site-status is public and defaults to everything off", async () => {
+    const res = await request(app).get("/api/site-status");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.maintenanceMode, false);
+    assert.equal(res.body.bannerEnabled, false);
+  });
+
+  test("POST /api/site-config requires webmaster", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ bannerEnabled: true });
+    assert.equal(res.status, 403);
+  });
+
+  test("banner message: a plain URL becomes a real link, a script tag does not survive", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerColor: "red",
+        bannerMessage: 'Scheduled downtime Friday. Details: https://example.com/notice <script>alert(1)</script>',
+      });
+    assert.equal(res.status, 200);
+    assert.match(res.body.bannerHtml, /<a href="https:\/\/example\.com\/notice" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/notice<\/a>/);
+    assert.ok(!res.body.bannerHtml.includes("<script"), "a typed <script> tag must never survive into bannerHtml");
+    assert.ok(!res.body.bannerHtml.includes("alert(1)"), "script tag contents must not survive either");
+
+    const statusRes = await request(app).get("/api/site-status");
+    assert.equal(statusRes.body.bannerEnabled, true);
+    assert.equal(statusRes.body.bannerColor, "red");
+    assert.equal(statusRes.body.bannerHtml, res.body.bannerHtml);
+  });
+
+  test("banner message: email addresses and links without http:// are clickable too", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage:
+          "Questions? Email webmaster@caves.org or see www.caves.org, fcs.caves.org/portal and https://example.com/a?x=1&y=2. " +
+          "Info (https://en.wikipedia.org/wiki/Cave_(disambiguation)). Version 1.5 and Node.js aren't links.",
+      });
+    assert.equal(res.status, 200);
+    const html = res.body.bannerHtml;
+    assert.match(html, /<a href="mailto:webmaster@caves\.org">webmaster@caves\.org<\/a> or/);
+    assert.match(html, /<a href="https:\/\/www\.caves\.org" target="_blank" rel="noopener noreferrer">www\.caves\.org<\/a>,/);
+    assert.match(html, /<a href="https:\/\/fcs\.caves\.org\/portal" target="_blank" rel="noopener noreferrer">fcs\.caves\.org\/portal<\/a> and/);
+    // query string kept, trailing full stop not part of the link
+    assert.match(html, /<a href="https:\/\/example\.com\/a\?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/a\?x=1&amp;y=2<\/a>\. /);
+    // a bracket the link opened is kept; the sentence's closing bracket isn't
+    assert.match(html, /href="https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)"[^>]*>https:\/\/en\.wikipedia\.org\/wiki\/Cave_\(disambiguation\)<\/a>\)\./);
+    assert.ok(!/<a[^>]*>1\.5<\/a>/.test(html) && !/<a[^>]*>Node\.js<\/a>/.test(html), "ordinary dotted words aren't links");
+  });
+
+  test("banner message: links can't be used to sneak in markup or scripts", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        bannerEnabled: true,
+        bannerMessage: 'See "https://example.com/x" and <a href="javascript:alert(1)">click</a> or javascript:alert(2) <img src=x onerror=alert(3)>',
+      });
+    const html = res.body.bannerHtml;
+    assert.ok(!html.includes("javascript:alert(1)\""), "typed <a> tags are dropped");
+    assert.ok(!/href="javascript/i.test(html), "no javascript: links");
+    assert.ok(!html.includes("<img") && !html.includes("onerror"), "no other tags or handlers");
+    assert.match(html, /href="https:\/\/example\.com\/x"/); // quotes around a link aren't part of it
+  });
+
+  test("rejects an invalid bannerColor", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-config")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ bannerColor: "purple" });
+    assert.equal(res.status, 400);
+  });
+
+  describe("maintenance mode enforcement", () => {
+    before(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ maintenanceMode: true, maintenanceMessage: "Back soon." });
+      assert.equal(res.status, 200);
+    });
+
+    after(async () => {
+      // Belt-and-suspenders on top of the outer after() - later tests in
+      // this same describe block need it off again, immediately.
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ maintenanceMode: false });
+    });
+
+    test("blocks a member's API calls with 503 while maintenance mode is on", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 503);
+      assert.equal(res.body.maintenance, true);
+      assert.equal(res.body.error, "Back soon.");
+    });
+
+    test("blocks an unauthenticated API call too", async () => {
+      const res = await request(app).get("/api/cave-database");
+      assert.equal(res.status, 503);
+    });
+
+    test("does NOT block a webmaster's API calls", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("does NOT block an admin's API calls", async () => {
+      await seedUser({ username: "maintenanceadmin", password: "MaintenanceAdminPass123!", role: "admin" });
+      const token = await login("maintenanceadmin", "MaintenanceAdminPass123!");
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("login and site-status stay reachable during maintenance mode", async () => {
+      const loginRes = await request(app).post("/api/login").send({ username: "member1", password: MEMBER_PASSWORD });
+      assert.equal(loginRes.status, 200);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.status, 200);
+      assert.equal(statusRes.body.maintenanceMode, true);
+    });
+
+    test("GET / serves the maintenance page instead of the app", async () => {
+      const res = await request(app).get("/");
+      assert.equal(res.status, 200);
+      assert.match(res.text, /Under Construction/);
+    });
+
+    test("GET /portal always serves the real app, maintenance mode or not", async () => {
+      const res = await request(app).get("/portal");
+      assert.equal(res.status, 200);
+      assert.match(res.text, /Florida Cave Survey/);
+      assert.ok(!/Under Construction/.test(res.text));
+    });
+  });
+
+  test("GET / serves the real app when maintenance mode is off", async () => {
+    const res = await request(app).get("/");
+    assert.equal(res.status, 200);
+    assert.ok(!/Under Construction/.test(res.text));
+  });
+
+  describe("scheduled maintenance window", () => {
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: "", scheduledMaintenanceEnd: "" });
+    });
+
+    test("a window covering right now makes maintenance active automatically, without touching the manual toggle", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const start = new Date(Date.now() - 60_000).toISOString();
+      const end = new Date(Date.now() + 60_000).toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: start, scheduledMaintenanceEnd: end });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.maintenanceMode, false);
+      assert.equal(res.body.maintenanceActive, true);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.body.maintenanceActive, true);
+
+      // and it actually gates API calls, same as the manual toggle
+      const memberToken = await login("member1", MEMBER_PASSWORD);
+      const gatedRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${memberToken}`);
+      assert.equal(gatedRes.status, 503);
+    });
+
+    test("a window entirely in the future does not activate maintenance yet", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const start = new Date(Date.now() + 3600_000).toISOString();
+      const end = new Date(Date.now() + 7200_000).toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: start, scheduledMaintenanceEnd: end });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.maintenanceActive, false);
+    });
+
+    test("rejects a start that is not before the end", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const now = new Date().toISOString();
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: now, scheduledMaintenanceEnd: now });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects setting only a start without an end", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ scheduledMaintenanceStart: new Date().toISOString() });
+      assert.equal(res.status, 400);
+    });
+  });
+
+  describe("read-only mode", () => {
+    before(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ readOnlyMode: true, readOnlyMessage: "No new submissions right now." });
+      assert.equal(res.status, 200);
+    });
+
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ readOnlyMode: false, readOnlyMessage: "" });
+    });
+
+    test("blocks a member from submitting a new cave proposal", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app)
+        .post("/api/pending-submissions")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ type: "new_cave", caveId: "FROTEMP", state: "FL", county: "AL", proposedData: { name: "Read Only Test Cave" } });
+      assert.equal(res.status, 403);
+      assert.equal(res.body.readOnly, true);
+      assert.equal(res.body.error, "No new submissions right now.");
+    });
+
+    test("does not block reading the cave database", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+    });
+
+    test("does not block a webmaster from writing directly to the cave database", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/save-cave-database")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ action: "createNew", cave: { state: "FL", county: "RO", name: "Webmaster Still Writes During Read-Only" } });
+      assert.equal(res.status, 200);
+    });
+  });
+
+  describe("hidden tabs", () => {
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: [] });
+    });
+
+    test("rejects a non-array value", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: "statistics" });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects a tab ID that isn't on the hideable list", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: ["statistics", "not-a-real-tab"] });
+      assert.equal(res.status, 400);
+    });
+
+    // Account Management and Website Management must never be hideable -
+    // hiding Website Management would remove the only way to ever un-hide
+    // anything again.
+    test("rejects account-management and website-management specifically", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      for (const tabId of ["account-management", "website-management"]) {
+        const res = await request(app)
+          .post("/api/site-config")
+          .set("Authorization", `Bearer ${token}`)
+          .send({ hiddenTabs: [tabId] });
+        assert.equal(res.status, 400, `${tabId} should be rejected`);
+      }
+    });
+
+    test("accepts a valid list, dedupes it, and GET /api/site-status reflects it", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const postRes = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: ["statistics", "map-tab", "statistics"] });
+      assert.equal(postRes.status, 200);
+      assert.deepEqual(postRes.body.hiddenTabs.sort(), ["map-tab", "statistics"]);
+
+      const statusRes = await request(app).get("/api/site-status");
+      assert.equal(statusRes.status, 200);
+      assert.deepEqual(statusRes.body.hiddenTabs.sort(), ["map-tab", "statistics"]);
+    });
+
+    test("an empty list means every tab is visible again", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ hiddenTabs: [] });
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.hiddenTabs, []);
+    });
+  });
+
+  describe("configurable login lockout policy", () => {
+    before(async () => {
+      await seedUser({ username: "lockoutconfigtest", password: "LockoutConfigPass123!", role: "member" });
+    });
+
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 5, loginLockoutMinutes: 15 });
+    });
+
+    test("rejects an out-of-range threshold", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 1 });
+      assert.equal(res.status, 400);
+    });
+
+    test("rejects an out-of-range lockout window", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutMinutes: 0 });
+      assert.equal(res.status, 400);
+    });
+
+    test("a lowered threshold takes effect immediately on the next failed login", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const configRes = await request(app)
+        .post("/api/site-config")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ loginLockoutThreshold: 3, loginLockoutMinutes: 15 });
+      assert.equal(configRes.status, 200);
+
+      for (let i = 0; i < 3; i++) {
+        await request(app).post("/api/login").send({ username: "lockoutconfigtest", password: "WrongPassword!" });
+      }
+      const res = await request(app)
+        .post("/api/login")
+        .send({ username: "lockoutconfigtest", password: "LockoutConfigPass123!" });
+      assert.equal(res.status, 429);
+      assert.match(res.body.error, /15 minutes/);
+    });
+  });
+
+  describe("GET /api/site-config (webmaster full view) and /api/backup-now", () => {
+    test("GET /api/site-config requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/site-config").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("GET /api/site-config includes the login lockout policy; GET /api/site-status does not", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const fullRes = await request(app).get("/api/site-config").set("Authorization", `Bearer ${token}`);
+      assert.equal(fullRes.status, 200);
+      assert.equal(typeof fullRes.body.loginLockoutThreshold, "number");
+      assert.equal(typeof fullRes.body.loginLockoutMinutes, "number");
+
+      const publicRes = await request(app).get("/api/site-status");
+      assert.equal(publicRes.body.loginLockoutThreshold, undefined);
+      assert.equal(publicRes.body.loginLockoutMinutes, undefined);
+    });
+
+    test("GET /api/backup-now requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("GET /api/backup-now returns a downloadable JSON snapshot with the expected shape", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.match(res.headers["content-disposition"], /attachment; filename="fcs-backup-\d{4}-\d{2}-\d{2}\.json"/);
+      const body = JSON.parse(res.text);
+      assert.ok(body.exportedAt);
+      assert.ok(Array.isArray(body.users));
+      assert.ok(Array.isArray(body.caveDatabase));
+      assert.ok(Array.isArray(body.pendingSubmissions));
+      assert.ok(body.siteConfig);
+    });
+  });
+
+  describe("GET /api/diagnostics/storage-paths", () => {
+    test("requires webmaster", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/diagnostics/storage-paths").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 403);
+    });
+
+    test("reports app root and resolved paths for every storage directory, with file names but never content", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).get("/api/diagnostics/storage-paths").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.ok(typeof res.body.appRoot === "string" && res.body.appRoot.length > 0);
+      assert.ok(typeof res.body.nodeProcessCwd === "string" && res.body.nodeProcessCwd.length > 0);
+
+      for (const key of ["narratives", "caveMaps", "cavePictures", "data"]) {
+        const dir = res.body.directories[key];
+        assert.ok(dir, `missing directories.${key}`);
+        assert.equal(typeof dir.resolvedPath, "string");
+        assert.equal(typeof dir.exists, "boolean");
+        if (dir.exists) {
+          assert.equal(typeof dir.entryCount, "number");
+          assert.ok(Array.isArray(dir.sampleEntries));
+          assert.ok(dir.sampleEntries.length <= 25);
+        }
+      }
+    });
+  });
+});
+
+describe("site updates", () => {
+  test("require a login", async () => {
+    const res = await request(app).get("/api/site-updates");
+    assert.equal(res.status, 401);
+  });
+
+  test("lists valid updates newest first, with nothing seen yet for a new account", async () => {
+    await seedUser({ username: "updates-reader", password: MEMBER_PASSWORD, role: "member" });
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.updates.map((u) => u.id), ["newest", "middle", "older"]);
+    assert.equal(res.body.lastSeenUpdateId, null);
+  });
+
+  test("closing the card records the newest seen update, and never moves backwards", async () => {
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const bad = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "no-such-update" });
+    assert.equal(bad.status, 400);
+
+    const seen = await request(app).post("/api/site-updates/seen").set(auth).send({ id: "newest" });
+    assert.equal(seen.status, 200);
+    let res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+    assert.equal(res.body.lastSeenUpdateDate, "2026-03-01");
+
+    await request(app).post("/api/site-updates/seen").set(auth).send({ id: "older" });
+    res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.lastSeenUpdateId, "newest");
+  });
+
+  test("hides a webmasterOnly update from a member", async () => {
+    const token = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.updates.some((u) => u.id === "webmaster-secret"));
+  });
+
+  test("hides a webmasterOnly update from an admin too - only a webmaster sees it", async () => {
+    await seedUser({ username: "updates-admin", password: MEMBER_PASSWORD, role: "admin" });
+    const token = await login("updates-admin", MEMBER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.updates.some((u) => u.id === "webmaster-secret"));
+  });
+
+  test("shows a webmasterOnly update to a webmaster, newest first", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.updates[0].id, "webmaster-secret");
+  });
+
+  describe("toggling an update's webmasterOnly flag", () => {
+    test("requires a webmaster", async () => {
+      const token = await login("updates-reader", MEMBER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ id: "older", webmasterOnly: true });
+      assert.equal(res.status, 403);
+    });
+
+    test("rejects a missing id or a non-boolean webmasterOnly", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const auth = { Authorization: `Bearer ${token}` };
+      const noId = await request(app).post("/api/site-updates/visibility").set(auth).send({ webmasterOnly: true });
+      assert.equal(noId.status, 400);
+      const badFlag = await request(app)
+        .post("/api/site-updates/visibility")
+        .set(auth)
+        .send({ id: "older", webmasterOnly: "yes" });
+      assert.equal(badFlag.status, 400);
+    });
+
+    test("404s on an unknown id", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ id: "no-such-update", webmasterOnly: true });
+      assert.equal(res.status, 404);
+    });
+
+    test("hides an update from a member and shows it again once unflagged", async () => {
+      const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+      const memberToken = await login("updates-reader", MEMBER_PASSWORD);
+
+      let res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "older", webmasterOnly: true });
+      assert.equal(res.status, 200);
+
+      let memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(!memberRes.body.updates.some((u) => u.id === "older"));
+
+      res = await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "older", webmasterOnly: false });
+      assert.equal(res.status, 200);
+
+      memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(memberRes.body.updates.some((u) => u.id === "older"));
+    });
+  });
+
+  test("hiding an update never changes the shipped update file, and is kept in the data directory", async () => {
+    const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const memberToken = await login("updates-reader", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/site-updates/visibility")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ id: "middle", webmasterOnly: true });
+    assert.equal(res.status, 200);
+    assert.equal(fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8"), before);
+    const stored = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "site-updates-visibility.json"), "utf8"));
+    assert.equal(stored.middle, true);
+
+    // A deploy replaces the shipped file (here: a new entry on top). The
+    // new entry shows up, and the hidden one stays hidden.
+    const list = JSON.parse(before);
+    list.unshift({ id: "after-deploy", date: "2026-03-01", title: "Posted by a later deploy", changes: ["z"] });
+    fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+    try {
+      const memberRes = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      const ids = memberRes.body.updates.map((u) => u.id);
+      assert.ok(ids.includes("after-deploy"));
+      assert.ok(!ids.includes("middle"));
+      assert.equal(memberRes.headers["cache-control"], "no-store");
+
+      // A webmaster can also show an update the shipped file marks hidden
+      await request(app)
+        .post("/api/site-updates/visibility")
+        .set("Authorization", `Bearer ${webmasterToken}`)
+        .send({ id: "webmaster-secret", webmasterOnly: false });
+      const shown = await request(app).get("/api/site-updates").set("Authorization", `Bearer ${memberToken}`);
+      assert.ok(shown.body.updates.some((u) => u.id === "webmaster-secret"));
+    } finally {
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+      for (const [id, flag] of [["middle", false], ["webmaster-secret", true]]) {
+        await request(app)
+          .post("/api/site-updates/visibility")
+          .set("Authorization", `Bearer ${webmasterToken}`)
+          .send({ id, webmasterOnly: flag });
+      }
+    }
+  });
+
+  test("an update posted later with the same date as one already seen still counts as unseen", async () => {
+    await seedUser({ username: "updates-sameday", password: MEMBER_PASSWORD, role: "member" });
+    const token = await login("updates-sameday", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+    let res = await request(app).get("/api/site-updates").set(auth);
+    assert.equal(res.body.seenUpdateIds, null);
+    const shownIds = res.body.updates.map((u) => u.id);
+    const seenRes = await request(app).post("/api/site-updates/seen").set(auth).send({ id: shownIds[0], ids: shownIds.concat("made-up") });
+    assert.deepEqual(seenRes.body.seenUpdateIds.slice().sort(), shownIds.slice().sort());
+
+    const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+    const list = JSON.parse(before);
+    list.push({ id: "same-day-later", date: "2026-03-01", title: "Same day as newest", changes: ["q"] });
+    list.push({ id: "backdated", date: "2025-12-01", title: "Dated before everything", changes: ["r"] });
+    fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+    try {
+      res = await request(app).get("/api/site-updates").set(auth);
+      const seen = new Set(res.body.seenUpdateIds);
+      const unseen = res.body.updates.filter((u) => !seen.has(u.id)).map((u) => u.id);
+      assert.deepEqual(unseen.sort(), ["backdated", "same-day-later"]);
+    } finally {
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+    }
+  });
+
+  describe("hiding one line of an update", () => {
+    const lineKey = (text) => require("crypto").createHash("sha256").update(text).digest("hex").slice(0, 16);
+    const setLine = (token, id, changeKey, hidden) =>
+      request(app).post("/api/site-updates/visibility").set("Authorization", `Bearer ${token}`).send({ id, changeKey, hidden });
+    const listFor = async (token) => (await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`)).body.updates;
+
+    test("a member stops seeing just that line; a webmaster still sees it, marked hidden", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["b", "c"]);
+
+      const res = await setLine(wm, "newest", lineKey("b"), true);
+      assert.equal(res.status, 200);
+
+      const forMember = (await listFor(member)).find((u) => u.id === "newest");
+      assert.deepEqual(forMember.changes, ["c"]);
+      assert.equal(forMember.changeKeys, undefined, "members are sent no hide controls or hidden-line data");
+      assert.equal(forMember.hiddenChangeKeys, undefined);
+
+      const forWebmaster = (await listFor(wm)).find((u) => u.id === "newest");
+      assert.deepEqual(forWebmaster.changes, ["b", "c"]);
+      assert.deepEqual(forWebmaster.hiddenChangeKeys, [lineKey("b")]);
+
+      assert.equal((await setLine(wm, "newest", lineKey("b"), false)).status, 200);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["b", "c"]);
+    });
+
+    test("an update with every line hidden disappears for members, and comes back when one is shown", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      await setLine(wm, "newest", lineKey("b"), true);
+      await setLine(wm, "newest", lineKey("c"), true);
+      assert.ok(!(await listFor(member)).some((u) => u.id === "newest"));
+      assert.ok((await listFor(wm)).some((u) => u.id === "newest"));
+      // an update that never had any lines is not affected
+      assert.ok((await listFor(member)).some((u) => u.id === "middle"));
+
+      await setLine(wm, "newest", lineKey("c"), false);
+      assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["c"]);
+      await setLine(wm, "newest", lineKey("b"), false);
+    });
+
+    test("the choice follows the line when the shipped file is reordered or added to", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      await setLine(wm, "newest", lineKey("c"), true);
+      const before = fs.readFileSync(process.env.SITE_UPDATES_FILE, "utf8");
+      const list = JSON.parse(before);
+      list.find((u) => u.id === "newest").changes = ["added later", "c", "b"];
+      fs.writeFileSync(process.env.SITE_UPDATES_FILE, JSON.stringify(list));
+      try {
+        assert.deepEqual((await listFor(member)).find((u) => u.id === "newest").changes, ["added later", "b"]);
+      } finally {
+        fs.writeFileSync(process.env.SITE_UPDATES_FILE, before);
+        await setLine(wm, "newest", lineKey("c"), false);
+      }
+    });
+
+    test("needs a webmaster, a real update and a real line", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      assert.equal((await setLine(member, "newest", lineKey("b"), true)).status, 403);
+      assert.equal((await setLine(wm, "no-such-update", lineKey("b"), true)).status, 404);
+      assert.equal((await setLine(wm, "newest", lineKey("not a line of it"), true)).status, 404);
+      assert.equal((await setLine(wm, "newest", "nonsense", true)).status, 400);
+      assert.equal((await setLine(wm, "newest", lineKey("b"), "yes")).status, 400);
+    });
+  });
+
+  test("the shipped config/site-updates.json is valid", () => {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
+    assert.ok(Array.isArray(list) && list.length > 0);
+    const ids = new Set();
+    for (const u of list) {
+      assert.equal(typeof u.id, "string");
+      assert.ok(!ids.has(u.id), `duplicate update id ${u.id}`);
+      ids.add(u.id);
+      assert.match(u.date, /^\d{4}-\d{2}-\d{2}$/, `bad date on ${u.id}`);
+      assert.equal(typeof u.title, "string");
+      assert.ok(Array.isArray(u.changes) && u.changes.every((c) => typeof c === "string"), `bad changes on ${u.id}`);
+    }
+  });
+});
+
+describe("feature requests and bug reports", () => {
+  test("require a login", async () => {
+    const res = await request(app).post("/api/feedback").send({ type: "bug", title: "x", description: "y" });
+    assert.equal(res.status, 401);
+  });
+
+  test("validate the type, title and description", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const auth = { Authorization: `Bearer ${token}` };
+    for (const body of [
+      { type: "complaint", title: "t", description: "d" },
+      { type: "bug", title: "   ", description: "d" },
+      { type: "bug", title: "t".repeat(151), description: "d" },
+      { type: "feature", title: "t", description: "" },
+    ]) {
+      const res = await request(app).post("/api/feedback").set(auth).send(body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  });
+
+  test("members see only their own items; webmasters see all and can manage them", async () => {
+    await seedUser({ username: "feedback-other", password: MEMBER_PASSWORD, role: "member" });
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    const other = { Authorization: `Bearer ${await login("feedback-other", MEMBER_PASSWORD)}` };
+    const webmaster = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+
+    const sent = await request(app).post("/api/feedback").set(member)
+      .send({ type: "bug", title: "  Markers vanish  ", description: "After filtering by county." });
+    assert.equal(sent.status, 201);
+    assert.equal(sent.body.item.title, "Markers vanish");
+    assert.equal(sent.body.item.status, "new");
+    await request(app).post("/api/feedback").set(other).send({ type: "feature", title: "PDF export", description: "Please." });
+
+    const mine = await request(app).get("/api/feedback").set(member);
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.canManage, false);
+    assert.deepEqual(mine.body.items.map((f) => f.title), ["Markers vanish"]);
+    assert.equal(mine.body.items[0].userAgent, undefined);
+
+    const all = await request(app).get("/api/feedback").set(webmaster);
+    assert.equal(all.body.canManage, true);
+    assert.equal(all.body.items.length, 2);
+
+    const id = sent.body.item.id;
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(member).send({ status: "done" })).status, 403);
+    assert.equal((await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "nope" })).status, 400);
+    const patched = await request(app).patch(`/api/feedback/${id}`).set(webmaster).send({ status: "planned", response: "Thanks, on the list." });
+    assert.equal(patched.status, 200);
+    const mineAfter = await request(app).get("/api/feedback").set(member);
+    assert.equal(mineAfter.body.items[0].status, "planned");
+    assert.equal(mineAfter.body.items[0].response, "Thanks, on the list.");
+
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(member)).status, 403);
+    assert.equal((await request(app).delete(`/api/feedback/${id}`).set(webmaster)).status, 200);
+    assert.equal((await request(app).get("/api/feedback").set(member)).body.items.length, 0);
+  });
+});
+
+describe("login IP history", () => {
+  test("moves this login's address to the end (most recent) and keeps at most 50", async () => {
+    await seedUser({ username: "ip-history", password: MEMBER_PASSWORD, role: "member" });
+    // What supertest's requests arrive as
+    const res0 = await request(app).post("/api/login").send({ username: "ip-history", password: MEMBER_PASSWORD });
+    assert.equal(res0.status, 200);
+    let users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const myIP = users.find((u) => u.username === "ip-history").loginIPs.slice(-1)[0];
+
+    // Pretend there's a long history with this address near the start
+    const old = Array.from({ length: 60 }, (_, i) => `2600:387:f:d1a::${i.toString(16)}`);
+    users.find((u) => u.username === "ip-history").loginIPs = [old[0], myIP, ...old.slice(1)];
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    await login("ip-history", MEMBER_PASSWORD);
+    users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const ips = users.find((u) => u.username === "ip-history").loginIPs;
+    assert.equal(ips.length, 50);
+    assert.equal(ips[ips.length - 1], myIP);
+    assert.equal(ips.filter((ip) => ip === myIP).length, 1);
+  });
+});
+
+describe("membership dues", () => {
+  const dues = require("../lib/dues");
+  // A date N days before today (Eastern), as YYYY-MM-DD
+  const daysAgo = (n) => {
+    const [y, m, d] = dues.todayISO().split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
+  };
+  let wm, auth;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (const u of ["dues-current", "dues-expired", "dues-soon", "dues-none"]) {
+      await seedUser({ username: u, password: MEMBER_PASSWORD, role: "member" });
+    }
+    auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  });
+
+  test("settings default to $15, a 30-day reminder and blocking off; webmaster only", async () => {
+    const res = await request(app).get("/api/dues/settings").set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 15);
+    assert.equal(res.body.duesReminderDays, 30);
+    assert.equal(res.body.duesEnforcement, false);
+    assert.match(res.body.reminderUrl, /\/api\/dues\/run-reminders\?key=[0-9a-f]{32}$/);
+    assert.equal((await request(app).get("/api/dues/settings").set(await auth("dues-none"))).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: -1 })).status, 400);
+    const changed = await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 20 });
+    assert.equal(changed.body.duesAmount, 20);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
+  test("recording a payment makes the membership good for a year", async () => {
+    const today = dues.todayISO();
+    const res = await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: today, method: "paypal" });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.dues.state, "paid");
+    assert.equal(res.body.dues.expires, dues.addOneYear(today));
+    assert.equal(res.body.dues.payments[0].amount, 15); // defaults to the current price
+    const mine = await request(app).get("/api/my-membership").set(await auth("dues-current"));
+    assert.equal(mine.body.state, "paid");
+    assert.ok(mine.body.payLink.startsWith("https://www.paypal.com/"));
+  });
+
+  test("rejects bad payments, and payments for admins/webmasters", async () => {
+    const future = dues.addOneYear(dues.todayISO());
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: future })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: "2026-02-30" })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(wm).send({ paidOn: daysAgo(1), method: "bitcoin" })).status, 400);
+    assert.equal((await request(app).post("/api/users/webmaster1/dues/payments").set(wm).send({ paidOn: daysAgo(1) })).status, 400);
+    assert.equal((await request(app).post("/api/users/dues-current/dues/payments").set(await auth("dues-none")).send({ paidOn: daysAgo(1) })).status, 403);
+    const mine = await request(app).get("/api/my-membership").set(wm);
+    assert.equal(mine.body.state, "exempt");
+  });
+
+  test("the dues email only goes to members whose membership has expired", async () => {
+    assert.equal((await request(app).post("/api/users/dues-current/dues/notice").set(wm)).status, 409);
+    assert.equal((await request(app).post("/api/users/dues-none/dues/notice").set(wm)).status, 409);
+    const rec = await request(app).post("/api/users/dues-expired/dues/payments").set(wm).send({ paidOn: daysAgo(400) });
+    assert.equal(rec.body.dues.state, "expired");
+    const sent = await request(app).post("/api/users/dues-expired/dues/notice").set(wm);
+    assert.equal(sent.status, 200);
+    assert.ok(sent.body.dues.noticeSentAt);
+  });
+
+  test("automatic reminders go out once per membership year", async () => {
+    await request(app).post("/api/users/dues-soon/dues/payments").set(wm).send({ paidOn: daysAgo(355) });
+    const first = await app.runDuesReminders("http://localhost");
+    assert.equal(first.sent, 1);
+    const again = await app.runDuesReminders("http://localhost");
+    assert.equal(again.sent, 0);
+    const users = await request(app).get("/api/users").set(wm);
+    const soon = users.body.find((u) => u.username === "dues-soon");
+    assert.equal(soon.dues.state, "due-soon");
+    assert.ok(soon.dues.reminderSentAt);
+    assert.equal(users.body.find((u) => u.username === "webmaster1").dues.state, "exempt");
+  });
+
+  test("the scheduled-task URL needs the right key", async () => {
+    assert.equal((await request(app).get("/api/dues/run-reminders?key=wrong")).status, 403);
+    const { body } = await request(app).get("/api/dues/settings").set(wm);
+    const key = new URL(body.reminderUrl).searchParams.get("key");
+    const res = await request(app).get(`/api/dues/run-reminders?key=${key}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sent, 0);
+  });
+
+  test("blocking (off by default) only affects expired members, and only when switched on", async () => {
+    const expired = await auth("dues-expired");
+    const none = await auth("dues-none");
+    assert.equal((await request(app).get("/api/cave-database").set(expired)).status, 200);
+
+    await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: true });
+    try {
+      const blocked = await request(app).get("/api/cave-database").set(expired);
+      assert.equal(blocked.status, 403);
+      assert.equal(blocked.body.duesExpired, true);
+      assert.equal((await request(app).get("/api/my-membership").set(expired)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(none)).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(await auth("dues-current"))).status, 200);
+      assert.equal((await request(app).get("/api/cave-database").set(wm)).status, 200);
+    } finally {
+      await request(app).post("/api/dues/settings").set(wm).send({ duesEnforcement: false });
+    }
+  });
+
+  test("deleting a mistaken payment recalculates the expiry", async () => {
+    const users = await request(app).get("/api/users").set(wm);
+    const cur = users.body.find((u) => u.username === "dues-current");
+    const id = cur.dues.payments[0].id;
+    const res = await request(app).delete(`/api/users/dues-current/dues/payments/${id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.dues.state, "none");
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Dues Payment Deleted" && l.username === "dues-current"));
+  });
+});
+
+describe("treasurer", () => {
+  let wm;
+  const auth = async (u) => ({ Authorization: `Bearer ${await login(u, MEMBER_PASSWORD)}` });
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await seedUser({ username: "treasurer1", password: MEMBER_PASSWORD, role: "member" });
+    await seedUser({ username: "new-signup", password: MEMBER_PASSWORD, role: "member", status: "pending" });
+    await seedUser({ username: "an-admin", password: MEMBER_PASSWORD, role: "admin" });
+  });
+
+  test("only a webmaster can grant Treasurer access", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).post("/api/users/treasurer1/treasurer").set(t).send({ isTreasurer: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/users/webmaster1/treasurer").set(wm).send({ isTreasurer: true })).status, 400);
+    const res = await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: true });
+    assert.equal(res.status, 200);
+    const loginRes = await request(app).post("/api/login").send({ username: "treasurer1", password: MEMBER_PASSWORD });
+    assert.equal(loginRes.body.isTreasurer, true);
+  });
+
+  test("a Treasurer can list members, record payments and approve accounts", async () => {
+    const t = await auth("treasurer1");
+    const list = await request(app).get("/api/dues/members").set(t);
+    assert.equal(list.status, 200);
+    assert.ok(list.body.members.every((m) => m.username !== "webmaster1" && m.username !== "an-admin"));
+    assert.ok(list.body.members.some((m) => m.username === "new-signup" && m.status === "pending"));
+
+    const pay = await request(app).post("/api/users/new-signup/dues/payments").set(t).send({ paidOn: require("../lib/dues").todayISO() });
+    assert.equal(pay.status, 201);
+    const act = await request(app).post("/api/dues/members/new-signup/status").set(t).send({ active: true });
+    assert.equal(act.status, 200);
+    assert.equal(act.body.status, "active");
+    assert.equal((await request(app).post("/api/login").send({ username: "new-signup", password: MEMBER_PASSWORD })).status, 200);
+
+    const settings = await request(app).get("/api/dues/settings").set(t);
+    assert.equal(settings.status, 200);
+    assert.equal(settings.body.reminderUrl, null); // the scheduled-task link stays webmaster-only
+  });
+
+  test("a Treasurer can change the dues price, but not the other dues settings", async () => {
+    const t = await auth("treasurer1");
+    const res = await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 17.5 });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.duesAmount, 17.5);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesReminderDays: 10 })).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesAmount: 20, duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).get("/api/dues/settings").set(wm)).body.duesAmount, 17.5);
+    await request(app).post("/api/dues/settings").set(wm).send({ duesAmount: 15 });
+  });
+
+  test("a Treasurer can't do webmaster-only things", async () => {
+    const t = await auth("treasurer1");
+    assert.equal((await request(app).get("/api/users").set(t)).status, 403);
+    assert.equal((await request(app).post("/api/dues/settings").set(t).send({ duesEnforcement: true })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/an-admin/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/webmaster1/status").set(t).send({ active: false })).status, 403);
+    assert.equal((await request(app).post("/api/dues/members/treasurer1/status").set(t).send({ active: false })).status, 400);
+    assert.equal((await request(app).get("/api/security-logs").set(t)).status, 403);
+  });
+
+  test("removing Treasurer access takes effect straight away", async () => {
+    const t = await auth("treasurer1");
+    await request(app).post("/api/users/treasurer1/treasurer").set(wm).send({ isTreasurer: false });
+    assert.equal((await request(app).get("/api/dues/members").set(t)).status, 403);
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.action === "Account Activated" && l.username === "new-signup"));
+    assert.ok(logs.body.some((l) => l.action === "Treasurer Access Removed" && l.username === "treasurer1"));
+  });
+});
+
+describe("Cave Jump page", () => {
+  test("is always available, even in maintenance mode", async () => {
+    const res = await request(app).get("/cave-jump");
+    assert.equal(res.status, 200);
+    assert.match(res.text, /<title>Cave Jump/);
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      const during = await request(app).get("/cave-jump");
+      assert.equal(during.status, 200);
+      assert.match(during.text, /<title>Cave Jump/);
+      assert.equal((await request(app).get("/js/game.js")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});
+
+describe("Cave Jump leaderboard", () => {
+  const post = (h, body) => request(app).post("/api/cave-jump/scores").set(h).send(body);
+  let wm;
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    for (let i = 1; i <= 12; i++) await seedUser({ username: `jumper${i}`, password: MEMBER_PASSWORD, role: "member" });
+  });
+
+  test("anyone can see the board; only logged-in players can add to it", async () => {
+    const res = await request(app).get("/api/cave-jump/leaderboard");
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body.top));
+    assert.equal(res.body.you, null);
+    assert.equal((await request(app).post("/api/cave-jump/scores").send({ score: 10, seconds: 5 })).status, 401);
+  });
+
+  test("keeps each player's best score under their username, top 10 only", async () => {
+    for (let i = 1; i <= 12; i++) {
+      const h = { Authorization: `Bearer ${await login(`jumper${i}`, MEMBER_PASSWORD)}` };
+      const r = await post(h, { score: i * 100, seconds: 60 });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.isNewBest, true);
+    }
+    const h1 = { Authorization: `Bearer ${await login("jumper12", MEMBER_PASSWORD)}` };
+    const lower = await post(h1, { score: 50, seconds: 60 });
+    assert.equal(lower.body.isNewBest, false);
+    assert.equal(lower.body.you.best, 1200);
+    assert.equal(lower.body.you.rank, 1);
+
+    const board = (await request(app).get("/api/cave-jump/leaderboard")).body;
+    assert.equal(board.top.length, 10);
+    assert.deepEqual(board.top.slice(0, 3).map((e) => [e.rank, e.name, e.score]),
+      [[1, "jumper12", 1200], [2, "jumper11", 1100], [3, "jumper10", 1000]]);
+    assert.equal(board.top[9].name, "jumper3");
+    assert.equal(board.top[0].id, undefined); // account ids only go to webmasters
+  });
+
+  test("rejects scores that don't fit the run", async () => {
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await post(h, { score: 100000, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 1.5, seconds: 10 })).status, 400);
+    assert.equal((await post(h, { score: 100, seconds: 0 })).status, 400);
+    assert.equal((await post(h, { score: -1, seconds: 10 })).status, 400);
+  });
+
+  test("a webmaster can remove a score", async () => {
+    const board = (await request(app).get("/api/cave-jump/leaderboard").set(wm)).body;
+    assert.equal(board.canManage, true);
+    const top = board.top[0];
+    const h = { Authorization: `Bearer ${await login("jumper1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(h)).status, 403);
+    const res = await request(app).delete(`/api/cave-jump/scores/${top.id}`).set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.top[0].name, "jumper11");
+  });
+
+  test("the board still works in maintenance mode", async () => {
+    await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
+    try {
+      assert.equal((await request(app).get("/api/cave-jump/leaderboard")).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
+    }
+  });
+});
+
+describe("legal first and last names", () => {
+  test("sign-up requires a first and last name and stores them", async () => {
+    const base = { username: "named-signup", email: "named-signup@example.com", password: "SomeStrongPass123!", states: ["FL"] };
+    assert.equal((await request(app).post("/api/create-account").send(base)).status, 400);
+    assert.equal((await request(app).post("/api/create-account").send({ ...base, firstName: "Ann", lastName: "<b>x</b>" })).status, 400);
+    const ok = await request(app).post("/api/create-account").send({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
+    assert.equal(ok.status, 200);
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const u = users.find((x) => x.username === "named-signup");
+    assert.equal(u.firstName, "Mary-Jane");
+    assert.equal(u.lastName, "O'Neil");
+    assert.equal(u.fullName, "Mary-Jane O'Neil");
+  });
+
+  test("accepts names with accents and spaces", async () => {
+    const res = await request(app).post("/api/create-account").send({
+      username: "named-accent", email: "named-accent@example.com", password: "SomeStrongPass123!", states: ["FL"],
+      firstName: "José", lastName: "St. John",
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("webmasters see names and can set them on existing accounts", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const list = await request(app).get("/api/users").set(wm);
+    assert.equal(list.body.find((u) => u.username === "named-signup").lastName, "O'Neil");
+    const res = await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Pat", lastName: "Caver" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.fullName, "Pat Caver");
+    assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "", lastName: "Caver" })).status, 400);
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).post("/api/users/member1/name").set(member).send({ firstName: "Me", lastName: "Me" })).status, 403);
+  });
+});
+
+describe("email checks at sign-up", () => {
+  const base = { firstName: "Em", lastName: "Check", password: "SomeStrongPass123!", states: ["FL"] };
+  test("sign-up rejects disposable inboxes and typo domains", async () => {
+    const d = await request(app).post("/api/create-account").send({ ...base, username: "disp1", email: "disp1@mailinator.com" });
+    assert.equal(d.status, 400);
+    const t = await request(app).post("/api/create-account").send({ ...base, username: "typo1", email: "typo1@gmial.com" });
+    assert.equal(t.status, 400);
+    assert.equal(t.body.suggestion, "typo1@gmail.com");
+  });
+
+  test("the instant check route reports problems without revealing accounts", async () => {
+    const bad = await request(app).post("/api/check-email").send({ email: "x@yopmail.com" });
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    const good = await request(app).post("/api/check-email").send({ email: "member1@example.com" });
+    assert.deepEqual(good.body, { ok: true }); // an existing member's email looks the same as any other
+  });
+
+  test("webmaster-created accounts are checked too", async () => {
+    const wm = `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}`;
+    const res = await request(app).post("/api/create-user").set("Authorization", wm)
+      .send({ firstName: "A", lastName: "B", username: "wmdisp", email: "wmdisp@guerrillamail.com", password: "SomeStrongPass123!" });
+    assert.equal(res.status, 400);
+  });
+});
+
+// A member's proposal is written into the cave database when a reviewer
+// approves it, and the reviewer's card can only show known cave fields - so
+// the server must keep only those fields, with the right types.
+describe("member proposals are reduced to known cave fields", () => {
+  async function submit(token, body) {
+    return request(app).post("/api/pending-submissions").set("Authorization", `Bearer ${token}`).send(body);
+  }
+
+  test("rejects markup in a coordinate instead of storing it for the review card", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FXSSLAT",
+      county: "AL",
+      proposedData: { name: "Lat Payload Cave", lat: '<img src=x onerror="alert(1)">', lng: -82.1 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects markup in a measurement field", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FXSSPITCH",
+      county: "AL",
+      proposedData: { name: "Pitch Payload Cave", lat: 29.1, lng: -82.1, pitch: "<img src=x onerror=alert(1)>" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("rejects a caveId that isn't a plain record id", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "<b>x</b>",
+      county: "AL",
+      proposedData: { name: "Bad Id Cave", lat: 29.1, lng: -82.1 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test("drops unknown fields and keeps alternate names of one measurement in step", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await submit(token, {
+      type: "new_cave",
+      caveId: "FDROPTEMP",
+      county: "AL",
+      proposedData: {
+        name: "Dropped Fields Cave",
+        lat: 29.1,
+        lng: -82.1,
+        length: "100",
+        caveLength: "999999",
+        id: "FAKE001",
+        updatedBy: "someone-else",
+        surprise: "<script>alert(1)</script>",
+      },
+    });
+    assert.equal(res.status, 200);
+    const stored = res.body.submission.proposedData;
+    assert.equal(stored.surprise, undefined);
+    assert.equal(stored.id, undefined);
+    assert.equal(stored.updatedBy, undefined);
+    assert.equal(stored.length, "100");
+    assert.equal(stored.caveLength, "100");
+    assert.equal(stored.latitude, 29.1);
+  });
+
+  test("approving an edit applies only known fields, and records who made the change", async () => {
+    const memberToken = await login("member1", MEMBER_PASSWORD);
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    const createRes = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ action: "createNew", cave: { name: "Known Fields Cave", county: "AL", lat: 29.4, lng: -82.4, notes: "before" } });
+    assert.equal(createRes.status, 200);
+    const caveId = createRes.body.caveId;
+
+    const submitRes = await submit(memberToken, {
+      type: "edit_cave",
+      caveId,
+      proposedData: { notes: "after", hidden: "x", updatedBy: "webmaster1" },
+    });
+    assert.equal(submitRes.status, 200);
+    const approveRes = await request(app)
+      .patch(`/api/pending-submissions/${submitRes.body.submission.submissionId}`)
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(approveRes.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${webmasterToken}`);
+    const cave = dbRes.body.find((c) => c.id === caveId);
+    assert.equal(cave.notes, "after");
+    assert.equal(cave.hidden, undefined);
+    assert.equal(cave.updatedBy, "member1");
+    assert.equal(cave.lat, 29.4); // untouched fields stay as they were
+  });
+
+  test("refuses to apply a queued proposal that holds a value of the wrong type", async () => {
+    const webmasterToken = await login("webmaster1", WEBMASTER_PASSWORD);
+    // As if it had been stored before proposals were checked on the way in
+    const file = process.env.SUBMISSIONS_FILE;
+    const submissions = JSON.parse(fs.readFileSync(file, "utf8"));
+    submissions.push({
+      submissionId: "legacy-bad-proposal",
+      type: "new_cave",
+      caveId: "FLEGACY",
+      state: "FL",
+      county: "AL",
+      proposedData: { name: "Legacy", lat: "<img src=x onerror=alert(1)>", lng: 1 },
+      submittedBy: "member1",
+      submittedAt: new Date().toISOString(),
+      status: "pending",
+    });
+    fs.writeFileSync(file, JSON.stringify(submissions, null, 2));
+
+    const res = await request(app)
+      .patch("/api/pending-submissions/legacy-bad-proposal")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "approved" });
+    assert.equal(res.status, 400);
+    const rejectRes = await request(app)
+      .patch("/api/pending-submissions/legacy-bad-proposal")
+      .set("Authorization", `Bearer ${webmasterToken}`)
+      .send({ status: "rejected" });
+    assert.equal(rejectRes.status, 200);
+  });
+});
+
+// The cave name saved with a narrative is shown in the activity log, and
+// its images list decides which photo files its author may delete.
+describe("narrative name and photo ownership", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("fake-png-body")]);
+
+  before(async () => {
+    await seedUser({ username: "photoowner", password: "PhotoOwnerPass123!", role: "member" });
+    await seedUser({ username: "photothief", password: "PhotoThiefPass123!", role: "member" });
+  });
+
+  async function uploadPhoto(token) {
+    const res = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${token}`)
+      .attach("image", PNG, { filename: "photo.png", contentType: "image/png" });
+    assert.equal(res.status, 200);
+    return res.body.imageUrl;
+  }
+
+  function photoExists(imageUrl) {
+    return fs.existsSync(path.join(process.env.CAVE_PICTURES_DIR, path.basename(imageUrl)));
+  }
+
+  test("stores the cave name as plain text", async () => {
+    const token = await login("photoowner", "PhotoOwnerPass123!");
+    const res = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "FNAME01", name: 'Fine Cave<img src=x onerror="alert(1)">', html: "<p>hi</p>", images: [] });
+    assert.equal(res.status, 200);
+    const logRes = await request(app).get("/get-all-narratives-log").set("Authorization", `Bearer ${token}`);
+    const entry = logRes.body.find((n) => n.caveId === "FNAME01");
+    assert.ok(entry);
+    assert.ok(!/[<>]/.test(entry.caveName), `name still holds markup: ${entry.caveName}`);
+  });
+
+  test("rejects a cave name that isn't text", async () => {
+    const token = await login("photoowner", "PhotoOwnerPass123!");
+    const res = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "FNAME02", name: { a: 1 }, html: "<p>hi</p>", images: [] });
+    assert.equal(res.status, 400);
+  });
+
+  test("a member cannot attach, and then delete, another member's photo", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const thiefToken = await login("photothief", "PhotoThiefPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ id: "FPHOTO01", name: "Owner Cave", html: `<p><img src="${imageUrl}"></p>`, images: [{ url: imageUrl }] });
+
+    const saveRes = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${thiefToken}`)
+      .send({ id: "FPHOTO02", name: "Thief Cave", html: "<p>x</p>", images: [{ url: imageUrl }] });
+    assert.equal(saveRes.status, 200);
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO02").set("Authorization", `Bearer ${thiefToken}`);
+    assert.deepEqual(getRes.body[0].images, []);
+
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${thiefToken}`)
+      .send({ caveId: "FPHOTO02", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photothief", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 404);
+    assert.ok(photoExists(imageUrl), "the owner's photo must still be on disk");
+  });
+
+  test("the uploader can attach their own photo and delete it", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({
+        id: "FPHOTO03",
+        name: "Own Photo Cave",
+        html: `<p><img src="${imageUrl}"></p>`,
+        images: [{ url: `http://localhost:3000${imageUrl}?token=abc`, alt: "entrance" }],
+      });
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO03").set("Authorization", `Bearer ${ownerToken}`);
+    assert.deepEqual(getRes.body[0].images, [{ url: imageUrl, alt: "entrance", caption: "" }]);
+
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ caveId: "FPHOTO03", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photoowner", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 200);
+    assert.ok(!photoExists(imageUrl));
+  });
+
+  test("a photo still used by another narrative is not removed from disk", async () => {
+    const ownerToken = await login("photoowner", "PhotoOwnerPass123!");
+    const imageUrl = await uploadPhoto(ownerToken);
+    for (const id of ["FPHOTO04", "FPHOTO05"]) {
+      await request(app)
+        .post("/save-narrative")
+        .set("Authorization", `Bearer ${ownerToken}`)
+        .send({ id, name: "Shared Photo Cave", html: `<p><img src="${imageUrl}"></p>`, images: [{ url: imageUrl }] });
+    }
+    const getRes = await request(app).get("/get-narrative?id=FPHOTO04").set("Authorization", `Bearer ${ownerToken}`);
+    const deleteRes = await request(app)
+      .delete("/delete-narrative-image")
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .send({ caveId: "FPHOTO04", narrativeTimestamp: getRes.body[0].timestamp, narrativeUser: "photoowner", imageIndex: 0, imageUrl });
+    assert.equal(deleteRes.status, 200);
+    assert.ok(photoExists(imageUrl), "still used by FPHOTO05");
+  });
+});
+
+describe("a new password ends older sessions", () => {
+  before(async () => {
+    await seedUser({ username: "sessionchange", password: "SessionChangePass1!", role: "member" });
+    await seedUser({ username: "sessionreset", password: "SessionResetPass1!", role: "member" });
+  });
+
+  test("changing the password rejects the old token and returns a working new one", async () => {
+    const other = await login("sessionchange", "SessionChangePass1!"); // e.g. a thief's session
+    const mine = await login("sessionchange", "SessionChangePass1!");
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${mine}`)
+      .send({ currentPassword: "SessionChangePass1!", newPassword: "SessionChangePass2!" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.token);
+
+    for (const stale of [other, mine]) {
+      const staleRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${stale}`);
+      assert.equal(staleRes.status, 401);
+    }
+    const freshRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${res.body.token}`);
+    assert.equal(freshRes.status, 200);
+  });
+
+  test("resetting the password by emailed link rejects tokens issued before it", async () => {
+    const old = await login("sessionreset", "SessionResetPass1!");
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const user = users.find((u) => u.username === "sessionreset");
+    const rawToken = "a".repeat(64);
+    user.resetTokenHash = require("crypto").createHash("sha256").update(rawToken).digest("hex");
+    user.resetTokenExpires = new Date(Date.now() + 60000).toISOString();
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const res = await request(app).post("/api/reset-password").send({ token: rawToken, newPassword: "SessionResetPass2!" });
+    assert.equal(res.status, 200);
+    const staleRes = await request(app).get("/api/my-membership").set("Authorization", `Bearer ${old}`);
+    assert.equal(staleRes.status, 401);
+    await login("sessionreset", "SessionResetPass2!");
+  });
+});
+
+describe("login bookkeeping and the users file", () => {
+  before(async () => {
+    await seedUser({ username: "backupchurn", password: "BackupChurnPass1!", role: "member" });
+    await seedUser({ username: "awaitingapproval", password: "AwaitingApproval1!", role: "member", status: "pending" });
+  });
+
+  function userBackupCount() {
+    const dir = path.join(process.env.DATA_DIR, "backups");
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith("users.")).length : 0;
+  }
+
+  test("logins, failed or not, don't use up backups of the user list", async () => {
+    const before = userBackupCount();
+    for (let i = 0; i < 3; i++) {
+      await request(app).post("/api/login").send({ username: "backupchurn", password: "wrong-password" });
+    }
+    await login("backupchurn", "BackupChurnPass1!");
+    assert.equal(userBackupCount(), before);
+  });
+
+  test("an account awaiting approval isn't revealed to someone who doesn't know its password", async () => {
+    const wrong = await request(app).post("/api/login").send({ username: "awaitingapproval", password: "not-the-password" });
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.body.error, "Invalid username or password");
+    const right = await request(app).post("/api/login").send({ username: "awaitingapproval", password: "AwaitingApproval1!" });
+    assert.equal(right.status, 403);
+  });
+
+  test("an unreadable users file is never overwritten", async () => {
+    const file = usersFilePath();
+    const good = fs.readFileSync(file, "utf8");
+    try {
+      fs.writeFileSync(file, good.slice(0, Math.floor(good.length / 2))); // cut off mid-write
+      const res = await request(app).post("/api/create-account").send({
+        firstName: "New", lastName: "Person", username: "wouldwipe", email: "wouldwipe@example.com", password: "WouldWipePass123!",
+      });
+      assert.notEqual(res.status, 200);
+      assert.equal(fs.readFileSync(file, "utf8"), good.slice(0, Math.floor(good.length / 2)));
+    } finally {
+      fs.writeFileSync(file, good);
+    }
+    await login("backupchurn", "BackupChurnPass1!"); // readable again, and writes resume
+  });
+
+  test("the proxy-header diagnostic is webmaster-only", async () => {
+    assert.equal((await request(app).get("/api/debug-headers")).status, 401);
+    const member = await login("member1", MEMBER_PASSWORD);
+    assert.equal((await request(app).get("/api/debug-headers").set("Authorization", `Bearer ${member}`)).status, 403);
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    assert.equal((await request(app).get("/api/debug-headers").set("Authorization", `Bearer ${wm}`)).status, 200);
+  });
+});
+
+describe("a given-up username can't be picked up by someone else", () => {
+  before(async () => {
+    await seedUser({ username: "oldauthor", password: "OldAuthorPass123!", role: "member" });
+    await seedUser({ username: "namegrabber", password: "NameGrabberPass1!", role: "member" });
+    await seedUser({ username: "leavingmember", password: "LeavingMember123!", role: "member" });
+  });
+
+  test("a rename keeps the member's narratives, and reserves the old name", async () => {
+    const authorToken = await login("oldauthor", "OldAuthorPass123!");
+    await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${authorToken}`)
+      .send({ id: "FRENAME1", name: "Rename Cave", html: "<p>mine</p>", images: [] });
+
+    const renameRes = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${authorToken}`)
+      .send({ newUsername: "newauthor", currentPassword: "OldAuthorPass123!" });
+    assert.equal(renameRes.status, 200);
+
+    const getRes = await request(app).get("/get-narrative?id=FRENAME1").set("Authorization", `Bearer ${renameRes.body.token}`);
+    assert.equal(getRes.body[0].user, "newauthor");
+
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    for (const name of ["oldauthor", "OldAuthor"]) {
+      const grabRes = await request(app)
+        .post("/api/change-username")
+        .set("Authorization", `Bearer ${grabberToken}`)
+        .send({ newUsername: name, currentPassword: "NameGrabberPass1!" });
+      assert.equal(grabRes.status, 400, `"${name}" must stay reserved`);
+    }
+    const signupRes = await request(app).post("/api/create-account").send({
+      firstName: "Old", lastName: "Author", username: "oldauthor", email: "oldauthor2@example.com", password: "SomeStrongPass123!",
+    });
+    assert.equal(signupRes.status, 400);
+
+    // The account that gave the name up may take it back
+    const backRes = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${renameRes.body.token}`)
+      .send({ newUsername: "oldauthor", currentPassword: "OldAuthorPass123!" });
+    assert.equal(backRes.status, 200);
+  });
+
+  test("a name differing only by upper/lower case counts as taken", async () => {
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${grabberToken}`)
+      .send({ newUsername: "Webmaster1", currentPassword: "NameGrabberPass1!" });
+    assert.equal(res.status, 400);
+    const signupRes = await request(app).post("/api/create-account").send({
+      firstName: "Fake", lastName: "Admin", username: "WEBMASTER1", email: "fakeadmin@example.com", password: "SomeStrongPass123!",
+    });
+    assert.equal(signupRes.status, 400);
+  });
+
+  test("a deleted account's name stays reserved", async () => {
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const delRes = await request(app).delete("/api/delete-user").set("Authorization", `Bearer ${wm}`).send({ username: "leavingmember" });
+    assert.equal(delRes.status, 200);
+    const grabberToken = await login("namegrabber", "NameGrabberPass1!");
+    const res = await request(app)
+      .post("/api/change-username")
+      .set("Authorization", `Bearer ${grabberToken}`)
+      .send({ newUsername: "leavingmember", currentPassword: "NameGrabberPass1!" });
+    assert.equal(res.status, 400);
+  });
+});
+
+// Photo and map URLs carry a token (the browser can't send a header for an
+// <img>), and URLs end up in logs - so that token must open photos and map
+// files only.
+describe("tokens in URLs are view-only", () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("fake-png-body")]);
+  let session, assetToken, imageUrl;
+
+  before(async () => {
+    await seedUser({ username: "assetviewer", password: "AssetViewerPass1!", role: "webmaster" });
+    const res = await request(app).post("/api/login").send({ username: "assetviewer", password: "AssetViewerPass1!" });
+    session = res.body.token;
+    assetToken = res.body.assetToken;
+    const up = await request(app)
+      .post("/upload-narrative-image")
+      .set("Authorization", `Bearer ${session}`)
+      .attach("image", PNG, { filename: "p.png", contentType: "image/png" });
+    imageUrl = up.body.imageUrl;
+  });
+
+  test("login returns a separate view-only token", () => {
+    assert.ok(assetToken);
+    assert.notEqual(assetToken, session);
+  });
+
+  test("the view-only token opens a photo from the URL", async () => {
+    const res = await request(app).get(`${imageUrl}?token=${assetToken}`);
+    assert.equal(res.status, 200);
+  });
+
+  test("the view-only token is refused everywhere else, in the URL or a header", async () => {
+    for (const route of ["/api/cave-database", "/api/users", "/api/backup-now", "/api/my-membership"]) {
+      assert.equal((await request(app).get(`${route}?token=${assetToken}`)).status, 401, route);
+      assert.equal((await request(app).get(route).set("Authorization", `Bearer ${assetToken}`)).status, 401, route);
+    }
+    const post = await request(app)
+      .post("/save-narrative")
+      .set("Authorization", `Bearer ${assetToken}`)
+      .send({ id: "FASSET1", name: "x", html: "<p>x</p>" });
+    assert.equal(post.status, 401);
+  });
+
+  test("a session token in the URL is refused for anything but photos and map files", async () => {
+    assert.equal((await request(app).get(`/api/backup-now?token=${session}`)).status, 401);
+    assert.equal((await request(app).get(`/api/cave-database?token=${session}`)).status, 401);
+    assert.equal((await request(app).get(`${imageUrl}?token=${session}`)).status, 200); // sessions begun before the change
+    assert.equal((await request(app).get("/api/backup-now").set("Authorization", `Bearer ${session}`)).status, 200);
+  });
+
+  test("a password change ends the view-only token too", async () => {
+    const res = await request(app)
+      .post("/api/change-password")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ currentPassword: "AssetViewerPass1!", newPassword: "AssetViewerPass2!" });
+    assert.equal(res.status, 200);
+    assert.equal((await request(app).get(`${imageUrl}?token=${assetToken}`)).status, 401);
+    assert.equal((await request(app).get(`${imageUrl}?token=${res.body.assetToken}`)).status, 200);
+  });
+});
+
+describe("narrative styling is limited to what the editor produces", () => {
+  test("keeps colours and alignment, drops positioning and link tricks", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const html =
+      '<p style="color: rgb(230, 0, 0); text-align: center;">red</p>' +
+      '<div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999; background: url(https://evil.example/x)">overlay</div>' +
+      '<a href="data:text/html,<script>alert(1)</script>">link</a>' +
+      '<img src="/cave-pictures/a.png" style="width: 200px; float: left; position: absolute;">';
+    await request(app).post("/save-narrative").set("Authorization", `Bearer ${token}`).send({ id: "FSTYLE1", name: "Style Cave", html });
+    const res = await request(app).get("/get-narrative?id=FSTYLE1").set("Authorization", `Bearer ${token}`);
+    const saved = res.body[0].html;
+    assert.match(saved, /color:\s*rgb\(230, 0, 0\)/);
+    assert.match(saved, /text-align:\s*center/);
+    assert.match(saved, /width:\s*200px/);
+    assert.match(saved, /float:\s*left/);
+    assert.ok(!/position|z-index|url\(/i.test(saved), saved);
+    assert.ok(!/data:text/i.test(saved), saved);
+  });
+
+  test("a narrative stored under the older rules is cleaned when it's read", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    fs.writeFileSync(
+      path.join(process.env.NARRATIVE_DIR, "FSTYLE2.json"),
+      JSON.stringify([{ id: "FSTYLE2", name: "Old", user: "member1", timestamp: new Date().toISOString(), images: [],
+        html: '<div style="position:fixed;inset:0;z-index:9999">old overlay</div>' }])
+    );
+    const res = await request(app).get("/get-narrative?id=FSTYLE2").set("Authorization", `Bearer ${token}`);
+    assert.ok(!/position|z-index/i.test(res.body[0].html), res.body[0].html);
+    assert.match(res.body[0].html, /old overlay/);
+  });
+});
+
+describe("two-factor code re-sends are capped per login", () => {
+  test("a fourth re-send is refused until the member logs in again", async () => {
+    await seedUser({ username: "resendcap", password: "ResendCapPass123!", role: "member" });
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    users.find((u) => u.username === "resendcap").twoFactorEnabled = true;
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const first = await request(app).post("/api/login").send({ username: "resendcap", password: "ResendCapPass123!" });
+    assert.ok(first.body.twoFactorToken);
+    for (let i = 0; i < 3; i++) {
+      const ok = await request(app).post("/api/resend-2fa").send({ twoFactorToken: first.body.twoFactorToken });
+      assert.equal(ok.status, 200);
+    }
+    const capped = await request(app).post("/api/resend-2fa").send({ twoFactorToken: first.body.twoFactorToken });
+    assert.equal(capped.status, 429);
+
+    const again = await request(app).post("/api/login").send({ username: "resendcap", password: "ResendCapPass123!" });
+    const fresh = await request(app).post("/api/resend-2fa").send({ twoFactorToken: again.body.twoFactorToken });
+    assert.equal(fresh.status, 200);
+  });
+});
+
+describe("email confirmation at sign-up", () => {
+  const LINK_PATTERN = /\[DEV\] Email confirmation link for [^:]+: \S+verifyEmail=([a-f0-9]+)/;
+
+  async function capture(pattern, action) {
+    const originalLog = console.log;
+    let captured = null;
+    console.log = (...args) => {
+      const match = args.join(" ").match(pattern);
+      if (match) captured = match[1];
+      originalLog(...args);
+    };
+    try {
+      return { result: await action(), captured };
+    } finally {
+      console.log = originalLog;
+    }
+  }
+
+  function signUp(username, email = `${username}@example.com`) {
+    return capture(LINK_PATTERN, () =>
+      request(app).post("/api/create-account").send({
+        firstName: "Confirm", lastName: "Tester", username, email, password: "ConfirmTester123!",
+      })
+    );
+  }
+
+  function stored(username) {
+    return JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).find((u) => u.username === username);
+  }
+
+  test("a sign-up is sent a link, and opening it confirms the address", async () => {
+    const { result, captured: token } = await signUp("confirmme");
+    assert.equal(result.status, 200);
+    assert.equal(result.body.emailConfirmationSent, true);
+    assert.ok(token, "a confirmation link should have been produced");
+
+    const before = stored("confirmme");
+    assert.equal(before.isEmailVerified, false);
+    assert.ok(before.emailVerifyTokenHash);
+    assert.notEqual(before.emailVerifyTokenHash, token, "only a hash of the code is stored");
+
+    const res = await request(app).post("/api/verify-email").send({ token });
+    assert.equal(res.status, 200);
+    const after = stored("confirmme");
+    assert.equal(after.isEmailVerified, true);
+    assert.equal(after.emailVerifyTokenHash, undefined);
+    assert.equal(after.status, "pending", "confirming the address doesn't approve the account");
+
+    const again = await request(app).post("/api/verify-email").send({ token });
+    assert.equal(again.status, 400, "a link works once");
+  });
+
+  test("a wrong or expired link is refused", async () => {
+    assert.equal((await request(app).post("/api/verify-email").send({ token: "f".repeat(64) })).status, 400);
+    assert.equal((await request(app).post("/api/verify-email").send({})).status, 400);
+
+    const { captured: token } = await signUp("confirmlate");
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    users.find((u) => u.username === "confirmlate").emailVerifyExpires = new Date(Date.now() - 1000).toISOString();
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+    assert.equal((await request(app).post("/api/verify-email").send({ token })).status, 400);
+    assert.equal(stored("confirmlate").isEmailVerified, false);
+  });
+
+  test("logging in before confirming says so, and a new link can be requested with the password", async () => {
+    await signUp("confirmresend");
+    const loginRes = await request(app).post("/api/login").send({ username: "confirmresend", password: "ConfirmTester123!" });
+    assert.equal(loginRes.status, 403);
+    assert.equal(loginRes.body.emailUnconfirmed, true);
+
+    const wrong = await request(app).post("/api/resend-verification").send({ username: "confirmresend", password: "not-it" });
+    assert.equal(wrong.status, 401);
+    const unknown = await request(app).post("/api/resend-verification").send({ username: "no-such-person", password: "not-it" });
+    assert.equal(unknown.status, 401);
+
+    const { result, captured: token } = await capture(LINK_PATTERN, () =>
+      request(app).post("/api/resend-verification").send({ username: "confirmresend", password: "ConfirmTester123!" })
+    );
+    assert.equal(result.status, 200);
+    assert.equal((await request(app).post("/api/verify-email").send({ token })).status, 200);
+
+    const pendingRes = await request(app).post("/api/login").send({ username: "confirmresend", password: "ConfirmTester123!" });
+    assert.equal(pendingRes.status, 403);
+    assert.equal(pendingRes.body.emailUnconfirmed, undefined);
+    assert.match(pendingRes.body.error, /approval/);
+  });
+
+  test("reviewers can see which sign-ups haven't confirmed, and may still approve one", async () => {
+    await signUp("confirmnever");
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const usersRes = await request(app).get("/api/users").set("Authorization", `Bearer ${wm}`);
+    assert.equal(usersRes.body.find((u) => u.username === "confirmnever").emailUnconfirmed, true);
+    assert.equal(usersRes.body.find((u) => u.username === "member1").emailUnconfirmed, false);
+    const duesRes = await request(app).get("/api/dues/members").set("Authorization", `Bearer ${wm}`);
+    assert.equal(duesRes.body.members.find((u) => u.username === "confirmnever").emailUnconfirmed, true);
+
+    const approve = await request(app)
+      .post("/api/dues/members/confirmnever/status")
+      .set("Authorization", `Bearer ${wm}`)
+      .send({ active: true });
+    assert.equal(approve.status, 200);
+    await login("confirmnever", "ConfirmTester123!");
+  });
+
+  test("an unconfirmed sign-up whose link ran out doesn't keep its username or email", async () => {
+    await signUp("confirmsquat", "wanted-address@example.com");
+    const blocked = await signUp("confirmsquat2", "wanted-address@example.com");
+    assert.equal(blocked.result.status, 400, "still held while the link is valid");
+
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    users.find((u) => u.username === "confirmsquat").emailVerifyExpires = new Date(Date.now() - 1000).toISOString();
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+
+    const retry = await signUp("confirmsquat2", "wanted-address@example.com");
+    assert.equal(retry.result.status, 200);
+    assert.equal(stored("confirmsquat"), undefined);
+    assert.ok(stored("confirmsquat2"));
+  });
+
+  test("accounts from before email confirmation existed are left alone", async () => {
+    // seedUser() accounts carry no confirmation token, like every existing account
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const usersRes = await request(app).get("/api/users").set("Authorization", `Bearer ${wm}`);
+    for (const name of ["webmaster1", "member1"]) {
+      assert.equal(usersRes.body.find((u) => u.username === name).emailUnconfirmed, false);
+    }
+    await login("member1", MEMBER_PASSWORD);
+  });
+});
