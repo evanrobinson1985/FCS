@@ -994,6 +994,94 @@ describe("cave database storage", () => {
   });
 });
 
+// The map's "Move" tool (initiateMove() in portal.html) uses this route to
+// save a cave's new position - a small, purpose-built request instead of
+// re-uploading the entire cave database just to change one cave's
+// coordinates, which used to be how a move was saved and was both needless
+// load on the server and far more likely to fail outright on a slow or
+// unstable connection than this one small, fast request is.
+describe("moving a cave's pin on the map (POST /api/update-cave-location)", () => {
+  let moveCaveId;
+  before(async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/save-cave-database")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ action: "createNew", cave: { county: "03", name: "Movable Cave", latitude: 29.1, longitude: -82.3 } });
+    moveCaveId = res.body.caveId;
+  });
+
+  test("updates both coordinate property names and persists them", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 30.123456, longitude: -83.654321 });
+    assert.equal(res.status, 200);
+
+    const dbRes = await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    const moved = dbRes.body.find((c) => c.id === moveCaveId);
+    assert.equal(moved.latitude, 30.123456);
+    assert.equal(moved.longitude, -83.654321);
+    assert.equal(moved.lat, 30.123456);
+    assert.equal(moved.lng, -83.654321);
+  });
+
+  test("creates a backup file before moving a cave, same as a full database save", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const backupDir = path.join(process.env.DATA_DIR, "backups");
+    const before = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).length : 0;
+
+    await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+
+    const afterCount = fs.readdirSync(backupDir).length;
+    assert.ok(afterCount > before, "expected a new backup file after the move");
+  });
+
+  test("rejects a member (admin/webmaster only)", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 403);
+  });
+
+  test("rejects an unauthenticated request", async () => {
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .send({ id: moveCaveId, latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 401);
+  });
+
+  test("rejects missing or non-numeric coordinates", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const noCoords = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId });
+    assert.equal(noCoords.status, 400);
+
+    const stringCoords = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: moveCaveId, latitude: "29.5", longitude: "-82.5" });
+    assert.equal(stringCoords.status, 400);
+  });
+
+  test("404s for a cave ID that doesn't exist", async () => {
+    const token = await login("webmaster1", WEBMASTER_PASSWORD);
+    const res = await request(app)
+      .post("/api/update-cave-location")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ id: "NOT-A-REAL-CAVE-ID", latitude: 29.5, longitude: -82.5 });
+    assert.equal(res.status, 404);
+  });
+});
+
 // The "Nationwide Overview"/"Caves by State" cards (and the
 // GET /api/cave-database/state-counts route that backed them) were removed
 // along with the rest of the site's multi-state machinery - this site only

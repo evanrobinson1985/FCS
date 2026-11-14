@@ -8743,59 +8743,6 @@ window.addEventListener('error', function(e) {
     if (downloadDbBtn) downloadDbBtn.style.display = (defaultTab === 'cave-database') ? 'block' : 'none';
   });
 
-  function saveUpdatedCaveData() {
-    // First ensure all caves have both coordinate formats for consistency
-    for (let cave of caveDataStore) {
-      if (cave.latitude !== undefined) {
-        cave.lat = cave.latitude;
-      } else if (cave.lat !== undefined) {
-        cave.latitude = cave.lat;
-      }
-      
-      if (cave.longitude !== undefined) {
-        cave.lng = cave.longitude;
-      } else if (cave.lng !== undefined) {
-        cave.longitude = cave.lng;
-      }
-    }
-
-    // Send the updated data to the server API endpoint
-    fetch('/api/save-cave-database', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(caveDataStore)
-    })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error('Server response was not OK');
-      }
-      return response.json();
-    })
-    .then(data => {
-      console.log("Cave database saved successfully:", data.message);
-      
-      // Update the window.caveDatabase object to match
-      if (window.caveDatabase) {
-        // For each cave in caveDataStore, update the corresponding entry in caveDatabase
-        caveDataStore.forEach(updatedCave => {
-          const index = window.caveDatabase.findIndex(c => c.id === updatedCave.id);
-          if (index !== -1) {
-            window.caveDatabase[index] = {...updatedCave};
-          }
-        });
-      }
-    })
-    .catch(err => {
-      console.error("Error saving cave database:", err);
-      alert("Failed to save changes to the server. Downloading backup file instead.");
-      
-      // Fallback: create a downloadable file if server save fails
-      downloadUpdatedCaveDataWithProperFormat(caveDataStore);
-    });
-  }
-
   // Update the initiateMove function to use the server API
   function initiateMove(caveId) {
     moveTargetCaveId = caveId;
@@ -8806,7 +8753,7 @@ window.addEventListener('error', function(e) {
     alert("Click on the map to set the new location for this cave.");
 
     // One-time map click handler to set new position
-    const onMapClick = function(e) {
+    const onMapClick = async function(e) {
       const lat = parseFloat(e.latlng.lat.toFixed(6));
       const lng = parseFloat(e.latlng.lng.toFixed(6));
 
@@ -8847,10 +8794,27 @@ window.addEventListener('error', function(e) {
       loadCavesToMap();
       map.setView([lat, lng], zoomBeforeRefresh);
 
-      // Save the updated coordinates to the server
-      saveUpdatedCaveData();
-
-      alert(`Moved ${cave.id} to new location:\nLatitude: ${lat}\nLongitude: ${lng}`);
+      // Save just this cave's new coordinates - a tiny, purpose-built
+      // request (POST /api/update-cave-location), rather than re-uploading
+      // the entire cave database for what's really a one-field change. The
+      // old approach (saveUpdatedCaveData(), since removed) sent the whole
+      // multi-hundred-record caveDataStore array for every single move,
+      // which is both needless load on the server and far more likely to
+      // fail outright on a slow or unstable connection (a mobile network,
+      // for instance) than this one small, fast request is.
+      try {
+        const response = await fetch('/api/update-cave-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: cave.id, latitude: lat, longitude: lng })
+        });
+        if (!response.ok) throw new Error('Server response was not OK');
+        alert(`Moved ${cave.id} to new location:\nLatitude: ${lat}\nLongitude: ${lng}`);
+      } catch (err) {
+        console.error("Error saving cave location:", err);
+        alert("Failed to save the new location to the server. Downloading backup file instead.");
+        downloadUpdatedCaveDataWithProperFormat(caveDataStore);
+      }
 
       // Clean up the click handler
       map.off('click', onMapClick);
