@@ -2772,6 +2772,70 @@ describe("site updates", () => {
     });
   });
 
+  describe("changes from the GitHub commit history", () => {
+    const apiCommit = (sha, date, message) => ({ sha: sha.padEnd(40, "0"), commit: { message, committer: { date } }, parents: [{}] });
+    const listFor = async (token) => (await request(app).get("/api/site-updates").set("Authorization", `Bearer ${token}`)).body;
+    after(() => app.setGithubCommitsForTest([]));
+
+    test("appear alongside the hand-written updates, one entry per day", async () => {
+      app.setGithubCommitsForTest([
+        apiCommit("d1", "2026-03-05T15:00:00Z", "Add a waypoint size slider"),
+        apiCommit("d2", "2026-03-05T14:00:00Z", "Fix the map legend"),
+        apiCommit("d3", "2026-02-15T14:00:00Z", "Show who is online"),
+      ]);
+      const token = await login("updates-reader", MEMBER_PASSWORD);
+      const body = await listFor(token);
+      assert.deepEqual(body.updates.map((u) => u.id), ["github-2026-03-05", "newest", "github-2026-02-15", "middle", "older"]);
+      const day = body.updates[0];
+      assert.equal(day.source, "github");
+      assert.deepEqual(day.changes, ["Add a waypoint size slider", "Fix the map legend"]);
+      assert.match(day.url, /^https:\/\/github\.com\/.+\/commits\/d1/);
+      assert.equal(body.github, undefined, "only webmasters are told about the GitHub connection");
+    });
+
+    test("a webmaster can hide one line of a GitHub day, or the whole day", async () => {
+      app.setGithubCommitsForTest([
+        apiCommit("e1", "2026-03-06T15:00:00Z", "Patch an internal security issue"),
+        apiCommit("e2", "2026-03-06T14:00:00Z", "Faster map loading"),
+      ]);
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      const member = await login("updates-reader", MEMBER_PASSWORD);
+      const key = require("crypto").createHash("sha256").update("Patch an internal security issue").digest("hex").slice(0, 16);
+      const line = await request(app).post("/api/site-updates/visibility").set("Authorization", `Bearer ${wm}`)
+        .send({ id: "github-2026-03-06", changeKey: key, hidden: true });
+      assert.equal(line.status, 200);
+      assert.deepEqual((await listFor(member)).updates.find((u) => u.id === "github-2026-03-06").changes, ["Faster map loading"]);
+
+      const whole = await request(app).post("/api/site-updates/visibility").set("Authorization", `Bearer ${wm}`)
+        .send({ id: "github-2026-03-06", webmasterOnly: true });
+      assert.equal(whole.status, 200);
+      assert.ok(!(await listFor(member)).updates.some((u) => u.id === "github-2026-03-06"));
+      assert.ok((await listFor(wm)).updates.some((u) => u.id === "github-2026-03-06"));
+      assert.ok((await listFor(wm)).github, "a webmaster gets the GitHub connection status");
+    });
+
+    test("a change added to a day already dismissed makes that day new again", async () => {
+      await seedUser({ username: "updates-ghseen", password: MEMBER_PASSWORD, role: "member" });
+      const token = await login("updates-ghseen", MEMBER_PASSWORD);
+      const auth = { Authorization: `Bearer ${token}` };
+      app.setGithubCommitsForTest([apiCommit("f1", "2026-03-07T15:00:00Z", "Morning change")]);
+      const before = await listFor(token);
+      const seen = await request(app).post("/api/site-updates/seen").set(auth)
+        .send({ id: before.updates[0].id, ids: before.updates.map((u) => u.id) });
+      assert.equal(seen.status, 200);
+      assert.ok(seen.body.seenUpdateIds.includes("github-2026-03-07@1"));
+
+      app.setGithubCommitsForTest([
+        apiCommit("f2", "2026-03-07T20:00:00Z", "Evening change"),
+        apiCommit("f1", "2026-03-07T15:00:00Z", "Morning change"),
+      ]);
+      const after = await listFor(token);
+      const day = after.updates.find((u) => u.id === "github-2026-03-07");
+      assert.equal(day.changes.length, 2);
+      assert.ok(after.seenUpdateIds.includes("github-2026-03-07@1"), "the page compares this count to the day's current 2 changes");
+    });
+  });
+
   test("the shipped config/site-updates.json is valid", () => {
     const list = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "site-updates.json"), "utf8"));
     assert.ok(Array.isArray(list) && list.length > 0);

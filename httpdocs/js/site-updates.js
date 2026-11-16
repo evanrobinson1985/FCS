@@ -61,6 +61,8 @@
       .su-visibility { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: #64748b; cursor: pointer; user-select: none; }
       .su-visibility input { margin: 0; }
       .su-visibility-status { color: #166534; }
+      .su-source { display: inline-block; margin-top: 6px; font-size: 12px; color: #4b86b4; }
+      .su-gh-status { max-width: 820px; margin: 0 0 10px; padding: 6px 10px; border-radius: 6px; background: #fef3c7; color: #92400e; font-size: 13px; }
       .su-more { color: #64748b; font-style: italic; margin: 0 0 6px; }
       .su-timeline { position: relative; max-width: 820px; margin: 10px 0 20px; padding-left: 26px; }
       .su-timeline::before { content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px; width: 2px; background: #cbd5e1; }
@@ -139,6 +141,11 @@
         ul.appendChild(li);
       });
       box.appendChild(ul);
+    }
+    if (u.source === 'github' && /^https:\/\/github\.com\//.test(u.url || '')) {
+      const a = el('a', 'su-source', 'See these changes on GitHub');
+      a.href = u.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      box.appendChild(a);
     }
     // Webmaster-only, and only on the full Site Updates tab (not the brief
     // "What's new" popup card) - a checkbox to hide this entry from
@@ -221,8 +228,21 @@
     const list = data.updates || [];
     if (!list.length) return [];
     if (Array.isArray(data.seenUpdateIds)) {
-      const seen = new Set(data.seenUpdateIds);
-      return list.filter(u => !seen.has(u.id));
+      // A day of GitHub changes is marked seen as "id@N" - N changes seen. A
+      // change added to that day later makes it new again.
+      const seen = new Set(), seenCount = {};
+      data.seenUpdateIds.forEach(mark => {
+        const at = mark.lastIndexOf('@');
+        if (at > 0) { const id = mark.slice(0, at); seenCount[id] = Math.max(seenCount[id] || 0, parseInt(mark.slice(at + 1), 10) || 0); }
+        else seen.add(mark);
+      });
+      return list.filter(u => {
+        if (u.source !== 'github') return !seen.has(u.id);
+        if (u.id in seenCount) return u.changes.length > seenCount[u.id];
+        // the GitHub history arrived all at once: days from before this account's
+        // last dismissal are old news, not new to it
+        return !(data.lastSeenUpdateDate && u.date < data.lastSeenUpdateDate);
+      });
     }
     if (data.lastSeenUpdateId) {
       const k = list.findIndex(u => u.id === data.lastSeenUpdateId);
@@ -327,12 +347,14 @@
     pollTimer = setInterval(async () => {
       if (document.visibilityState !== 'visible') return;
       try {
-        const previousIds = new Set((cache && cache.updates || []).map(u => u.id));
+        // a GitHub day keeps its id as changes are added to it, so compare id + size
+        const key = u => u.id + '@' + u.changes.length;
+        const previousIds = new Set((cache && cache.updates || []).map(key));
         const data = await fetchUpdates();
         if (!data || !data.updates) return;
         renderTimeline(); // keep the tab current if it's open right now
 
-        const justAdded = data.updates.filter(u => !previousIds.has(u.id));
+        const justAdded = data.updates.filter(u => !previousIds.has(key(u)));
         if (!justAdded.length || document.getElementById('site-updates-card')) return;
         const unseen = unseenOf(data).filter(u => justAdded.some(a => a.id === u.id));
         if (unseen.length) {
@@ -358,6 +380,14 @@
       const data = cache || await fetchUpdates();
       box.textContent = '';
       const list = (data && data.updates) || [];
+      // Webmasters only (the server sends this to no one else): say when the
+      // GitHub history couldn't be refreshed, so a stale list isn't a mystery
+      const gh = data && data.github;
+      if (gh && gh.enabled && gh.error) {
+        const when = gh.fetchedAt ? new Date(gh.fetchedAt).toLocaleString() : null;
+        box.appendChild(el('div', 'su-gh-status', `Couldn't refresh the change list from GitHub (${gh.error}). ` +
+          (when ? `Showing changes up to the last successful refresh, ${when}.` : 'No changes have been loaded from GitHub yet.')));
+      }
       if (!list.length) { box.appendChild(el('p', null, 'No updates have been posted yet.')); return; }
       const tl = el('div', 'su-timeline');
       list.forEach(u => tl.appendChild(entryEl(u, newIds.has(u.id), true)));

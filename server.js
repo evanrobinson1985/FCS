@@ -22,6 +22,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
+const githubUpdates = require("./lib/github-updates");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
 // the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
 const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
@@ -930,9 +931,112 @@ app.use((req, res, next) => {
 });
 
 // ---- Site updates ("What's new") ------------------------------------------
-// Read on every request (the file is small) so a deploy that changes it is
-// picked up without a restart. Entries are returned newest first; anything
-// malformed is skipped rather than breaking the list.
+// Two sources, shown together newest first:
+//   - the GitHub commit history (see lib/github-updates.js): one entry per
+//     day listing that day's changes, so every change that goes out shows up
+//     without anyone having to write it up;
+//   - config/site-updates.json: hand-written entries, for saying something in
+//     more detail or plainer words than a commit message does. Read on every
+//     request (the file is small) so a deploy that changes it is picked up
+//     without a restart. Anything malformed is skipped.
+//
+// The commit history is fetched in the background every few minutes and kept
+// in the data directory, so the list still shows (as of the last successful
+// fetch) when GitHub can't be reached, and survives a restart.
+//   SITE_UPDATES_GITHUB_REPO    owner/name (default evanrobinson1985/FCS)
+//   SITE_UPDATES_GITHUB_BRANCH  branch to read (default: the commit this copy
+//                               of the site was deployed from, if it can tell,
+//                               else the repository's default branch)
+//   SITE_UPDATES_GITHUB_TOKEN   optional; raises GitHub's rate limit
+//   SITE_UPDATES_GITHUB=off     turns it off
+const GITHUB_UPDATES_REPO = (process.env.SITE_UPDATES_GITHUB_REPO || githubUpdates.DEFAULT_REPO).trim();
+const GITHUB_UPDATES_ENABLED = process.env.SITE_UPDATES_GITHUB !== "off" && /^[\w.-]+\/[\w.-]+$/.test(GITHUB_UPDATES_REPO);
+const GITHUB_UPDATES_CACHE = path.join(DATA_DIR, "github-updates-cache.json");
+const GITHUB_REFRESH_MS = 10 * 60 * 1000;
+let githubCache = { commits: [], etag: null, fetchedAt: null, ref: null, error: null };
+try {
+  if (fs.existsSync(GITHUB_UPDATES_CACHE)) {
+    const saved = JSON.parse(fs.readFileSync(GITHUB_UPDATES_CACHE, "utf-8"));
+    if (saved && Array.isArray(saved.commits)) githubCache = { ...githubCache, ...saved, error: null };
+  }
+} catch (err) {
+  console.error("Error loading the saved GitHub update history:", err);
+}
+
+// The commit this copy of the site is running, when the app folder is a git
+// checkout - read straight from .git, no git command needed. Listing history
+// from this commit means members only read about changes they actually have.
+// (Plesk's Git deployment copies files without .git; then the branch setting
+// or the repository's default branch is used instead.)
+function deployedCommit() {
+  try {
+    const gitDir = path.join(__dirname, ".git");
+    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf-8").trim();
+    if (/^[0-9a-f]{40}$/.test(head)) return head;
+    const ref = /^ref: (refs\/[\w./-]+)$/.exec(head);
+    if (!ref) return null;
+    const loose = path.join(gitDir, ref[1]);
+    if (fs.existsSync(loose)) {
+      const sha = fs.readFileSync(loose, "utf-8").trim();
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    }
+    const packed = fs.readFileSync(path.join(gitDir, "packed-refs"), "utf-8");
+    const line = packed.split("\n").find((l) => l.endsWith(" " + ref[1]));
+    return line ? line.slice(0, 40) : null;
+  } catch {
+    return null;
+  }
+}
+
+let githubRefreshRunning = false;
+async function refreshGithubUpdates() {
+  if (!GITHUB_UPDATES_ENABLED || githubRefreshRunning) return;
+  githubRefreshRunning = true;
+  try {
+    const ref = (process.env.SITE_UPDATES_GITHUB_BRANCH || "").trim() || deployedCommit() || null;
+    const result = await githubUpdates.fetchCommits({
+      repo: GITHUB_UPDATES_REPO,
+      ref,
+      token: process.env.SITE_UPDATES_GITHUB_TOKEN || null,
+      etag: githubCache.ref === ref ? githubCache.etag : null,
+    });
+    const now = new Date().toISOString();
+    if (result.notModified) {
+      githubCache = { ...githubCache, fetchedAt: now, error: null };
+    } else {
+      githubCache = { commits: githubUpdates.simplifyCommits(result.commits), etag: result.etag, fetchedAt: now, ref, error: null };
+    }
+    writeFileAtomicSync(GITHUB_UPDATES_CACHE, JSON.stringify({ ...githubCache, error: undefined }, null, 2));
+  } catch (err) {
+    githubCache = { ...githubCache, error: err.message };
+    console.error("Could not refresh site updates from GitHub:", err.message);
+  } finally {
+    githubRefreshRunning = false;
+  }
+}
+
+if (process.env.NODE_ENV !== "test" && GITHUB_UPDATES_ENABLED) {
+  setTimeout(refreshGithubUpdates, 5 * 1000).unref();
+  setInterval(refreshGithubUpdates, GITHUB_REFRESH_MS).unref();
+}
+
+// for the test suite: stand in for a GitHub fetch with these API-shaped commits
+app.setGithubCommitsForTest = (apiCommits) => {
+  githubCache = { commits: githubUpdates.simplifyCommits(apiCommits), etag: null, fetchedAt: new Date().toISOString(), ref: null, error: null };
+};
+
+function githubUpdateEntries() {
+  if (!GITHUB_UPDATES_ENABLED && process.env.NODE_ENV !== "test") return [];
+  return githubUpdates.dailyEntries(githubCache.commits, GITHUB_UPDATES_REPO);
+}
+
+// What marks an update as dismissed in an account's seenUpdateIds. A day of
+// GitHub changes keeps one id all day while changes are added to it, so its
+// mark also records how many changes it had: one added after that makes the
+// day count as new again.
+function siteUpdateSeenMark(u) {
+  return u.source === "github" ? `${u.id}@${u.changes.length}` : u.id;
+}
 // Which updates a webmaster has hidden from (or shown to) everyone else,
 // as { updateId: true|false }. Kept in the private data directory, NOT in
 // config/site-updates.json: that file ships with the code, so a change
@@ -982,6 +1086,8 @@ function siteUpdatesFor(role) {
         date: u.date,
         title: u.title,
         changes: u.changes.filter((c, i) => !hidden.has(u.changeKeys[i])),
+        source: u.source,
+        url: u.url,
         hadChanges: u.changes.length > 0,
       };
     })
@@ -990,9 +1096,15 @@ function siteUpdatesFor(role) {
 }
 
 function loadSiteUpdates() {
+  let written = [];
   try {
-    const list = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
-    if (!Array.isArray(list)) return [];
+    const parsed = JSON.parse(fs.readFileSync(SITE_UPDATES_FILE, "utf-8"));
+    if (Array.isArray(parsed)) written = parsed.filter((u) => !(u && typeof u.id === "string" && u.id.startsWith("github-")));
+  } catch (err) {
+    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
+  }
+  try {
+    const list = written.concat(githubUpdateEntries());
     const visibility = loadSiteUpdateVisibility();
     const hiddenItems = isPlainObject(visibility[HIDDEN_ITEMS_KEY]) ? visibility[HIDDEN_ITEMS_KEY] : {};
     return list
@@ -1024,12 +1136,14 @@ function loadSiteUpdates() {
         // admin's device - see the filtering in GET /api/site-updates below,
         // the only place this ever gets read.
         webmasterOnly: typeof visibility[u.id] === "boolean" ? visibility[u.id] : u.webmasterOnly === true,
+        source: u.source === "github" ? "github" : "site",
+        url: u.source === "github" && typeof u.url === "string" ? u.url : undefined,
       }))
       .map((u, i) => ({ u, i }))
       .sort((a, b) => (a.u.date === b.u.date ? a.i - b.i : a.u.date < b.u.date ? 1 : -1))
       .map(({ u }) => u);
   } catch (err) {
-    if (err.code !== "ENOENT") console.error("Error loading site updates:", err);
+    console.error("Error building site updates:", err);
     return [];
   }
 }
@@ -1052,6 +1166,10 @@ app.get("/api/site-updates", authenticateToken, (req, res) => {
     seenUpdateIds: user && Array.isArray(user.seenUpdateIds) ? user.seenUpdateIds : null,
     lastSeenUpdateId: (user && user.lastSeenUpdateId) || null,
     lastSeenUpdateDate: (user && user.lastSeenUpdateDate) || null,
+    // Webmasters are told when the GitHub history couldn't be refreshed
+    github: req.user.role === "webmaster"
+      ? { enabled: GITHUB_UPDATES_ENABLED, repo: GITHUB_UPDATES_REPO, fetchedAt: githubCache.fetchedAt, error: githubCache.error || null }
+      : undefined,
   });
 });
 
@@ -1704,10 +1822,18 @@ app.post("/api/site-updates/seen", authenticateToken, express.json(), (req, res)
   // only the newest, which then stands for everything up to its date.
   const visible = siteUpdatesFor(req.user.role);
   const sent = Array.isArray(req.body.ids) ? new Set(req.body.ids.filter((x) => typeof x === "string")) : null;
-  const nowSeen = visible.filter((u) => (sent ? sent.has(u.id) : u.date <= update.date)).map((u) => u.id);
+  const nowSeen = visible.filter((u) => (sent ? sent.has(u.id) : u.date <= update.date) || u.id === update.id).map(siteUpdateSeenMark);
   const known = new Set(all.map((u) => u.id));
-  const merged = new Set([...(Array.isArray(user.seenUpdateIds) ? user.seenUpdateIds : []), ...nowSeen, update.id]);
-  user.seenUpdateIds = [...merged].filter((x) => known.has(x));
+  // keep one mark per update (for a GitHub day, the one with the most changes seen), and only for updates that still exist
+  const best = new Map();
+  [...(Array.isArray(user.seenUpdateIds) ? user.seenUpdateIds : []), ...nowSeen].forEach((mark) => {
+    if (typeof mark !== "string") return;
+    const at = mark.lastIndexOf("@"), id = at > 0 ? mark.slice(0, at) : mark, n = at > 0 ? parseInt(mark.slice(at + 1), 10) || 0 : -1;
+    if (!known.has(id)) return;
+    const prev = best.get(id);
+    if (!prev || n > prev.n) best.set(id, { mark, n });
+  });
+  user.seenUpdateIds = [...best.values()].map((v) => v.mark);
 
   // Never move backwards (e.g. an old tab closing the card after a newer
   // update was already dismissed elsewhere)
