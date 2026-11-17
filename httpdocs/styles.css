@@ -652,13 +652,6 @@ input[type="file"] {
         z-index: 10 !important;
       }
 
-      .hillshade-controls {
-        margin-top: 15px;
-        padding: 10px;
-        background-color: white;
-        border-radius: 8px;
-        box-shadow: var(--shadow);
-      }
 
       .control-group {
         display: flex;
@@ -874,13 +867,62 @@ input[type="file"] {
       align-items: flex-start;
     }
 
-    .label-control-row {
-      display: flex;
-      column-gap: 40px;
-      row-gap: 16px;
-      margin-bottom: 10px;
-      flex-wrap: wrap;
+    /* ---- Interactive Map display controls: three grouped cards ---- */
+    .map-controls-panel {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin: 12px 0;
     }
+    .mc-group {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 10px 14px 4px;
+    }
+    .mc-title {
+      margin: 0 0 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #475569;
+    }
+    .mc-item { padding: 6px 0 10px; }
+    .mc-item + .mc-item { border-top: 1px dashed #e2e8f0; }
+    .mc-item .mc-name {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      margin: 0 0 4px;
+      cursor: pointer;
+    }
+    .mc-setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #334155;
+      margin: 2px 0;
+    }
+    .mc-setting label { font-weight: 400; margin: 0; }
+    .mc-setting-main label { font-weight: 700; color: #0f172a; }
+    .mc-val { font-weight: 700; font-variant-numeric: tabular-nums; color: #0f172a; }
+    .mc-item .slider { display: block; width: 100%; margin: 2px 0 0; }
+    .mc-color { width: 32px; height: 26px; padding: 0; border: 1px solid #cbd5e1; border-radius: 4px; background: none; cursor: pointer; }
+    .mc-select { width: 100%; padding: 5px; margin-top: 2px; }
+    .mc-key { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; margin-top: 4px; }
+    .mc-key .mc-key-end { margin-left: auto; }
+    .mc-ramp { display: inline-block; flex: 1; max-width: 120px; height: 8px; border-radius: 2px; }
+    .mc-ramp-slope { background: linear-gradient(90deg, #9a9a9a, #f5e663, #e0902b, #8b2e16); }
+    /* a layer that's switched off: its settings are dimmed (still adjustable, ready for when it's on) */
+    .mc-toggled:has(.mc-name input:not(:checked)) .mc-setting,
+    .mc-toggled:has(.mc-name input:not(:checked)) .slider,
+    .mc-toggled:has(.mc-name input:not(:checked)) .mc-key { opacity: 0.45; }
 
     .control-block {
       display: flex;
