@@ -6474,103 +6474,6 @@ function loadFcsDatabaseTable() {
     // from completeLogin() once there's real data) already populates this
     // dropdown properly.
 
-    // Add these debugging functions to help troubleshoot
-    function diagnoseMapIssues() {
-      console.log("====== MAP DIAGNOSIS ======");
-      
-      // Check if Leaflet is loaded
-      console.log("Leaflet loaded:", typeof L !== 'undefined');
-      
-      // Check map container
-      const container = document.getElementById('map-container');
-      console.log("Map container exists:", !!container);
-      if (container) {
-        console.log("Map container dimensions:", container.clientWidth, container.clientHeight);
-        console.log("Map container computed style:", 
-                    window.getComputedStyle(container).width,
-                    window.getComputedStyle(container).height);
-      }
-      
-      // Check map object
-      console.log("Map object exists:", !!map);
-      if (map) {
-        console.log("Map size:", map.getSize());
-        console.log("Map center:", map.getCenter());
-        console.log("Map zoom:", map.getZoom());
-        console.log("Map has satellite layer:", map.hasLayer(satelliteLayer));
-        console.log("Map has topo layer:", map.hasLayer(topoLayer));
-        console.log("Map has hillshade layer:", map.hasLayer(hillshadeLayer));
-        console.log("Map has OSM layer:", map.hasLayer(osmLayer));
-      }
-      
-      // Check layers
-      console.log("satelliteLayer exists:", !!satelliteLayer);
-      console.log("topoLayer exists:", !!topoLayer);
-      console.log("hillshadeLayer exists:", !!hillshadeLayer);
-      console.log("cavesLayer exists:", !!cavesLayer);
-      
-      if (cavesLayer) {
-        console.log("Number of caves on map:", cavesLayer.getLayers().length);
-      }
-      
-      console.log("====== END DIAGNOSIS ======");
-    }
-
-    // Add a debug button to the map controls
-    function addMapDebugButton() {
-      if (!map) return;
-      
-      // Create a custom control
-      const debugControl = L.Control.extend({
-        options: {
-          position: 'topright'
-        },
-        
-        onAdd: function(map) {
-          const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-          container.innerHTML = '<a href="#" title="Diagnose Map Issues" style="font-weight: bold; background-color: #ff9800; color: white;">?</a>';
-          
-          container.onclick = function() {
-            diagnoseMapIssues();
-            return false;
-          };
-          
-          return container;
-        }
-      });
-      
-      // Add the control to the map
-      map.addControl(new debugControl());
-    }
-
-    // Call this after map initialization to add debug button
-    function enhanceMapForDebugging() {
-      if (!map) return;
-      
-      // Add a visible message when base layers change
-      map.on('baselayerchange', function(e) {
-        const messageDiv = document.createElement('div');
-        messageDiv.style.position = 'absolute';
-        messageDiv.style.top = '10px';
-        messageDiv.style.left = '50%';
-        messageDiv.style.transform = 'translateX(-50%)';
-        messageDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-        messageDiv.style.color = 'white';
-        messageDiv.style.padding = '10px';
-        messageDiv.style.borderRadius = '5px';
-        messageDiv.style.zIndex = '1000';
-        messageDiv.textContent = `Switched to ${e.name} layer`;
-        
-        document.body.appendChild(messageDiv);
-        
-        setTimeout(function() {
-          document.body.removeChild(messageDiv);
-        }, 2000);
-      });
-      
-      addMapDebugButton();
-    }
-
     // Modify handleMapTabClick to initialize terrain controls
     function handleMapTabClick() {
       console.log("Map tab clicked");
@@ -8306,7 +8209,6 @@ window.addEventListener('error', function(e) {
       console.log("Map tab is already active, initializing map");
       setTimeout(function () {
         initializeMap();
-        setTimeout(enhanceMapForDebugging, 500);
       }, 100);
     }
   }
