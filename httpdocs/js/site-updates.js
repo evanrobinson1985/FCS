@@ -142,7 +142,8 @@
       });
       box.appendChild(ul);
     }
-    if (u.source === 'github' && /^https:\/\/github\.com\//.test(u.url || '')) {
+    // the GitHub link is on the Site Updates tab only, not in the "What's new" popup
+    if (showVisibilityControl && u.source === 'github' && /^https:\/\/github\.com\//.test(u.url || '')) {
       const a = el('a', 'su-source', 'See these changes on GitHub');
       a.href = u.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
       box.appendChild(a);
