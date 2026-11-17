@@ -5335,7 +5335,10 @@ function loadFcsDatabaseTable() {
     // note saying who can't see them, so it's clear why a member might say they're missing.
     function applyHiddenMapTools(hiddenMapTools) {
       const hiddenSet = new Set(hiddenMapTools || []);
-      const isWebmaster = (localStorage.getItem('role') || sessionStorage.getItem('role')) === 'webmaster';
+      // sessionStorage first: it belongs to this tab's own login, whereas
+      // localStorage is shared by every tab and may still hold a role from a
+      // different account logged in elsewhere in the same browser.
+      const isWebmaster = (sessionStorage.getItem('role') || localStorage.getItem('role')) === 'webmaster';
       document.querySelectorAll('[data-map-tool]').forEach(section => {
         const hidden = hiddenSet.has(section.dataset.mapTool);
         section.style.display = hidden && !isWebmaster ? 'none' : '';
@@ -6563,6 +6566,10 @@ function loadFcsDatabaseTable() {
     // Modify handleMapTabClick to initialize terrain controls
     function handleMapTabClick() {
       console.log("Map tab clicked");
+      // Re-check which map tools the webmaster has hidden every time the map
+      // is opened, so a change made in Website Management reaches people who
+      // were already logged in (not just those who log in afterwards).
+      loadSiteStatus().then(status => { if (status) applyHiddenMapTools(status.hiddenMapTools || []); });
       
       // Initialize map if not already done
       if (!map) {
