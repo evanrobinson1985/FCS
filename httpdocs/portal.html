@@ -1465,6 +1465,8 @@
         crossorigin=""></script>
 <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
 <script src="https://unpkg.com/esri-leaflet-renderers@3.0.1/dist/esri-leaflet-renderers.js"></script>
+<!-- Fixes an esri-leaflet error when the contour/slope layer is switched off mid-load (see the file) -->
+<script src="js/esri-leaflet-fix.js?v=1"></script>
 <script src="https://unpkg.com/leaflet-compass@1.5.6/dist/leaflet-compass.min.js"></script>
 <!-- Self-hosted, not loaded from a CDN: this one-time report was
      "L.heatLayer function not found" - the heatmap feature silently
