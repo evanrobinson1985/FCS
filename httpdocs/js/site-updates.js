@@ -61,7 +61,6 @@
       .su-visibility { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: #64748b; cursor: pointer; user-select: none; }
       .su-visibility input { margin: 0; }
       .su-visibility-status { color: #166534; }
-      .su-source { display: inline-block; margin-top: 6px; font-size: 12px; color: #4b86b4; }
       .su-gh-status { max-width: 820px; margin: 0 0 10px; padding: 6px 10px; border-radius: 6px; background: #fef3c7; color: #92400e; font-size: 13px; }
       .su-more { color: #64748b; font-style: italic; margin: 0 0 6px; }
       .su-timeline { position: relative; max-width: 820px; margin: 10px 0 20px; padding-left: 26px; }
@@ -141,12 +140,6 @@
         ul.appendChild(li);
       });
       box.appendChild(ul);
-    }
-    // the GitHub link is on the Site Updates tab only, not in the "What's new" popup
-    if (showVisibilityControl && u.source === 'github' && /^https:\/\/github\.com\//.test(u.url || '')) {
-      const a = el('a', 'su-source', 'See these changes on GitHub');
-      a.href = u.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-      box.appendChild(a);
     }
     // Webmaster-only, and only on the full Site Updates tab (not the brief
     // "What's new" popup card) - a checkbox to hide this entry from
