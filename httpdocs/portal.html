@@ -632,7 +632,7 @@
   
   <div style="margin-bottom: 15px;">
     <label style="display: flex; align-items: center; gap: 10px; font-weight: bold;">
-      <input type="checkbox" id="narratives-only-toggle" style="transform: scale(1.2);">
+      <input type="checkbox" id="narratives-only-toggle" checked autocomplete="off" style="transform: scale(1.2);">
       <span>Show only caves with narratives</span>
     </label>
   </div>
@@ -10119,7 +10119,7 @@ window.addEventListener('error', function(e) {
 <script>
 // Populate dropdown
 let cavesWithNarratives = new Set(); // Store cave IDs that have narratives
-let showOnlyNarrativeCaves = false;
+let showOnlyNarrativeCaves = true;   // on by default - matches the checkbox's initial "checked" state
 
 // Populate dropdown with proper event listener handling
 function populateNarrativeDropdown(filter = "") {
@@ -10127,6 +10127,7 @@ function populateNarrativeDropdown(filter = "") {
   select.innerHTML = '<option value="">-- Select a cave --</option>';
   
   const normalizedFilter = filter.toLowerCase();
+  const previous = select.dataset.selected || '';
 
   caveDataStore.forEach(cave => {
     // If "show only narratives" is enabled, skip caves without narratives
@@ -10142,6 +10143,8 @@ function populateNarrativeDropdown(filter = "") {
       select.appendChild(opt);
     }
   });
+  // keep the cave that was picked, if it's still in the list
+  if (previous && select.querySelector(`option[value="${CSS.escape(previous)}"]`)) select.value = previous;
 }
 
 async function loadCavesWithNarratives() {
@@ -10161,6 +10164,7 @@ async function loadCavesWithNarratives() {
 
 async function loadNarrativeEditor() {
   const caveId = document.getElementById('narrative-cave-select').value;
+  document.getElementById('narrative-cave-select').dataset.selected = caveId;
   if (!caveId) return;
 
   document.getElementById('narrative-cave-id-name').innerText = caveId;
@@ -10971,7 +10975,14 @@ function initializeNarrativeDataAfterLogin() {
   };
 
   waitForCaveData();
-  loadCavesWithNarratives();
+  // With "Show only caves with narratives" on (the default), the list can't be filled properly until it's
+  // known which caves have narratives - so fill it again once that arrives, in case the caves loaded first.
+  loadCavesWithNarratives().then(() => {
+    if (showOnlyNarrativeCaves && typeof caveDataStore !== 'undefined' && caveDataStore.length > 0) {
+      const search = document.getElementById('narrative-search');
+      populateNarrativeDropdown(search ? search.value.trim() : '');
+    }
+  });
 }
 
 // Enhanced DOM ready handler with proper event listeners
