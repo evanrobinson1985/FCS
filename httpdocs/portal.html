@@ -1478,7 +1478,9 @@
 <script src="https://unpkg.com/georaster-layer-for-leaflet@3.7.0/dist/georaster-layer-for-leaflet.min.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
 <!-- 3D terrain view (Interactive Map "3D" button); needs geotiff.js above -->
-<script src="js/terrain3d.js?v=11"></script>
+<script src="js/terrain3d.js?v=13"></script>
+<!-- "Scan" button on the Interactive Map: finds possible sinkholes in LiDAR elevation (needs terrain3d.js) -->
+<script src="js/sinkhole-scan.js?v=3"></script>
 <!-- "What's new" card after login + the Site Updates tab -->
 <script src="js/site-updates.js?v=7"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
@@ -2336,7 +2338,7 @@
         // whole map view or a box the user drags, with the caves currently
         // shown on the map (after filters) as coloured pins.
         if (window.Terrain3D) {
-          Terrain3D.attachControl(map, {
+          var terrainOptions = {
             getMarkers: function() {
               const out = [];
               if (!cavesLayer) return out;
@@ -2354,6 +2356,27 @@
                 .map(function(pair) {
                   return { label: pair[0], url: pair[1]._url, options: pair[1].options, active: map.hasLayer(pair[1]) };
                 });
+            }
+          };
+          Terrain3D.attachControl(map, terrainOptions);
+        }
+        // Sinkhole scan, for everyone. Every cave in the database counts as "already known" (not just
+        // the ones the map's filters are currently showing), so a scan never offers a cave already on record.
+        if (window.SinkholeScan) {
+          SinkholeScan.attachControl(map, {
+            // "View in 3D" shows the same cave pins and basemaps as the map's own 3D button
+            getMarkers: function() { return terrainOptions ? terrainOptions.getMarkers() : []; },
+            getBasemaps: function() { return terrainOptions ? terrainOptions.getBasemaps() : []; },
+            getCaves: function() {
+              var out = [];
+              (caveDataStore || []).forEach(function(c) {
+                out.push({ id: c.id, name: c.name, lat: parseFloat(c.latitude != null ? c.latitude : c.lat), lng: parseFloat(c.longitude != null ? c.longitude : c.lng) });
+                // each extra entrance counts as a known spot too
+                (Array.isArray(c.entrances) ? c.entrances : []).forEach(function(e) {
+                  if (e && e.latitude != null && e.longitude != null) out.push({ id: c.id, name: c.name, lat: parseFloat(e.latitude), lng: parseFloat(e.longitude) });
+                });
+              });
+              return out;
             }
           });
         }

@@ -81,10 +81,10 @@
   // ---------- elevation download ----------
   // Picks a grid for the box: 1 m cells when the area fits the cell budget,
   // otherwise the finest spacing that does.
-  function planGrid(b) {
+  function planGrid(b, budget) {
     const midLat = (b.n + b.s) / 2 * Math.PI / 180;
     const widthM = (b.e - b.w) * 111320 * Math.cos(midLat), heightM = (b.n - b.s) * 110574;
-    const res = Math.max(MIN_RES, Math.sqrt(widthM * heightM / CELL_BUDGET));
+    const res = Math.max(MIN_RES, Math.sqrt(widthM * heightM / (budget || CELL_BUDGET)));
     const W = Math.max(16, Math.round(widthM / res)), H = Math.max(16, Math.round(heightM / res));
     return { bounds: b, W, H, res: Math.sqrt((widthM / W) * (heightM / H)), widthM, heightM };
   }
@@ -356,9 +356,11 @@
           if (closed) return;
           try {
             renderer = startRenderer(overlay, q, grid, markers, opts.basemaps || [], abort.signal);
+            // opts.summary: what the pins are, when they aren't all caves (e.g. sinkhole scan results)
+            const what = opts.summary || `Showing ${markers.length} cave(s).`;
             status.textContent = plan.res > 10
-              ? `Showing ${markers.length} cave(s). This is a large area, so detail is coarse. Zoom in or draw a smaller box for up to 1 m detail.`
-              : `Showing ${markers.length} cave(s).`;
+              ? `${what} This is a large area, so detail is coarse. Zoom in or draw a smaller box for up to 1 m detail.`
+              : what;
           } catch (err) {
             console.error(err);
             status.textContent = 'Could not start the 3D view: ' + err.message;
@@ -1213,62 +1215,14 @@
     });
     function hideMenu() { if (menu) menu.style.display = 'none'; }
 
-    // Box drawing: drag with mouse or finger. Map panning is paused meanwhile.
+    // Box drawing: drag with mouse or finger (see drawBox below)
     function startDrawing() {
       clearBox();
-      const container = map.getContainer();
-      const hint = L.DomUtil.create('div', '', container);
-      hint.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;background:rgba(15,23,42,0.88);color:#fff;padding:8px 12px;border-radius:6px;font:13px system-ui,sans-serif;pointer-events:auto;white-space:nowrap;';
-      hint.innerHTML = 'Drag on the map to draw the 3D area. <a href="#" style="color:#93c5fd;margin-left:6px;">Cancel</a>';
-      L.DomEvent.disableClickPropagation(hint);
-      hint.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); stopDrawing(); });
-      const wasDragging = map.dragging.enabled(), wasBoxZoom = map.boxZoom && map.boxZoom.enabled();
-      map.dragging.disable(); if (map.boxZoom) map.boxZoom.disable();
-      const oldCursor = container.style.cursor, oldTouch = container.style.touchAction;
-      container.style.cursor = 'crosshair'; container.style.touchAction = 'none';
-
-      let start = null, startPt = null, rect = null;
-      const inControl = (t) => t && t.closest && (t.closest('.leaflet-control') || t === hint || hint.contains(t));
-      const down = (e) => {
-        if (inControl(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
-        e.preventDefault(); e.stopPropagation();
-        start = map.mouseEventToLatLng(e); startPt = { x: e.clientX, y: e.clientY };
-        rect = L.rectangle(L.latLngBounds(start, start), { color: '#f97316', weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
-        try { container.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-      };
-      const move = (e) => { if (start) { e.preventDefault(); rect.setBounds(L.latLngBounds(start, map.mouseEventToLatLng(e))); } };
-      const up = (e) => {
-        if (!start) return;
-        e.preventDefault(); e.stopPropagation();
-        const llb = L.latLngBounds(start, map.mouseEventToLatLng(e));
-        const tiny = Math.abs(e.clientX - startPt.x) < 8 || Math.abs(e.clientY - startPt.y) < 8;
-        start = null;
-        // Swallow the click that follows the drag so it doesn't reach the map
-        const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
-        window.addEventListener('click', eat, { capture: true, once: true });
-        setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 300);
-        if (tiny) { map.removeLayer(rect); rect = null; return; } // too small: keep drawing
-        const keep = rect; rect = null;
-        stopDrawing();
-        boxLayer = keep;
+      drawing = drawBox(map, 'Drag on the map to draw the 3D area.', (llb, rect) => {
+        drawing = null;
+        boxLayer = rect;
         launch(llb);
-      };
-      const key = (e) => { if (e.key === 'Escape') stopDrawing(); };
-      container.addEventListener('pointerdown', down, true);
-      container.addEventListener('pointermove', move, true);
-      container.addEventListener('pointerup', up, true);
-      window.addEventListener('keydown', key);
-      drawing = () => {
-        container.removeEventListener('pointerdown', down, true);
-        container.removeEventListener('pointermove', move, true);
-        container.removeEventListener('pointerup', up, true);
-        window.removeEventListener('keydown', key);
-        if (rect) map.removeLayer(rect);
-        hint.remove();
-        container.style.cursor = oldCursor; container.style.touchAction = oldTouch;
-        if (wasDragging) map.dragging.enable();
-        if (wasBoxZoom) map.boxZoom.enable();
-      };
+      }, () => { drawing = null; });
     }
     function stopDrawing() { if (drawing) { const d = drawing; drawing = null; d(); } }
 
@@ -1278,5 +1232,71 @@
     return control;
   }
 
-  window.Terrain3D = { open, attachControl };
+  // Lets the user drag a box on the map with mouse or finger; map panning is
+  // paused meanwhile. onBox(latLngBounds, rectLayer) gets the box (the caller
+  // owns the rectangle and removes it when done); onCancel() runs if the user
+  // cancels instead. Returns a function that cancels drawing.
+  function drawBox(map, hintText, onBox, onCancel, color) {
+    const container = map.getContainer();
+    const hint = L.DomUtil.create('div', '', container);
+    hint.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;background:rgba(15,23,42,0.88);color:#fff;padding:8px 12px;border-radius:6px;font:13px system-ui,sans-serif;max-width:90%;text-align:center;';
+    hint.textContent = hintText + ' ';
+    const cancelLink = document.createElement('a');
+    cancelLink.href = '#'; cancelLink.textContent = 'Cancel'; cancelLink.style.cssText = 'color:#93c5fd;margin-left:6px;';
+    hint.appendChild(cancelLink);
+    L.DomEvent.disableClickPropagation(hint);
+    const wasDragging = map.dragging.enabled(), wasBoxZoom = map.boxZoom && map.boxZoom.enabled();
+    map.dragging.disable(); if (map.boxZoom) map.boxZoom.disable();
+    const oldCursor = container.style.cursor, oldTouch = container.style.touchAction;
+    container.style.cursor = 'crosshair'; container.style.touchAction = 'none';
+
+    let start = null, startPt = null, rect = null, finished = false;
+    const inControl = (t) => t && t.closest && (t.closest('.leaflet-control') || t === hint || hint.contains(t));
+    const down = (e) => {
+      if (inControl(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      e.preventDefault(); e.stopPropagation();
+      start = map.mouseEventToLatLng(e); startPt = { x: e.clientX, y: e.clientY };
+      rect = L.rectangle(L.latLngBounds(start, start), { color: color || '#f97316', weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
+      try { container.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    };
+    const move = (e) => { if (start) { e.preventDefault(); rect.setBounds(L.latLngBounds(start, map.mouseEventToLatLng(e))); } };
+    const up = (e) => {
+      if (!start) return;
+      e.preventDefault(); e.stopPropagation();
+      const llb = L.latLngBounds(start, map.mouseEventToLatLng(e));
+      const tiny = Math.abs(e.clientX - startPt.x) < 8 || Math.abs(e.clientY - startPt.y) < 8;
+      start = null;
+      // Swallow the click that follows the drag so it doesn't reach the map
+      const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      window.addEventListener('click', eat, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 300);
+      if (tiny) { map.removeLayer(rect); rect = null; return; } // too small: keep drawing
+      const keep = rect; rect = null;
+      cleanup();
+      onBox(llb, keep);
+    };
+    const key = (e) => { if (e.key === 'Escape') cancel(); };
+    container.addEventListener('pointerdown', down, true);
+    container.addEventListener('pointermove', move, true);
+    container.addEventListener('pointerup', up, true);
+    window.addEventListener('keydown', key);
+    function cleanup() {
+      if (finished) return;
+      finished = true;
+      container.removeEventListener('pointerdown', down, true);
+      container.removeEventListener('pointermove', move, true);
+      container.removeEventListener('pointerup', up, true);
+      window.removeEventListener('keydown', key);
+      if (rect) map.removeLayer(rect);
+      hint.remove();
+      container.style.cursor = oldCursor; container.style.touchAction = oldTouch;
+      if (wasDragging) map.dragging.enable();
+      if (wasBoxZoom) map.boxZoom.enable();
+    }
+    function cancel() { if (finished) return; cleanup(); if (onCancel) onCancel(); }
+    cancelLink.addEventListener('click', (e) => { e.preventDefault(); cancel(); });
+    return cancel;
+  }
+
+  window.Terrain3D = { open, attachControl, drawBox, elevation: { planGrid, downloadDEM, NODATA, ND } };
 })();
