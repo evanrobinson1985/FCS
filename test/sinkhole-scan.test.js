@@ -82,3 +82,13 @@ test("each result carries an outline that matches its size", () => {
   assert.ok(traced > expected * 0.8 && traced <= expected * 1.02, `outline area ${traced} vs ${expected}`);
   assert.ok(ring.every(([x, y]) => Math.hypot(x - 150, y - 150) < 22), "the outline sits round the sinkhole");
 });
+
+test("sinkholes inside a larger hollow are each reported, not as one wide depression", () => {
+  const W = 500, H = 500;
+  // a broad, shallow hollow 300 m across with three sinkholes in its floor
+  const z = terrain(W, H, [{ x: 250, y: 250, r: 150, depth: 1.5 }, { x: 200, y: 200, r: 15, depth: 3 }, { x: 300, y: 250, r: 10, depth: 2 }, { x: 230, y: 320, r: 18, depth: 4 }]);
+  const r = analyze(z, W, H, 1, { minDepthM: 1 / FT, minDiamM: 2 / FT, maxElong: 0 });
+  for (const [x, y] of [[200, 200], [300, 250], [230, 320]]) assert.ok(near(r.found, x, y) || r.found.some((f) => Math.hypot(f.x - x, f.y - y) < 12), `a result for the sinkhole at ${x},${y}`);
+  assert.equal(r.found.length, 3, "three sinkholes, not the hollow as a whole");
+  assert.ok(r.found.every((f) => f.diamM < 250), "none of them is the whole hollow");
+});

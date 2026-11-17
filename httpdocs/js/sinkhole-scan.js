@@ -109,11 +109,10 @@
     for (let s = 0; s < N; s++) {
       if (label[s] || dem[s] < ND || filled[s] - dem[s] < EPS) continue;
       n++; let sp = 0; stack[sp++] = s; label[s] = n;
-      const r = { id: n, cells: 0, maxDepth: 0, deepest: s, volume: 0, sx: 0, sy: 0, sxx: 0, syy: 0, sxy: 0, spill: filled[s], cellsList: [] };
+      const r = { id: n, spill: filled[s], cellsList: [] };
       while (sp) {
-        const c = stack[--sp], cx = c % W, cy = (c / W) | 0, d = filled[c] - dem[c];
-        r.cells++; r.volume += d; r.sx += cx; r.sy += cy; r.sxx += cx * cx; r.syy += cy * cy; r.sxy += cx * cy;
-        if (d > r.maxDepth) { r.maxDepth = d; r.deepest = c; }
+        const c = stack[--sp], cx = c % W, cy = (c / W) | 0;
+        if (filled[c] > r.spill) r.spill = filled[c];
         r.cellsList.push(c);
         for (let k = 0; k < 8; k++) {
           const nx = cx + dx[k], ny = cy + dy[k];
@@ -159,8 +158,72 @@
       return out;
     }
 
+    // ---- one result per pit, not per depression ----
+    // A depression often holds several sinkholes: a broad hollow with pits in its floor, or two pits side
+    // by side. Reported at its rim it would be ONE wide result, hiding the sinkholes in it. So each
+    // depression is broken down by flooding it from the bottom up (cells in order of height, joined to the
+    // neighbouring pools they touch): where two pools that are each a real pit (at least minDepth deep and
+    // minDiam wide) meet, each is recorded as a sinkhole of its own, with its depth and size at the level
+    // where it would spill into the other. A depression with no such split is reported whole, as before.
+    const parent = new Int32Array(N).fill(-1);
+    const find = (c) => { let r = c; while (parent[r] !== r) r = parent[r]; while (parent[c] !== r) { const nx = parent[c]; parent[c] = r; c = nx; } return r; };
+    const minCells = Math.max(1, Math.PI * (minDiam / 2) ** 2 / (res * res));
+    function pitsOf(reg) {
+      const order = Int32Array.from(reg.cellsList).sort((a, b) => dem[a] - dem[b]);
+      const pool = new Map();   // root -> { cells: [...], min, hasChildren }
+      const out = [];
+      for (let k = 0; k < order.length; k++) {
+        const c = order[k], z = dem[c], cx = c % W, cy = (c / W) | 0;
+        const roots = [];
+        for (let d = 0; d < 8; d++) {
+          const nx = cx + dx[d], ny = cy + dy[d];
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const q = ny * W + nx;
+          if (parent[q] < 0 || label[q] !== reg.id) continue;
+          const rt = find(q); if (!roots.includes(rt)) roots.push(rt);
+        }
+        if (!roots.length) { parent[c] = c; pool.set(c, { cells: [c], min: z, hasChildren: false }); continue; }
+        let splitHere = false;
+        if (roots.length > 1) {
+          const real = roots.filter((rt) => { const p = pool.get(rt); return z - p.min >= minDepth && p.cells.length >= minCells; });
+          if (real.length > 1) {
+            for (const rt of real) { const p = pool.get(rt); if (!p.hasChildren) out.push({ cells: p.cells.slice(), spill: z }); }
+            splitHere = true;
+          }
+        }
+        // merge everything into the biggest pool, then add this cell
+        let big = roots[0];
+        for (const rt of roots) if (pool.get(rt).cells.length > pool.get(big).cells.length) big = rt;
+        const B = pool.get(big);
+        for (const rt of roots) {
+          if (rt === big) continue;
+          const p = pool.get(rt);
+          for (const x of p.cells) B.cells.push(x);
+          if (p.min < B.min) B.min = p.min;
+          B.hasChildren = B.hasChildren || p.hasChildren;
+          parent[rt] = big; pool.delete(rt);
+        }
+        if (splitHere) B.hasChildren = true;
+        parent[c] = big; B.cells.push(c);
+      }
+      for (const p of pool.values()) if (!p.hasChildren) out.push({ cells: p.cells, spill: reg.spill });
+      return out;
+    }
+    // the measurements of one pit, from its cells and the level it fills to
+    function measure(cells, spill) {
+      const r = { cells: cells.length, maxDepth: 0, deepest: cells[0], volume: 0, sx: 0, sy: 0, sxx: 0, syy: 0, sxy: 0, spill, cellsList: cells };
+      for (const c of cells) {
+        const cx = c % W, cy = (c / W) | 0, d = spill - dem[c];
+        r.volume += d; r.sx += cx; r.sy += cy; r.sxx += cx * cx; r.syy += cy * cy; r.sxy += cx * cy;
+        if (d > r.maxDepth) { r.maxDepth = d; r.deepest = c; }
+      }
+      return r;
+    }
+    const pits = [];
+    for (const reg of regions) for (const p of pitsOf(reg)) pits.push(measure(p.cells, p.spill));
+
     const keep = [], cellArea = res * res;
-    for (const r of regions) {
+    for (const r of pits) {
       const area = r.cells * cellArea, diam = 2 * Math.sqrt(area / Math.PI);
       if (r.maxDepth < minDepth || diam < minDiam) continue;
       // shape: how long and narrow (ratio of the two axes of its spread)
@@ -189,7 +252,7 @@
       });
     }
     keep.sort((a, b) => b.depthM - a.depthM);
-    return { found: keep, regionsTotal: regions.length };
+    return { found: keep, regionsTotal: regions.length, pitsTotal: pits.length };
   }
 
   let workerUrl = null;
