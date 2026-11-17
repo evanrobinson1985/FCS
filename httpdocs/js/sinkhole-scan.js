@@ -278,6 +278,9 @@
           display:flex; flex-direction:column; background:#fff; color:#0f172a; border-radius:8px; box-shadow:0 2px 12px rgba(0,0,0,.35); font:13px system-ui,sans-serif; }
         .sinkscan-panel .ss-head { display:flex; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #e2e8f0; font-weight:700; }
         .sinkscan-panel .ss-body { overflow:auto; padding:6px 10px; }
+        .sinkscan-panel.ss-minimized .ss-body { display:none; }
+        .sinkscan-panel.ss-minimized .ss-head { border-bottom:0; }
+        .sinkscan-panel button.ss-min { min-width:28px; font-size:15px; line-height:1; padding:2px 6px; }
         .sinkscan-panel .ss-row { padding:5px 0; border-bottom:1px solid #f1f5f9; cursor:pointer; }
         .sinkscan-panel .ss-row:hover { background:#f8fafc; }
         .sinkscan-panel .ss-sub { font-size:11px; color:#64748b; }
@@ -357,13 +360,26 @@
       L.DomEvent.disableClickPropagation(panel);
       L.DomEvent.disableScrollPropagation(panel);
       const head = el('div'); head.className = 'ss-head';
-      const title = el('span', 'flex:1;', 'Sink Scan');
+      const title = el('span', 'flex:1;cursor:pointer;', 'Sink Scan');
+      // Minimize: shrinks the window to this title bar (the count stays visible, the results stay on
+      // the map). A new scan always opens it full size, so nothing that needs a click is hidden.
+      const min = el('button', null, '\u2013'); min.type = 'button'; min.className = 'ss-btn ss-min';
       const close = el('button', null, 'Clear'); close.type = 'button'; close.className = 'ss-btn';
       close.title = 'Stop the scan (if running) and remove its results';
       close.addEventListener('click', clearResults);
-      head.appendChild(title); head.appendChild(close);
+      head.appendChild(title); head.appendChild(min); head.appendChild(close);
       const body = el('div'); body.className = 'ss-body';
       panel.appendChild(head); panel.appendChild(body);
+      const setMin = (on) => {
+        panel.classList.toggle('ss-minimized', on);
+        min.textContent = on ? '+' : '\u2013';
+        min.title = on ? 'Show the results window' : 'Minimize the results window';
+        min.setAttribute('aria-label', min.title);
+        min.setAttribute('aria-expanded', on ? 'false' : 'true');
+      };
+      setMin(false);
+      min.addEventListener('click', () => setMin(!panel.classList.contains('ss-minimized')));
+      title.addEventListener('click', () => { if (panel.classList.contains('ss-minimized')) setMin(false); });
       map.getContainer().appendChild(panel);
       return { title, body };
     }
