@@ -26,8 +26,15 @@
 (function () {
   'use strict';
 
-  const CELL_BUDGET = 4e6; // elevation cells per scan: about 2 x 2 km at 1 m detail
-  const MAX_RES = 6;       // coarser than this (m per cell), sinkholes stop being visible
+  // Areas are scanned at 1 m detail (the best 3DEP has) in sections of up to 2 x 2 km, which overlap
+  // by 200 m so a depression lying across the line between two sections is whole in one of them.
+  // The results of all sections are combined into one list.
+  const SECTION_M = 2000;          // an area up to this size (each way) is scanned in one go
+  const CORE_M = 1600;             // bigger areas: sections own a 1.6 km square each...
+  const OVERLAP_M = 200;           // ...plus 200 m around it that they share with their neighbours
+  const SECTION_BUDGET = 4.2e6;    // cells per section: 2 x 2 km at 1 m, with room for rounding
+  const MAX_AREA_KM2 = 100;        // about 10 x 10 km: 49 sections, a few hundred MB of elevation data
+  const MB_PER_SECTION = 10;       // rough download size of one section, for the estimate shown first
   const FT = 3.28084;
   const MAX_LISTED = 300;
   // A scan keeps every depression at least this deep and wide; the filters on the results then
@@ -35,6 +42,7 @@
   const SCAN_FLOOR = { minDepthM: 1 / 3.28084, minDiamM: 5 / 3.28084, maxElong: 0 };
   const FILTER_LIMITS = { depth: [1, 40], width: [5, 300] };
   const MAX_MARKERS = 2000;
+  const MAX_OUTLINES = 3000;
 
   // ---------- the analysis (runs in a worker; must not use anything outside itself) ----------
   function analyze(dem, W, H, res, opts) {
@@ -114,8 +122,40 @@
       regions.push(r);
     }
 
+    // The outline of one depression, in cell coordinates: trace round the edge of its cells
+    // (Moore neighbour tracing), then drop points that don't change the shape (Douglas-Peucker).
+    function outlineOf(cells) {
+      let x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (const c of cells) { const x = c % W, y = (c / W) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      const w = x1 - x0 + 3, h = y1 - y0 + 3, m = new Uint8Array(w * h);
+      for (const c of cells) m[(((c / W) | 0) - y0 + 1) * w + (c % W) - x0 + 1] = 1;
+      let sx = -1, sy = -1;
+      for (let i = 0; i < w * h && sx < 0; i++) if (m[i]) { sx = i % w; sy = (i / w) | 0; }
+      const nb = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+      const pts = [[sx, sy]]; let px = sx, py = sy, bi = 4, guard = 0;
+      while (guard++ < 4 * w * h + 8) {
+        let f = -1;
+        for (let k = 1; k <= 8; k++) { const di = (bi + k) % 8, nx = px + nb[di][0], ny = py + nb[di][1]; if (nx >= 0 && ny >= 0 && nx < w && ny < h && m[ny * w + nx]) { f = di; break; } }
+        if (f < 0) break;
+        px += nb[f][0]; py += nb[f][1]; bi = (f + 4) % 8;
+        if (px === sx && py === sy) break;
+        pts.push([px, py]);
+      }
+      const keepPt = new Uint8Array(pts.length); keepPt[0] = 1; keepPt[pts.length - 1] = 1;
+      const st = [[0, pts.length - 1]];
+      while (st.length) {
+        const [a, b] = st.pop(); if (b - a < 2) continue;
+        const [ax, ay] = pts[a], [bx, by] = pts[b], len = Math.hypot(bx - ax, by - ay) || 1;
+        let dm = 0, ix = -1;
+        for (let i = a + 1; i < b; i++) { const d = Math.abs((pts[i][0] - ax) * (by - ay) - (pts[i][1] - ay) * (bx - ax)) / len; if (d > dm) { dm = d; ix = i; } }
+        if (dm > 0.75) { keepPt[ix] = 1; st.push([a, ix], [ix, b]); }
+      }
+      const out = [];
+      for (let i = 0; i < pts.length; i++) if (keepPt[i]) out.push([pts[i][0] + x0 - 1, pts[i][1] + y0 - 1]);
+      return out;
+    }
+
     const keep = [], cellArea = res * res;
-    const shown = new Float32Array(N); // filled depth of every kept cell, for drawing
     for (const r of regions) {
       const area = r.cells * cellArea, diam = 2 * Math.sqrt(area / Math.PI);
       if (r.maxDepth < minDepth || diam < minDiam) continue;
@@ -138,19 +178,14 @@
         let flat = 0; for (let k = 0; k < els.length; k++) if (Math.abs(els[k] - base) < 0.1) flat++;
         flatBottom = flat / els.length > 0.3;
       }
-      for (const c of r.cellsList) shown[c] = filled[c] - dem[c];
       keep.push({
         x: r.deepest % W, y: (r.deepest / W) | 0, cx: mx, cy: my,
         depthM: r.maxDepth, areaM2: area, diamM: diam, volumeM3: r.volume * cellArea,
-        elong, flatBottom, spillM: r.spill, cellsList: r.cellsList,
+        elong, flatBottom, spillM: r.spill, outline: outlineOf(r.cellsList),
       });
     }
     keep.sort((a, b) => b.depthM - a.depthM);
-    // regionOf[cell] = 1 + index in `found` of the depression it belongs to (0 = none), so the map
-    // can redraw just the depressions a filter leaves showing
-    const regionOf = new Int32Array(N);
-    keep.forEach((k, i) => { for (const c of k.cellsList) regionOf[c] = i + 1; delete k.cellsList; });
-    return { found: keep, shown, regionOf, regionsTotal: regions.length };
+    return { found: keep, regionsTotal: regions.length };
   }
 
   let workerUrl = null;
@@ -159,7 +194,7 @@
       let worker = null;
       try {
         if (!workerUrl) {
-          const src = `${analyze.toString()}\nself.onmessage = (e) => { const d = e.data; try { const r = analyze(d.dem, d.W, d.H, d.res, d.opts); self.postMessage(r, [r.shown.buffer, r.regionOf.buffer]); } catch (err) { self.postMessage({ error: String(err && err.message || err) }); } };`;
+          const src = `${analyze.toString()}\nself.onmessage = (e) => { const d = e.data; try { const r = analyze(d.dem, d.W, d.H, d.res, d.opts); self.postMessage(r); } catch (err) { self.postMessage({ error: String(err && err.message || err) }); } };`;
           workerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
         }
         worker = new Worker(workerUrl);
@@ -213,7 +248,7 @@
     const E = Terrain3D.elevation;
     let menu = null, panel = null, cancelDraw = null, results = null, abort = null;
     const layer = L.layerGroup();
-    let overlay = null, boxLayer = null;
+    let boxLayer = null;
 
     if (!document.getElementById('sinkscan-style')) {
       const st = document.createElement('style');
@@ -233,7 +268,8 @@
         .sinkscan-panel .ss-sub { font-size:11px; color:#64748b; }
         .sinkscan-panel button.ss-btn { padding:3px 8px; font:600 12px system-ui,sans-serif; border:1px solid #1e3a5f; border-radius:4px; background:#fff; color:#1e3a5f; cursor:pointer; }
         .sinkscan-panel button.ss-btn:hover { background:#1e3a5f; color:#fff; }
-        .sinkscan-overlay { image-rendering: pixelated; }`;
+        .sinkscan-panel .ss-progress { height:6px; background:#e2e8f0; border-radius:3px; overflow:hidden; margin:4px 0 6px; }
+        .sinkscan-panel .ss-progress > div { height:100%; background:#7c3aed; width:0; transition:width .3s; }`;
       document.head.appendChild(st);
     }
 
@@ -253,7 +289,7 @@
         const bBox = el('button', null, 'Select an area to scan'); bBox.type = 'button'; bBox.className = 'ss-opt';
         menu.appendChild(bView); menu.appendChild(bBox);
         menu.appendChild(el('div', 'font-size:11px;color:#64748b;line-height:1.35;margin-top:4px;',
-          'Finds closed low spots in USGS LiDAR elevation (US only) - mostly sinkholes here, but also ponds, pits and spots where a road blocks drainage. Areas up to about 2 × 2 km are scanned at 1 m detail. You can filter the results by depth and width afterwards.'));
+          'Finds closed low spots in USGS LiDAR elevation (US only) - mostly sinkholes here, but also ponds, pits and spots where a road blocks drainage. Always scanned at 1 m detail; areas bigger than 2 × 2 km are scanned in sections and combined (up to about 10 × 10 km). You can filter the results by depth and width afterwards.'));
         L.DomEvent.disableClickPropagation(wrap);
         L.DomEvent.disableScrollPropagation(wrap);
         L.DomEvent.on(btn, 'click', (e) => {
@@ -276,11 +312,14 @@
     });
     function hideMenu() { if (menu) menu.style.display = 'none'; }
 
+    let outlines = null;   // depression shapes on the map (vector, so any size of area works)
+    const renderer = L.canvas({ padding: 0.3 });
+
     function clearResults() {
       if (abort) { abort.abort(); abort = null; }
       layer.clearLayers();
       if (map.hasLayer(layer)) map.removeLayer(layer);
-      if (overlay) { map.removeLayer(overlay); overlay = null; }
+      if (outlines) { map.removeLayer(outlines); outlines = null; }
       if (boxLayer) { map.removeLayer(boxLayer); boxLayer = null; }
       if (panel) { panel.remove(); panel = null; }
       results = null;
@@ -294,6 +333,7 @@
       const head = el('div'); head.className = 'ss-head';
       const title = el('span', 'flex:1;', 'Sinkhole scan');
       const close = el('button', null, 'Clear'); close.type = 'button'; close.className = 'ss-btn';
+      close.title = 'Stop the scan (if running) and remove its results';
       close.addEventListener('click', clearResults);
       head.appendChild(title); head.appendChild(close);
       const body = el('div'); body.className = 'ss-body';
@@ -302,66 +342,132 @@
       return { title, body };
     }
 
-    function scan(llb) {
-      const opts = SCAN_FLOOR;
-      clearResults();
-      const b = { n: llb.getNorth(), s: llb.getSouth(), e: llb.getEast(), w: llb.getWest() };
-      const plan = E.planGrid(b, CELL_BUDGET);
-      const ui = showPanel();
-      if (plan.res > MAX_RES) {
-        ui.body.appendChild(el('div', null,
-          `This area is ${(plan.widthM / 1000).toFixed(1)} × ${(plan.heightM / 1000).toFixed(1)} km - too big to see sinkholes in. ` +
-          'Zoom in, or select a smaller area (up to about 12 × 12 km).'));
-        return;
+    const kmOf = (b) => {
+      const midLat = (b.n + b.s) / 2 * Math.PI / 180;
+      return { w: (b.e - b.w) * 111320 * Math.cos(midLat), h: (b.n - b.s) * 110574 };
+    };
+
+    // Splits the area into sections: each owns a "core" (the cores tile the area exactly) and is
+    // scanned with OVERLAP_M of its neighbours' cores around it.
+    function planSections(b) {
+      const size = kmOf(b);
+      if (size.w <= SECTION_M && size.h <= SECTION_M) return [{ core: b, bounds: b, i: 0, j: 0 }];
+      const nx = Math.max(1, Math.ceil(size.w / CORE_M)), ny = Math.max(1, Math.ceil(size.h / CORE_M));
+      const dLng = (b.e - b.w) / nx, dLat = (b.n - b.s) / ny;
+      const oLng = OVERLAP_M / size.w * (b.e - b.w), oLat = OVERLAP_M / size.h * (b.n - b.s);
+      const out = [];
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const core = { w: b.w + i * dLng, e: b.w + (i + 1) * dLng, n: b.n - j * dLat, s: b.n - (j + 1) * dLat };
+        out.push({ i, j, core, bounds: { w: Math.max(b.w, core.w - oLng), e: Math.min(b.e, core.e + oLng), n: Math.min(b.n, core.n + oLat), s: Math.max(b.s, core.s - oLat) } });
       }
-      abort = new AbortController();
-      const status = el('div', null, 'Downloading USGS elevation data…');
-      ui.body.appendChild(status);
-      const signal = abort.signal;
-      E.downloadDEM(plan, signal, (d, n) => { status.textContent = `Downloading USGS elevation data… ${d} of ${n}`; })
-        .then((grid) => {
-          if (signal.aborted) return null;
-          let valid = 0; for (let i = 0; i < grid.data.length; i++) if (grid.data[i] >= E.ND) valid++;
-          if (!valid) { status.textContent = 'No elevation data here. USGS 3DEP covers the United States only.'; return null; }
-          status.textContent = 'Looking for depressions…';
-          return runAnalysis(grid.data, grid.w, grid.h, grid.res, opts).then((r) => ({ r, grid }));
-        })
-        .then((out) => {
-          if (!out || signal.aborted) return;
-          abort = null;
-          showResults(out.r, out.grid, plan, opts, ui);
-        })
-        .catch((err) => {
-          if (err.name === 'AbortError' || signal.aborted) return;
-          console.error('Sinkhole scan:', err);
-          status.textContent = 'The scan failed: ' + err.message + '. Check your connection and try again.';
-        });
+      return out;
     }
 
-    function showResults(r, grid, plan, opts, ui) {
-      const b = grid.bounds, W = grid.w, H = grid.h;
-      const cellLL = (x, y) => L.latLng(b.n - (y + 0.5) * (b.n - b.s) / H, b.w + (x + 0.5) * (b.e - b.w) / W);
-      // Depressions that already have a cave in the database are left out: the point is to find
-      // new ones. "Has a cave" = a recorded cave (or entrance) within the depression's own radius
-      // plus 100 ft - cave coordinates are often a little off, and an entrance can sit on the slope.
+    function scan(llb) {
+      const keepBox = boxLayer; boxLayer = null;
+      clearResults();
+      boxLayer = keepBox;
+      const b = { n: llb.getNorth(), s: llb.getSouth(), e: llb.getEast(), w: llb.getWest() };
+      const size = kmOf(b), km2 = size.w * size.h / 1e6;
+      const ui = showPanel();
+      const dims = `${(size.w / 1000).toFixed(1)} × ${(size.h / 1000).toFixed(1)} km`;
+      if (km2 > MAX_AREA_KM2) {
+        ui.body.appendChild(el('div', null,
+          `This area is ${dims} - too big to scan at 1 m detail in one go (the limit is about 10 × 10 km). ` +
+          'Zoom in, or select a smaller area.'));
+        return;
+      }
+      const sections = planSections(b);
+      if (sections.length === 1) { runScan(b, sections, ui); return; }
+      // a big scan: say what it involves first
+      ui.title.textContent = 'Large area';
+      ui.body.appendChild(el('div', 'margin-bottom:8px;',
+        `This area is ${dims}. To keep 1 m detail it will be scanned in ${sections.length} sections and the results combined - ` +
+        `about ${Math.round(sections.length * MB_PER_SECTION)} MB of elevation data, which can take several minutes. ` +
+        'Results appear as each section finishes, and you can stop at any time.'));
+      const go = el('button', 'margin-right:6px;', 'Start scan'); go.type = 'button'; go.className = 'ss-btn';
+      const no = el('button', null, 'Cancel'); no.type = 'button'; no.className = 'ss-btn';
+      go.addEventListener('click', () => { ui.body.textContent = ''; runScan(b, sections, ui); });
+      no.addEventListener('click', clearResults);
+      ui.body.appendChild(go); ui.body.appendChild(no);
+    }
+
+    function runScan(b, sections, ui) {
+      abort = new AbortController();
+      const signal = abort.signal;
       const caves = (getCaves() || []).filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng));
-      const all = [];
-      let skippedKnown = 0;
-      r.found.forEach((f, i) => {
-        const at = cellLL(f.x, f.y), reach = f.diamM / 2 + 30;
-        if (caves.some((c) => metersBetween(at, c) <= reach)) { skippedKnown++; return; }
-        all.push(Object.assign({ region: i + 1, lat: at.lat, lng: at.lng }, f));
+      const view = buildResultsView(b, ui, sections.length);
+      const sectionAt = (lat, lng) => sections.find((s) => lat <= s.core.n && lat >= s.core.s && lng >= s.core.w && lng <= s.core.e) || null;
+      let failed = 0, noData = 0, done = 0;
+
+      // Downloads run one section ahead of the analysis, so the two overlap.
+      const fetchSection = (s) => {
+        const plan = E.planGrid(s.bounds, SECTION_BUDGET);
+        return E.downloadDEM(plan, signal, (d, n) => view.progress(done, `Section ${done + 1} of ${sections.length}: downloading… ${d} of ${n}`))
+          .then((grid) => ({ grid, plan }), (err) => { if (err.name === 'AbortError') throw err; return { err }; });
+      };
+      let next = fetchSection(sections[0]);
+      (async () => {
+        for (let k = 0; k < sections.length; k++) {
+          const sec = sections[k];
+          const got = await next;
+          if (signal.aborted) return;
+          if (k + 1 < sections.length) next = fetchSection(sections[k + 1]);
+          if (got.err) { failed++; console.error('Sinkhole scan section failed:', got.err); done++; continue; }
+          const { grid } = got;
+          let valid = 0; for (let i = 0; i < grid.data.length; i += 7) if (grid.data[i] >= E.ND) { valid++; break; }
+          if (!valid) { noData++; done++; view.progress(done, null); continue; }
+          view.progress(done, `Section ${k + 1} of ${sections.length}: looking for depressions…`);
+          const r = await runAnalysis(grid.data, grid.w, grid.h, grid.res, SCAN_FLOOR);
+          if (signal.aborted) return;
+          const gb = grid.bounds, W = grid.w, H = grid.h;
+          const toLL = (x, y) => [gb.n - (y + 0.5) * (gb.n - gb.s) / H, gb.w + (x + 0.5) * (gb.e - gb.w) / W];
+          const add = [];
+          for (const f of r.found) {
+            const [lat, lng] = toLL(f.x, f.y);
+            // One section per depression: the one whose own square holds its deepest point. A depression
+            // too big for that section to see whole (wider than the overlap) is kept by whichever
+            // section does see it whole; doubles are dropped by the combining step.
+            const owner = sections.length === 1 ? sec : sectionAt(lat, lng);
+            const outline = f.outline.map(([x, y]) => toLL(x, y));
+            if (owner !== sec) {
+              const ob = owner && owner.bounds;
+              const ownerSeesAll = ob && outline.every(([la, ln]) => la < ob.n && la > ob.s && ln > ob.w && ln < ob.e);
+              if (ownerSeesAll) continue;
+            }
+            const reach = f.diamM / 2 + 30;
+            if (caves.some((c) => metersBetween({ lat, lng }, c) <= reach)) { view.skipKnown(); continue; }
+            add.push(Object.assign({}, f, { lat, lng, outline }));
+          }
+          done++;
+          view.add(add);
+          view.progress(done, null);
+        }
+        abort = null;
+        view.finished({ failed, noData });
+      })().catch((err) => {
+        if (err.name === 'AbortError' || signal.aborted) return;
+        console.error('Sinkhole scan:', err);
+        view.failed(err);
       });
-      all.forEach((f, i) => { f.n = i + 1; });   // numbered once, so a result keeps its number whatever the filter
-      results = { all, shown: [], plan, bounds: b, skippedKnown };
+    }
+
+    // The results panel and map layers; filled in as sections finish.
+    function buildResultsView(b, ui, sectionCount) {
+      const all = [];
+      let skippedKnown = 0, timer = null, isDone = false;
+      results = { all, shown: [], bounds: b };
+      outlines = L.layerGroup().addTo(map);
+      layer.addTo(map);
 
       ui.title.textContent = 'Sinkhole scan';
       ui.body.textContent = '';
-      const detail = plan.res <= 1.05 ? '1 m' : `${plan.res.toFixed(1)} m`;
-      ui.body.appendChild(el('div', 'font-size:12px;color:#475569;margin-bottom:6px;',
-        (skippedKnown ? `${skippedKnown} with a cave already in the database ${skippedKnown === 1 ? 'is' : 'are'} left out. ` : '') +
-        `Scanned at ${detail} detail` + (plan.res > 2 ? ' - smaller sinkholes may be missed; zoom in or select a smaller area for more detail.' : '.') +
-        ' Depressions cut off by the edge of the area aren’t counted.'));
+      const statusLine = el('div', 'font-size:12px;color:#475569;');
+      const bar = el('div'); bar.className = 'ss-progress'; const fill = el('div'); bar.appendChild(fill);
+      const note = el('div', 'font-size:12px;color:#475569;margin-bottom:6px;');
+      ui.body.appendChild(statusLine);
+      if (sectionCount > 1) ui.body.appendChild(bar);
+      ui.body.appendChild(note);
 
       // ---- the filter ----
       const fbox = el('div', 'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;margin-bottom:6px;');
@@ -397,30 +503,22 @@
       const list = el('div');
       ui.body.appendChild(list);
 
-      // ---- draw what the filter leaves ----
-      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-      const ctx = cv.getContext('2d');
-      let redrawTimer = null;
-      function drawOverlay() {
-        const on = new Uint8Array(r.found.length + 1);
-        results.shown.forEach((f) => { on[f.region] = 1; });
-        const img = ctx.createImageData(W, H), d = img.data;
-        for (let i = 0; i < W * H; i++) {
-          const k = r.regionOf[i]; if (!k || !on[k]) continue;
-          const [cr, cg, cb] = depthColor(r.shown[i]);
-          d[i * 4] = cr; d[i * 4 + 1] = cg; d[i * 4 + 2] = cb; d[i * 4 + 3] = 150;
-        }
-        ctx.putImageData(img, 0, 0);
-        const url = cv.toDataURL('image/png');
-        if (overlay) overlay.setUrl(url);
-        else overlay = L.imageOverlay(url, [[b.s, b.w], [b.n, b.e]], { opacity: 0.85, interactive: false, className: 'sinkscan-overlay' }).addTo(map);
+      function writeNote(extra) {
+        const sz = kmOf(b);
+        note.textContent = (skippedKnown ? `${skippedKnown} with a cave already in the database ${skippedKnown === 1 ? 'is' : 'are'} left out. ` : '') +
+          `Scanned at 1 m detail` + (sectionCount > 1 ? ` in ${sectionCount} sections` : '') + '. ' +
+          'Depressions cut off by the edge of the area aren’t counted' +
+          (sz.w > SECTION_M || sz.h > SECTION_M ? `, and one more than ${OVERLAP_M * 2} m wide lying across a section line can be missed` : '') + '.' +
+          (extra ? ' ' + extra : '');
       }
+      writeNote();
+
       function applyFilter() {
         try { localStorage.setItem('sinkscan-filter', JSON.stringify(filter)); } catch (_) { /* ignore */ }
         results.shown = all.filter((f) => f.depthM * FT >= filter.depthFt && f.diamM * FT >= filter.widthFt && !(filter.skipDitches && f.elong > 4));
         const shown = results.shown;
-        ui.title.textContent = `${shown.length} possible sinkhole${shown.length === 1 ? '' : 's'}` + (shown.length !== all.length ? ` (of ${all.length})` : '');
-        layer.clearLayers();
+        ui.title.textContent = `${shown.length} possible sinkhole${shown.length === 1 ? '' : 's'}` + (shown.length !== all.length ? ` (of ${all.length})` : '') + (isDone ? '' : '…');
+        layer.clearLayers(); outlines.clearLayers();
         shown.slice(0, MAX_MARKERS).forEach((f) => {
           if (!f.marker) {
             f.marker = L.circleMarker([f.lat, f.lng], { radius: Math.max(5, Math.min(14, 4 + f.diamM / 15)), color: '#fff', weight: 2, fillColor: '#dc2626', fillOpacity: 0.9 });
@@ -428,10 +526,16 @@
           }
           layer.addLayer(f.marker);
         });
-        if (!map.hasLayer(layer)) layer.addTo(map);
+        shown.slice(0, MAX_OUTLINES).forEach((f) => {
+          if (!f.shape) {
+            const [cr, cg, cb] = depthColor(f.depthM), col = `rgb(${cr},${cg},${cb})`;
+            f.shape = L.polygon(f.outline, { renderer, color: col, weight: 1, fillColor: col, fillOpacity: 0.45, interactive: false });
+          }
+          outlines.addLayer(f.shape);
+        });
         list.textContent = '';
         [bCsv, bGeo].forEach((x) => { x.disabled = !shown.length; });
-        if (!shown.length) list.appendChild(el('div', 'font-size:12px;', all.length ? 'None match these filters - try a lower depth or width.' : 'No closed depressions in this area.'));
+        if (!shown.length) list.appendChild(el('div', 'font-size:12px;', all.length ? 'None match these filters - try a lower depth or width.' : (isDone ? 'No closed depressions in this area.' : 'None found yet.')));
         shown.slice(0, MAX_LISTED).forEach((f) => {
           const row = el('div'); row.className = 'ss-row';
           row.appendChild(el('div', 'font-weight:600;color:#b91c1c;', `#${f.n}  ${ft(f.depthM)} ft deep, ${ft(f.diamM)} ft across`));
@@ -440,10 +544,56 @@
           list.appendChild(row);
         });
         if (shown.length > MAX_LISTED) list.appendChild(el('div', 'font-size:12px;color:#64748b;padding-top:4px;', `…and ${shown.length - MAX_LISTED} more on the map and in the downloads.`));
-        clearTimeout(redrawTimer); redrawTimer = setTimeout(drawOverlay, 120);   // the shapes: redrawn once the slider settles
       }
-      applyFilter();
-      drawOverlay();
+      const refresh = () => { clearTimeout(timer); timer = setTimeout(applyFilter, 60); };
+
+      // spatial index of results so far, to drop a depression two sections both reported
+      const grid = new Map(), cell = 0.0002;   // ~20 m
+      const keyOf = (lat, lng) => `${Math.floor(lat / cell)},${Math.floor(lng / cell)}`;
+      function isDouble(f) {
+        const cy = Math.floor(f.lat / cell), cx = Math.floor(f.lng / cell);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          for (const o of grid.get(`${cy + dy},${cx + dx}`) || []) {
+            if (metersBetween(o, f) < Math.max(4, Math.min(o.diamM, f.diamM) / 3) && Math.abs(o.depthM - f.depthM) < 0.3) return true;
+          }
+        }
+        return false;
+      }
+
+      return {
+        add(found) {
+          for (const f of found) {
+            if (isDouble(f)) continue;
+            const k = keyOf(f.lat, f.lng); if (!grid.has(k)) grid.set(k, []); grid.get(k).push(f);
+            all.push(f);
+          }
+          all.sort((p, q) => q.depthM - p.depthM);
+          all.forEach((f, i) => { f.n = i + 1; });   // deepest first; final once the scan is done
+          refresh();
+        },
+        skipKnown() { skippedKnown++; writeNote(); },
+        progress(done, text) {
+          fill.style.width = `${Math.round(100 * done / sectionCount)}%`;
+          statusLine.textContent = text || (done < sectionCount ? `Scanned ${done} of ${sectionCount} sections…` : '');
+          if (sectionCount === 1 && !text) statusLine.textContent = '';
+        },
+        finished({ failed, noData }) {
+          isDone = true;
+          bar.remove();
+          const bits = [];
+          if (failed) bits.push(`${failed} section${failed === 1 ? '' : 's'} couldn’t be downloaded, so ${failed === 1 ? 'its' : 'their'} area wasn’t scanned - try again later, or select just that part.`);
+          if (noData && noData === sectionCount) bits.push('No elevation data here. USGS 3DEP covers the United States only.');
+          else if (noData) bits.push(`${noData} section${noData === 1 ? ' has' : 's have'} no elevation data.`);
+          statusLine.textContent = '';
+          writeNote(bits.join(' '));
+          applyFilter();
+        },
+        failed(err) {
+          isDone = true;
+          statusLine.textContent = 'The scan stopped: ' + err.message + '. Check your connection and try again.' + (all.length ? ' The results so far are below.' : '');
+          applyFilter();
+        },
+      };
     }
 
     // The scanned area in the 3D view, with the results shown as pins (plus the caves the map is showing)

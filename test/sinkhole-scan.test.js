@@ -68,3 +68,17 @@ test("treats missing elevation as somewhere water can drain to", () => {
   for (let y = 95; y < 105; y++) for (let x = 100; x < 200; x++) z[y * W + x] = -9999; // a no-data strip into the sinkhole
   assert.equal(analyze(z, W, H, 1, opts).found.length, 0);
 });
+
+test("each result carries an outline that matches its size", () => {
+  const W = 300, H = 300;
+  const r = analyze(terrain(W, H, [{ x: 150, y: 150, r: 20, depth: 3 }]), W, H, 1, opts);
+  assert.equal(r.found.length, 1);
+  const ring = r.found[0].outline;
+  assert.ok(ring.length >= 8 && ring.length < 200, `a simplified ring, got ${ring.length} points`);
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) { const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % ring.length]; a += x1 * y2 - x2 * y1; }
+  const traced = Math.abs(a) / 2, expected = r.found[0].areaM2;
+  // traced through cell centres, so a little smaller than the cell count
+  assert.ok(traced > expected * 0.8 && traced <= expected * 1.02, `outline area ${traced} vs ${expected}`);
+  assert.ok(ring.every(([x, y]) => Math.hypot(x - 150, y - 150) < 22), "the outline sits round the sinkhole");
+});
