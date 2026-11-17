@@ -804,6 +804,17 @@
 <input class="slider" id="hillshade-opacity" max="100" min="0" type="range" value="25"/>
 </div>
 
+<!-- Slope (USGS 3DEP) + Transparency -->
+<div class="control-block">
+<label title="How steep the ground is, from USGS 3DEP elevation (US only). Sinkhole walls and stream banks stand out as yellow-to-red rings and lines."><input id="slope-layer" type="checkbox"/> Slope</label>
+<label for="slope-opacity">Transparency: <span id="slope-opacity-value">40%</span></label>
+<input class="slider" id="slope-opacity" max="100" min="0" type="range" value="40"/>
+<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:#475569;margin-top:2px;" aria-hidden="true">
+<span style="display:inline-block;width:34px;height:8px;border-radius:2px;background:linear-gradient(90deg,#9a9a9a,#f5e663,#e0902b,#8b2e16);"></span>
+<span>flat → steep</span>
+</div>
+</div>
+
 <!-- Waypoints Visibility + Size -->
 <div class="control-block">
 <label><input id="toggle-waypoints" type="checkbox" checked/> Show Waypoints</label>
@@ -1599,6 +1610,19 @@
       
       // Create terrain layers
       createTerrainLayers();
+
+      // Slope overlay (USGS 3DEP "Slope Map": grey flat, yellow gentle, red-brown steep)
+      const slopeCheckbox = document.getElementById('slope-layer');
+      const slopeOpacitySlider = document.getElementById('slope-opacity');
+      const slopeOpacityValue = document.getElementById('slope-opacity-value');
+      if (slopeCheckbox && slopeOpacitySlider && slopeOpacityValue) {
+        slopeCheckbox.addEventListener('change', function() { toggleSlopeLayer(this.checked); });
+        slopeOpacitySlider.addEventListener('input', function() {
+          slopeOpacityValue.textContent = parseInt(this.value, 10) + '%';
+          if (slopeLayer) slopeLayer.setOpacity(slopeLayerOpacity());
+        });
+        if (slopeCheckbox.checked) toggleSlopeLayer(true);   // already ticked (e.g. restored before the map was ready)
+      }
       
       // Add event listeners
       multiAngleCheckbox.addEventListener('change', function() {
@@ -1807,6 +1831,45 @@
       } catch (error) {
         console.error("Critical error in terrain layer creation:", error);
       }
+    }
+
+    // ---- Slope overlay ----
+    // Drawn by the USGS 3DEP elevation service itself (its "Slope Map" function), so it's available
+    // anywhere the 3DEP elevation is (the US), at whatever zoom the map is at. Its own pane sits above
+    // the basemap and hillshade but below contours, the heatmap and the cave markers.
+    let slopeLayer = null;
+    function slopeLayerOpacity() {
+      const el = document.getElementById('slope-opacity');
+      const transparency = el ? parseInt(el.value, 10) : 40;
+      return (100 - (isNaN(transparency) ? 40 : transparency)) / 100;
+    }
+    function toggleSlopeLayer(enabled) {
+      if (!map) return;   // applied once the map exists - see initializeTerrainControls()
+      if (!enabled) {
+        if (slopeLayer && map.hasLayer(slopeLayer)) map.removeLayer(slopeLayer);
+        return;
+      }
+      if (!map.getPane('slopePane')) {
+        map.createPane('slopePane');
+        map.getPane('slopePane').style.zIndex = 260;
+        map.getPane('slopePane').style.pointerEvents = 'none';
+      }
+      if (!slopeLayer) {
+        if (typeof L.esri === 'undefined' || !L.esri.imageMapLayer) {
+          console.warn('Slope layer unavailable: esri-leaflet did not load');
+          return;
+        }
+        slopeLayer = L.esri.imageMapLayer({
+          url: 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer',
+          renderingRule: { rasterFunction: 'Slope Map' },
+          opacity: slopeLayerOpacity(),
+          useCors: true,
+          pane: 'slopePane',
+          attribution: 'Slope: USGS 3DEP'
+        });
+      }
+      slopeLayer.setOpacity(slopeLayerOpacity());
+      if (!map.hasLayer(slopeLayer)) slopeLayer.addTo(map);
     }
 
     // Update the toggleMultiAngleHillshade function to maintain proper z-index
@@ -6982,6 +7045,8 @@ window.addEventListener('error', function(e) {
         basemap: currentBasemapType(),
         multiAngleHillshade: getChecked('multi-angle-hillshade'),
         hillshadeOpacity: getNumber('hillshade-opacity'),
+        slopeLayer: getChecked('slope-layer'),
+        slopeOpacity: getNumber('slope-opacity'),
         showWaypoints: getChecked('toggle-waypoints'),
         waypointSize: getNumber('waypoint-size'),
         waypointsHeatmap: getChecked('waypoints-heatmap'),
@@ -7060,6 +7125,8 @@ window.addEventListener('error', function(e) {
 
         applyMapPreferenceSlider('hillshade-opacity', prefs.hillshadeOpacity);
         applyMapPreferenceCheckbox('multi-angle-hillshade', prefs.multiAngleHillshade);
+        applyMapPreferenceSlider('slope-opacity', prefs.slopeOpacity);
+        applyMapPreferenceCheckbox('slope-layer', prefs.slopeLayer);
 
         applyMapPreferenceSlider('waypoint-size', prefs.waypointSize);
         applyMapPreferenceCheckbox('toggle-waypoints', prefs.showWaypoints);
@@ -7098,6 +7165,7 @@ window.addEventListener('error', function(e) {
     document.addEventListener('DOMContentLoaded', function attachMapPreferencesAutoSave() {
       const ids = [
         'multi-angle-hillshade', 'hillshade-opacity',
+        'slope-layer', 'slope-opacity',
         'toggle-waypoints', 'waypoint-size',
         'waypoints-heatmap', 'heatmap-opacity', 'heatmap-gradient-style',
         'contour-slider', 'contour-color',

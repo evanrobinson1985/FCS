@@ -696,6 +696,8 @@ describe("interactive map display preferences (GET/POST /api/map-preferences)", 
       basemap: "topo",
       multiAngleHillshade: true,
       hillshadeOpacity: 40,
+      slopeLayer: true,
+      slopeOpacity: 35,
       showWaypoints: false,
       waypointSize: 10,
       waypointsHeatmap: true,
@@ -715,6 +717,17 @@ describe("interactive map display preferences (GET/POST /api/map-preferences)", 
     const getRes = await request(app).get("/api/map-preferences").set("Authorization", `Bearer ${token}`);
     assert.equal(getRes.status, 200);
     assert.deepEqual(getRes.body, prefs);
+  });
+
+  test("keeps the slope layer settings only when they're the right type", async () => {
+    const token = await login("member1", MEMBER_PASSWORD);
+    const res = await request(app)
+      .post("/api/map-preferences")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ slopeLayer: "yes", slopeOpacity: 150 });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.mapPreferences.slopeLayer, undefined);
+    assert.equal(res.body.mapPreferences.slopeOpacity, undefined);
   });
 
   test("accepts osm as a valid basemap", async () => {

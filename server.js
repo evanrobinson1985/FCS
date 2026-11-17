@@ -6434,6 +6434,8 @@ app.post("/api/map-preferences", authenticateToken, express.json(), (req, res) =
     }
     if (typeof prefs.multiAngleHillshade === "boolean") sanitized.multiAngleHillshade = prefs.multiAngleHillshade;
     if (isPercent(prefs.hillshadeOpacity)) sanitized.hillshadeOpacity = prefs.hillshadeOpacity;
+    if (typeof prefs.slopeLayer === "boolean") sanitized.slopeLayer = prefs.slopeLayer;
+    if (isPercent(prefs.slopeOpacity)) sanitized.slopeOpacity = prefs.slopeOpacity;
     if (typeof prefs.showWaypoints === "boolean") sanitized.showWaypoints = prefs.showWaypoints;
     if (typeof prefs.waypointSize === "number" && prefs.waypointSize >= 3 && prefs.waypointSize <= 16) {
       sanitized.waypointSize = prefs.waypointSize;
