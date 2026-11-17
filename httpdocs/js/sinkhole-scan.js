@@ -39,11 +39,11 @@
   const MAX_LISTED = 300;
   // A scan keeps every depression at least this deep and wide; the filters on the results then
   // narrow what's shown, so they can be changed (either way) without scanning again.
-  const SCAN_FLOOR = { minDepthM: 1 / 3.28084, minDiamM: 5 / 3.28084, maxElong: 0 };
+  const SCAN_FLOOR = { minDepthM: 1 / 3.28084, minDiamM: 2 / 3.28084, maxElong: 0 };
   // The stops on the min/max sliders: fine at small sizes, coarse at big ones, and "no limit" at the top.
   const FILTER_STOPS = {
     depth: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100, Infinity],
-    width: [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, Infinity],
+    width: [2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, Infinity],
   };
   const MAX_MARKERS = 2000;
   const MAX_OUTLINES = 3000;
