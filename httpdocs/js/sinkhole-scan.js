@@ -1,7 +1,7 @@
 /*
  * Sinkhole scan for the Interactive Map.
  *
- * Adds a "Scan" button to the map. Anyone logged in can scan the whole map
+ * Adds a "Sink Scan" button to the map. Anyone logged in can scan the whole map
  * view, or drag a box, for closed depressions in the USGS 3DEP bare-earth
  * LiDAR elevation: low spots that water can't drain out of. In Florida's
  * karst those are mostly sinkholes, so they are good places to look for
@@ -40,7 +40,11 @@
   // A scan keeps every depression at least this deep and wide; the filters on the results then
   // narrow what's shown, so they can be changed (either way) without scanning again.
   const SCAN_FLOOR = { minDepthM: 1 / 3.28084, minDiamM: 5 / 3.28084, maxElong: 0 };
-  const FILTER_LIMITS = { depth: [1, 40], width: [5, 300] };
+  // The stops on the min/max sliders: fine at small sizes, coarse at big ones, and "no limit" at the top.
+  const FILTER_STOPS = {
+    depth: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100, Infinity],
+    width: [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, Infinity],
+  };
   const MAX_MARKERS = 2000;
   const MAX_OUTLINES = 3000;
 
@@ -243,8 +247,19 @@
     const getMarkers = (options && options.getMarkers) || (() => []);   // what the map shows, for the 3D view
     const getBasemaps = (options && options.getBasemaps) || (() => []);
     // the results filter; kept between scans (and in this browser) so it's set the way you like it
-    let filter = { depthFt: 2, widthFt: 15, skipDitches: true };
-    try { const saved = JSON.parse(localStorage.getItem('sinkscan-filter') || 'null'); if (saved && typeof saved === 'object') filter = Object.assign(filter, saved); } catch (_) { /* ignore */ }
+    // (min/max in feet; Infinity = no upper limit, saved as null)
+    let filter = { depthMin: 2, depthMax: Infinity, widthMin: 15, widthMax: Infinity, skipDitches: true };
+    try {
+      const saved = JSON.parse(localStorage.getItem('sinkscan-filter') || 'null');
+      if (saved && typeof saved === 'object') {
+        const num = (v, dflt) => (v === null ? Infinity : (typeof v === 'number' && isFinite(v) ? v : dflt));
+        filter.depthMin = num(saved.depthMin, num(saved.depthFt, filter.depthMin));   // depthFt/widthFt: the earlier, min-only filter
+        filter.depthMax = num(saved.depthMax, Infinity);
+        filter.widthMin = num(saved.widthMin, num(saved.widthFt, filter.widthMin));
+        filter.widthMax = num(saved.widthMax, Infinity);
+        if (typeof saved.skipDitches === 'boolean') filter.skipDitches = saved.skipDitches;
+      }
+    } catch (_) { /* ignore */ }
     const E = Terrain3D.elevation;
     let menu = null, panel = null, cancelDraw = null, results = null, abort = null;
     const layer = L.layerGroup();
@@ -268,6 +283,17 @@
         .sinkscan-panel .ss-sub { font-size:11px; color:#64748b; }
         .sinkscan-panel button.ss-btn { padding:3px 8px; font:600 12px system-ui,sans-serif; border:1px solid #1e3a5f; border-radius:4px; background:#fff; color:#1e3a5f; cursor:pointer; }
         .sinkscan-panel button.ss-btn:hover { background:#1e3a5f; color:#fff; }
+        .sinkscan-panel .ss-dual { position:relative; height:22px; margin:2px 4px 0; }
+        .sinkscan-panel .ss-dual .ss-track { position:absolute; left:0; right:0; top:9px; height:4px; border-radius:2px; background:#cbd5e1; }
+        .sinkscan-panel .ss-dual .ss-sel { position:absolute; top:9px; height:4px; border-radius:2px; background:#2563eb; }
+        .sinkscan-panel .ss-dual input[type=range] { position:absolute; left:-4px; width:calc(100% + 8px); top:0; height:22px; margin:0; background:none;
+          -webkit-appearance:none; appearance:none; pointer-events:none; }
+        .sinkscan-panel .ss-dual input[type=range]::-webkit-slider-runnable-track { background:none; }
+        .sinkscan-panel .ss-dual input[type=range]::-moz-range-track { background:none; }
+        .sinkscan-panel .ss-dual input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; pointer-events:auto; width:18px; height:18px;
+          border-radius:50%; background:#fff; border:2px solid #2563eb; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,.3); }
+        .sinkscan-panel .ss-dual input[type=range]::-moz-range-thumb { pointer-events:auto; width:14px; height:14px; border-radius:50%;
+          background:#fff; border:2px solid #2563eb; cursor:pointer; }
         .sinkscan-panel .ss-progress { height:6px; background:#e2e8f0; border-radius:3px; overflow:hidden; margin:4px 0 6px; }
         .sinkscan-panel .ss-progress > div { height:100%; background:#7c3aed; width:0; transition:width .3s; }`;
       document.head.appendChild(st);
@@ -279,11 +305,11 @@
         const wrap = L.DomUtil.create('div', 'leaflet-bar leaflet-control sinkscan-control');
         wrap.style.cssText = 'position:relative;background:#fff;';
         const btn = L.DomUtil.create('a', '', wrap);
-        btn.href = '#'; btn.title = 'Scan for possible sinkholes'; btn.textContent = 'Scan';
+        btn.href = '#'; btn.title = 'Scan for possible sinkholes'; btn.textContent = 'Sink Scan';
         btn.setAttribute('role', 'button');
-        btn.style.cssText = 'font-weight:700;font-size:11px;width:34px;height:34px;line-height:34px;text-align:center;color:#1e3a5f;';
+        btn.style.cssText = 'font-weight:700;font-size:11px;width:auto;min-width:34px;padding:0 8px;white-space:nowrap;height:34px;line-height:34px;text-align:center;color:#1e3a5f;';
         menu = L.DomUtil.create('div', '', wrap);
-        menu.style.cssText = 'display:none;position:absolute;left:40px;top:0;background:#fff;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.3);padding:8px;width:240px;font:13px system-ui,sans-serif;color:#0f172a;';
+        menu.style.cssText = 'display:none;position:absolute;left:calc(100% + 6px);top:0;background:#fff;border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.3);padding:8px;width:240px;font:13px system-ui,sans-serif;color:#0f172a;';
         menu.appendChild(el('div', 'font-weight:700;margin-bottom:6px;', 'Scan for possible sinkholes'));
         const bView = el('button', null, 'Scan the entire map view'); bView.type = 'button'; bView.className = 'ss-opt';
         const bBox = el('button', null, 'Select an area to scan'); bBox.type = 'button'; bBox.className = 'ss-opt';
@@ -331,7 +357,7 @@
       L.DomEvent.disableClickPropagation(panel);
       L.DomEvent.disableScrollPropagation(panel);
       const head = el('div'); head.className = 'ss-head';
-      const title = el('span', 'flex:1;', 'Sinkhole scan');
+      const title = el('span', 'flex:1;', 'Sink Scan');
       const close = el('button', null, 'Clear'); close.type = 'button'; close.className = 'ss-btn';
       close.title = 'Stop the scan (if running) and remove its results';
       close.addEventListener('click', clearResults);
@@ -460,7 +486,7 @@
       outlines = L.layerGroup().addTo(map);
       layer.addTo(map);
 
-      ui.title.textContent = 'Sinkhole scan';
+      ui.title.textContent = 'Sink Scan';
       ui.body.textContent = '';
       const statusLine = el('div', 'font-size:12px;color:#475569;');
       const bar = el('div'); bar.className = 'ss-progress'; const fill = el('div'); bar.appendChild(fill);
@@ -471,19 +497,41 @@
 
       // ---- the filter ----
       const fbox = el('div', 'background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;margin-bottom:6px;');
-      const slider = (label, key, [min, max], step) => {
-        const row = el('div', 'margin:2px 0;');
+      // A min/max range: two handles on one track, each stepping through FILTER_STOPS.
+      const fmt = (v) => (v === Infinity ? 'no limit' : `${v.toLocaleString()} ft`);
+      const nearestStop = (stops, v) => { let k = 0; for (let i = 0; i < stops.length; i++) if (Math.abs(stops[i] - v) < Math.abs(stops[k] - v) || stops[i] === v) k = i; return k; };
+      const rangePair = (label, minKey, maxKey, stops) => {
+        const row = el('div', 'margin:4px 0 6px;');
         const head = el('div', 'display:flex;justify-content:space-between;font-size:12px;');
         const val = el('span', 'font-weight:700;');
         head.appendChild(el('span', null, label)); head.appendChild(val);
-        const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
-        inp.value = Math.min(max, Math.max(min, filter[key])); inp.style.cssText = 'width:100%;margin:2px 0 0;';
-        const show = () => { val.textContent = `${inp.value} ft`; };
-        inp.addEventListener('input', () => { filter[key] = +inp.value; show(); applyFilter(); });
-        show(); row.appendChild(head); row.appendChild(inp); fbox.appendChild(row);
+        const dual = el('div'); dual.className = 'ss-dual';
+        const track = el('div'); track.className = 'ss-track';
+        const sel = el('div'); sel.className = 'ss-sel';
+        const mk = (k, aria) => { const r = document.createElement('input'); r.type = 'range'; r.min = 0; r.max = stops.length - 1; r.step = 1; r.value = k; r.setAttribute('aria-label', aria); return r; };
+        const lo = mk(nearestStop(stops, filter[minKey]), `${label}: minimum`);
+        const hi = mk(filter[maxKey] === Infinity ? stops.length - 1 : nearestStop(stops, filter[maxKey]), `${label}: maximum`);
+        if (+lo.value >= +hi.value) lo.value = Math.max(0, +hi.value - 1);
+        const show = () => {
+          const n = stops.length - 1, a = +lo.value / n * 100, b = +hi.value / n * 100;
+          sel.style.left = `${a}%`; sel.style.width = `${b - a}%`;
+          val.textContent = +hi.value === n ? `${fmt(stops[+lo.value])} or more` : `${fmt(stops[+lo.value])} – ${fmt(stops[+hi.value])}`;
+          // whichever handle is nearer the middle sits on top, so a handle pushed against the other can still be grabbed
+          lo.style.zIndex = +lo.value > n / 2 ? 3 : 2; hi.style.zIndex = +lo.value > n / 2 ? 2 : 3;
+        };
+        const update = (moved) => {
+          if (+lo.value >= +hi.value) { if (moved === lo) lo.value = +hi.value - 1; else hi.value = +lo.value + 1; }
+          filter[minKey] = stops[+lo.value]; filter[maxKey] = stops[+hi.value];
+          show(); applyFilter();
+        };
+        lo.addEventListener('input', () => update(lo)); hi.addEventListener('input', () => update(hi));
+        dual.appendChild(track); dual.appendChild(sel); dual.appendChild(lo); dual.appendChild(hi);
+        row.appendChild(head); row.appendChild(dual); fbox.appendChild(row);
+        filter[minKey] = stops[+lo.value]; filter[maxKey] = stops[+hi.value];
+        show();
       };
-      slider('Deeper than', 'depthFt', FILTER_LIMITS.depth, 1);
-      slider('Wider than', 'widthFt', FILTER_LIMITS.width, 5);
+      rangePair('Depth', 'depthMin', 'depthMax', FILTER_STOPS.depth);
+      rangePair('Width', 'widthMin', 'widthMax', FILTER_STOPS.width);
       const dl = el('label', 'display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;cursor:pointer;');
       const ditch = document.createElement('input'); ditch.type = 'checkbox'; ditch.checked = !!filter.skipDitches;
       ditch.addEventListener('change', () => { filter.skipDitches = ditch.checked; applyFilter(); });
@@ -514,8 +562,12 @@
       writeNote();
 
       function applyFilter() {
-        try { localStorage.setItem('sinkscan-filter', JSON.stringify(filter)); } catch (_) { /* ignore */ }
-        results.shown = all.filter((f) => f.depthM * FT >= filter.depthFt && f.diamM * FT >= filter.widthFt && !(filter.skipDitches && f.elong > 4));
+        try { localStorage.setItem('sinkscan-filter', JSON.stringify(filter)); } catch (_) { /* ignore; Infinity is saved as null */ }
+        results.shown = all.filter((f) => {
+          const dFt = f.depthM * FT, wFt = f.diamM * FT;
+          return dFt >= filter.depthMin && dFt <= filter.depthMax && wFt >= filter.widthMin && wFt <= filter.widthMax &&
+            !(filter.skipDitches && f.elong > 4);
+        });
         const shown = results.shown;
         ui.title.textContent = `${shown.length} possible sinkhole${shown.length === 1 ? '' : 's'}` + (shown.length !== all.length ? ` (of ${all.length})` : '') + (isDone ? '' : '…');
         layer.clearLayers(); outlines.clearLayers();
@@ -535,7 +587,7 @@
         });
         list.textContent = '';
         [bCsv, bGeo].forEach((x) => { x.disabled = !shown.length; });
-        if (!shown.length) list.appendChild(el('div', 'font-size:12px;', all.length ? 'None match these filters - try a lower depth or width.' : (isDone ? 'No closed depressions in this area.' : 'None found yet.')));
+        if (!shown.length) list.appendChild(el('div', 'font-size:12px;', all.length ? 'None match these filters - try widening the depth or width range.' : (isDone ? 'No closed depressions in this area.' : 'None found yet.')));
         shown.slice(0, MAX_LISTED).forEach((f) => {
           const row = el('div'); row.className = 'ss-row';
           row.appendChild(el('div', 'font-weight:600;color:#b91c1c;', `#${f.n}  ${ft(f.depthM)} ft deep, ${ft(f.diamM)} ft across`));
