@@ -447,6 +447,34 @@
 </div>
 
 <script>
+// A webmaster can hide this tool from everyone else (Website Management > Interactive Map Tools). The
+// portal hides its link then; this covers the page when it's opened directly. Webmasters keep it -
+// recognised by the server (only a webmaster gets a 200 from /api/site-config), not by anything stored here.
+// Its own script, ahead of the page's main one, so it runs even if a library the tool needs fails to load.
+(async function checkGeoreferencerAllowed(){
+  try{
+    const res=await fetch('/api/site-status'); if(!res.ok) return;
+    const st=await res.json();
+    if(!(st.hiddenMapTools||[]).includes('georeferencer')) return;
+    let token=null; try{ token=sessionStorage.getItem('sessionToken'); }catch(_){ token=null; }
+    if(token){
+      const wm=await fetch('/api/site-config',{headers:{'Authorization':'Bearer '+token}});
+      if(wm.ok) return;
+    }
+    const cover=document.createElement('div');
+    cover.setAttribute('role','alert');
+    cover.style.cssText='position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:#f8fafc;padding:16px;font-family:system-ui,sans-serif;';
+    const box=document.createElement('div');
+    box.style.cssText='max-width:420px;text-align:center;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.1);color:#0f172a;';
+    const h=document.createElement('h2'); h.textContent='The Map Georeferencer isn’t available right now'; h.style.cssText='margin:0 0 10px;font-size:20px;';
+    const p=document.createElement('p'); p.textContent='The webmasters have turned it off for the moment. Please check back later.'; p.style.cssText='margin:0 0 16px;color:#475569;';
+    const a=document.createElement('a'); a.href='/portal'; a.textContent='Back to the Florida Cave Survey'; a.style.cssText='color:#2563eb;font-weight:600;';
+    box.appendChild(h); box.appendChild(p); box.appendChild(a); cover.appendChild(box);
+    document.body.appendChild(cover);
+  }catch(_){ /* offline or similar: leave the tool as it is */ }
+})();
+</script>
+<script>
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const FT=0.3048;
 const COLORS=['#2a4d69','#c0392b','#8e44ad','#27ae60','#d68910','#16a085','#2980b9','#c2185b'];
@@ -486,6 +514,7 @@ function handleFiles(fileList){
 // expired), the picker just stays hidden; local file loading is unaffected.
 let authToken=null;
 try{ authToken=sessionStorage.getItem('sessionToken'); }catch(_){ authToken=null; }
+
 
 async function loadCaveMapsCollection(){
   if(!authToken) return;

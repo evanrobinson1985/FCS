@@ -566,6 +566,9 @@ const DEFAULT_SITE_CONFIG = {
   // including admin/webmaster; see HIDEABLE_TABS below for why Account
   // Management and Website Management can never be in this list.
   hiddenTabs: [],
+  // Interactive Map tools hidden from everyone but webmasters (see HIDEABLE_MAP_TOOLS) - unlike
+  // hiddenTabs, webmasters always keep them, so they can still use and manage them.
+  hiddenMapTools: [],
   // Membership dues (see lib/dues.js). The access switch is OFF by
   // default: with it off, dues are only tracked and emailed about, and
   // nobody is ever blocked.
@@ -580,6 +583,9 @@ const DEFAULT_SITE_CONFIG = {
 // anything again, and hiding Account Management would do the same for
 // user/role management. Keep this in sync with the data-tab values in
 // portal.html's tab bar.
+// Parts of the Interactive Map tab a webmaster can hide from everyone else (not from webmasters).
+const HIDEABLE_MAP_TOOLS = ["cave-map-overlays", "cave-map-upload", "georeferencer"];
+
 const HIDEABLE_TABS = [
   "pending-submissions",
   "approved-submissions",
@@ -746,6 +752,7 @@ app.get("/api/site-status", (req, res) => {
     disableLargeFiles: siteConfig.disableLargeFiles,
     disableLargeFilesMessage: siteConfig.disableLargeFilesMessage,
     hiddenTabs: siteConfig.hiddenTabs,
+    hiddenMapTools: siteConfig.hiddenMapTools,
   });
 });
 
@@ -776,6 +783,7 @@ app.post(
       loginLockoutThreshold,
       loginLockoutMinutes,
       hiddenTabs,
+      hiddenMapTools,
     } = req.body;
 
     if (
@@ -784,6 +792,15 @@ app.post(
     ) {
       return res.status(400).json({
         error: `hiddenTabs must be an array of: ${HIDEABLE_TABS.join(", ")}.`,
+      });
+    }
+
+    if (
+      hiddenMapTools !== undefined &&
+      (!Array.isArray(hiddenMapTools) || hiddenMapTools.some((t) => !HIDEABLE_MAP_TOOLS.includes(t)))
+    ) {
+      return res.status(400).json({
+        error: `hiddenMapTools must be an array of: ${HIDEABLE_MAP_TOOLS.join(", ")}.`,
       });
     }
 
@@ -833,6 +850,7 @@ app.post(
     if (loginLockoutThreshold !== undefined) updated.loginLockoutThreshold = loginLockoutThreshold;
     if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
     if (hiddenTabs !== undefined) updated.hiddenTabs = [...new Set(hiddenTabs)];
+    if (hiddenMapTools !== undefined) updated.hiddenMapTools = [...new Set(hiddenMapTools)];
 
     siteConfig = updated;
     saveSiteConfig(siteConfig);

@@ -2354,6 +2354,39 @@ describe("website management: site status, banner, and maintenance mode", () => 
     });
   });
 
+  describe("Interactive Map tools hidden from non-webmasters", () => {
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app).post("/api/site-config").set("Authorization", `Bearer ${token}`).send({ hiddenMapTools: [] });
+    });
+
+    test("only a webmaster can change it", async () => {
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).post("/api/site-config").set("Authorization", `Bearer ${token}`).send({ hiddenMapTools: ["georeferencer"] });
+      assert.equal(res.status, 403);
+    });
+
+    test("rejects anything that isn't a list of known map tools", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      for (const bad of ["georeferencer", ["georeferencer", "statistics"], [3]]) {
+        const res = await request(app).post("/api/site-config").set("Authorization", `Bearer ${token}`).send({ hiddenMapTools: bad });
+        assert.equal(res.status, 400, JSON.stringify(bad));
+      }
+    });
+
+    test("saves a deduped list, and every visitor's site status carries it", async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      const res = await request(app).post("/api/site-config").set("Authorization", `Bearer ${token}`)
+        .send({ hiddenMapTools: ["cave-map-upload", "georeferencer", "georeferencer"] });
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.hiddenMapTools.sort(), ["cave-map-upload", "georeferencer"]);
+      const status = await request(app).get("/api/site-status");
+      assert.deepEqual(status.body.hiddenMapTools.sort(), ["cave-map-upload", "georeferencer"]);
+      // the hidden-tab setting is separate and untouched
+      assert.deepEqual(status.body.hiddenTabs, []);
+    });
+  });
+
   describe("hidden tabs", () => {
     after(async () => {
       const token = await login("webmaster1", WEBMASTER_PASSWORD);
