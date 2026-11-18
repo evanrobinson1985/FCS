@@ -4,10 +4,10 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Florida Cave Survey - Map Georeferencer</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/UTIF/3.1.0/UTIF.min.js"></script>
+<link rel="stylesheet" href="/js/vendor/leaflet-1.9.4/leaflet.css"/>
+<script src="/js/vendor/leaflet-1.9.4/leaflet.js"></script>
+<script src="/js/vendor/pdfjs-3.11.174/pdf.min.js"></script>
+<script src="/js/vendor/utif-3.1.0/UTIF.js"></script>
 <style>
   :root{
     --primary:#2a4d69; --secondary:#4b86b4; --accent:#adcbe3;
@@ -483,7 +483,7 @@
 })();
 </script>
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+pdfjsLib.GlobalWorkerOptions.workerSrc='/js/vendor/pdfjs-3.11.174/pdf.worker.min.js';
 const FT=0.3048;
 const COLORS=['#2a4d69','#c0392b','#8e44ad','#27ae60','#d68910','#16a085','#2980b9','#c2185b'];
 const $=id=>document.getElementById(id);
@@ -982,7 +982,7 @@ function loadTesseract(){
   if(_tessPromise) return _tessPromise;
   _tessPromise=new Promise((res,rej)=>{
     const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js';
+    s.src='/js/vendor/tesseract-2.1.5/tesseract.min.js';
     s.onload=res; s.onerror=()=>rej(new Error('could not load OCR library'));
     document.head.appendChild(s);
   });
@@ -992,8 +992,8 @@ async function getOCR(){
   if(_ocrWorker) return _ocrWorker;
   await loadTesseract();
   const w=Tesseract.createWorker({
-    workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/worker.min.js',
-    corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@2.2.0/tesseract-core.wasm.js',
+    workerPath:location.origin+'/js/vendor/tesseract-2.1.5/worker.min.js',
+    corePath:location.origin+'/js/vendor/tesseract-core-2.2.0/tesseract-core.wasm.js',
     langPath:'https://tessdata.projectnaptha.com/4.0.0'
   });
   await w.load(); await w.loadLanguage('eng'); await w.initialize('eng');

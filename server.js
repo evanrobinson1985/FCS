@@ -448,23 +448,13 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: [
-          "'self'",
-          "'unsafe-inline'",
-          "https://cdn.quilljs.com",
-          "https://cdn.jsdelivr.net",
-          "https://cdnjs.cloudflare.com",
-          "https://unpkg.com",
-        ],
-        styleSrc: [
-          "'self'",
-          "'unsafe-inline'",
-          "https://cdn.quilljs.com",
-          "https://cdn.jsdelivr.net",
-          "https://cdnjs.cloudflare.com",
-          "https://unpkg.com",
-        ],
-        fontSrc: ["'self'", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com", "data:"],
+        // Every library is served from this site (httpdocs/js/vendor), not
+        // a CDN: whole-CDN allowlists like unpkg.com let an attacker who
+        // finds an injection point load any script ever published to npm,
+        // and a compromised CDN could serve altered code to every visitor.
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'", "data:"],
         // Map tiles/imagery are pulled from many geographic data providers
         // (Esri, USGS National Map, Stamen, etc.) so these stay broad, but are
         // still restricted to HTTPS - see SECURITY.md for the tradeoff.
@@ -494,10 +484,11 @@ app.use(
     },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    // No "preload": only a registrable domain (caves.org) can be on the
+    // browsers' preload list, so on fcs.caves.org it did nothing.
     hsts: {
       maxAge: 31536000,
       includeSubDomains: true,
-      preload: true,
     },
   })
 );
