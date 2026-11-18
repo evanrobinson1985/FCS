@@ -1712,8 +1712,8 @@ app.resolveCaveStateAndCounty = resolveCaveStateAndCounty;
 
 // ---- Cave Jump leaderboard --------------------------------------------------
 // Top 10 of each account's best score, shown on /cave-jump and the
-// maintenance page. Anyone can see it; only logged-in accounts can add to
-// it (so every name on it is a real account). Stored by account id, and
+// maintenance page. Only logged-in accounts can see it or add to it (so
+// every name on it is a real account, and usernames aren't public). Stored by account id, and
 // shown with the account's current username (not the full name - the game
 // page is public), so renames carry over and deleted accounts drop off.
 // Scores come from the browser, so they're sanity-checked against how long
@@ -1748,19 +1748,6 @@ function caveJumpRanking(data, users) {
     .map((e, i) => ({ rank: i + 1, ...e }));
 }
 
-// Who's asking, if a valid login token came with the request (optional)
-function optionalUser(req) {
-  const h = req.headers["authorization"];
-  const token = h && h.startsWith("Bearer ") ? h.slice(7) : null;
-  if (!token) return null;
-  try {
-    const d = jwt.verify(token, JWT_SECRET);
-    return d && !d.pending2FA ? d : null;
-  } catch {
-    return null;
-  }
-}
-
 function leaderboardFor(viewer) {
   const users = loadUsers();
   const ranking = caveJumpRanking(loadCaveJump(), users);
@@ -1776,8 +1763,11 @@ function leaderboardFor(viewer) {
   };
 }
 
-app.get("/api/cave-jump/leaderboard", (req, res) => {
-  res.json(leaderboardFor(optionalUser(req)));
+// Login required: the board lists account usernames, which shouldn't be
+// handed to anyone on the internet (they're half of what a password-guessing
+// attack needs).
+app.get("/api/cave-jump/leaderboard", authenticateToken, (req, res) => {
+  res.json(leaderboardFor(req.user));
 });
 
 const caveJumpLimiter = rateLimit({

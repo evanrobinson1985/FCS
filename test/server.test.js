@@ -3208,11 +3208,11 @@ describe("Cave Jump leaderboard", () => {
     for (let i = 1; i <= 12; i++) await seedUser({ username: `jumper${i}`, password: MEMBER_PASSWORD, role: "member" });
   });
 
-  test("anyone can see the board; only logged-in players can add to it", async () => {
-    const res = await request(app).get("/api/cave-jump/leaderboard");
+  test("only logged-in players can see the board or add to it", async () => {
+    assert.equal((await request(app).get("/api/cave-jump/leaderboard")).status, 401);
+    const res = await request(app).get("/api/cave-jump/leaderboard").set(wm);
     assert.equal(res.status, 200);
     assert.ok(Array.isArray(res.body.top));
-    assert.equal(res.body.you, null);
     assert.equal((await request(app).post("/api/cave-jump/scores").send({ score: 10, seconds: 5 })).status, 401);
   });
 
@@ -3229,7 +3229,7 @@ describe("Cave Jump leaderboard", () => {
     assert.equal(lower.body.you.best, 1200);
     assert.equal(lower.body.you.rank, 1);
 
-    const board = (await request(app).get("/api/cave-jump/leaderboard")).body;
+    const board = (await request(app).get("/api/cave-jump/leaderboard").set(h1)).body;
     assert.equal(board.top.length, 10);
     assert.deepEqual(board.top.slice(0, 3).map((e) => [e.rank, e.name, e.score]),
       [[1, "jumper12", 1200], [2, "jumper11", 1100], [3, "jumper10", 1000]]);
@@ -3259,7 +3259,7 @@ describe("Cave Jump leaderboard", () => {
   test("the board still works in maintenance mode", async () => {
     await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
     try {
-      assert.equal((await request(app).get("/api/cave-jump/leaderboard")).status, 200);
+      assert.equal((await request(app).get("/api/cave-jump/leaderboard").set(wm)).status, 200);
     } finally {
       await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: false });
     }

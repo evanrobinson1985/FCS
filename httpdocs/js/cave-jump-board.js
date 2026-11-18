@@ -5,8 +5,8 @@
  * When a run ends (the "cavejump:gameover" event from js/game.js), a
  * logged-in player's score is saved under their username (POST
  * /api/cave-jump/scores); the board keeps each account's best. Players who
- * aren't logged in can still play and see the board, and are told how to
- * get their name on it. The login comes from the portal's session in this
+ * aren't logged in can still play, but the board (which lists usernames)
+ * only shows them how to log in. The login comes from the portal's session in this
  * same tab (sessionStorage), so it works when the game is opened from the
  * portal's footer link.
  *
@@ -94,10 +94,26 @@
     root.appendChild(note);
   }
 
+  // The board lists usernames, so only logged-in players can see it.
+  function renderLoggedOut() {
+    const root = document.getElementById('cj-board');
+    if (!root) return;
+    root.textContent = '';
+    root.appendChild(el('h2', null, '🏆 Top 10'));
+    const note = el('p', 'cj-note');
+    const a = el('a', null, 'Log in to the Florida Cave Survey');
+    a.href = '/portal';
+    note.appendChild(a);
+    note.appendChild(document.createTextNode(' to see the Top 10 and put your name on it, then open Cave Jump from the link at the bottom of the page.'));
+    root.appendChild(note);
+  }
+
   async function load() {
+    if (!token()) { renderLoggedOut(); return; }
     try {
       const r = await fetch('/api/cave-jump/leaderboard', { headers: authHeaders() });
       if (r.ok) render(await r.json());
+      else if (r.status === 401 || r.status === 403) renderLoggedOut();
     } catch (_) { /* board just stays as it was */ }
   }
 
