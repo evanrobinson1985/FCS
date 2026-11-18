@@ -2692,6 +2692,18 @@ app.get("/portal", (req, res) => {
   res.sendFile(path.join(__dirname, "httpdocs", "portal.html"));
 });
 
+// The Map Georeferencer at a clean address (fcs.caves.org/map-georeferencer).
+// The page itself sends anyone who isn't logged in to the login page first.
+app.get("/map-georeferencer", (req, res) => {
+  res.sendFile(path.join(__dirname, "httpdocs", "map-georeferencer.html"));
+});
+
+// Lets a standalone page (the Map Georeferencer) check that the session
+// token it holds is still valid, without loading any real data.
+app.get("/api/session", authenticateToken, (req, res) => {
+  res.json({ username: req.user.username, role: req.user.role });
+});
+
 // The Cave Jump game on its own page - always available, maintenance mode
 // or not (it's a static page that needs no login and no API).
 app.get("/cave-jump", (req, res) => {

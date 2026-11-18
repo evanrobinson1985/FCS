@@ -2354,6 +2354,23 @@ describe("website management: site status, banner, and maintenance mode", () => 
     });
   });
 
+  describe("Map Georeferencer login check", () => {
+    test("is served at /map-georeferencer", async () => {
+      const res = await request(app).get("/map-georeferencer");
+      assert.equal(res.status, 200);
+      assert.match(res.text, /\/portal\?next=georeferencer/);
+    });
+
+    test("/api/session needs a valid login and reports who it is", async () => {
+      assert.equal((await request(app).get("/api/session")).status, 401);
+      assert.equal((await request(app).get("/api/session").set("Authorization", "Bearer nonsense")).status, 403);
+      const token = await login("member1", MEMBER_PASSWORD);
+      const res = await request(app).get("/api/session").set("Authorization", `Bearer ${token}`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body, { username: "member1", role: "member" });
+    });
+  });
+
   describe("Interactive Map tools hidden from non-webmasters", () => {
     after(async () => {
       const token = await login("webmaster1", WEBMASTER_PASSWORD);

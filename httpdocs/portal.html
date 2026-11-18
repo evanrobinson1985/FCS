@@ -8183,6 +8183,14 @@ window.addEventListener('error', function(e) {
     sessionStorage.setItem('allowedStates', JSON.stringify(result.allowedStates ?? null));
     initializeStateSelectors();
 
+    // Sent here from the Map Georeferencer because nobody was logged in
+    // (/portal?next=georeferencer): go straight back to it, in this same
+    // tab so it keeps the session just stored above.
+    if (new URLSearchParams(location.search).get('next') === 'georeferencer') {
+      location.replace('/map-georeferencer');
+      return;
+    }
+
     // Hide login, show dashboard
     document.getElementById('login-section').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';

@@ -452,11 +452,19 @@
 // recognised by the server (only a webmaster gets a 200 from /api/site-config), not by anything stored here.
 // Its own script, ahead of the page's main one, so it runs even if a library the tool needs fails to load.
 (async function checkGeoreferencerAllowed(){
+  // Not logged in (or the login has expired)? Go to the login page, which
+  // comes straight back here afterwards.
+  const toLogin=()=>{ document.documentElement.style.visibility='hidden'; location.replace('/portal?next=georeferencer'); };
+  let token=null; try{ token=sessionStorage.getItem('sessionToken'); }catch(_){ token=null; }
+  if(!token){ toLogin(); return; }
+  try{
+    const me=await fetch('/api/session',{headers:{'Authorization':'Bearer '+token}});
+    if(me.status===401||me.status===403){ toLogin(); return; }
+  }catch(_){ /* offline or similar: carry on */ }
   try{
     const res=await fetch('/api/site-status'); if(!res.ok) return;
     const st=await res.json();
     if(!(st.hiddenMapTools||[]).includes('georeferencer')) return;
-    let token=null; try{ token=sessionStorage.getItem('sessionToken'); }catch(_){ token=null; }
     if(token){
       const wm=await fetch('/api/site-config',{headers:{'Authorization':'Bearer '+token}});
       if(wm.ok) return;
