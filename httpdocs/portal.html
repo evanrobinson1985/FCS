@@ -9623,7 +9623,8 @@ window.addEventListener('error', function(e) {
         if (feature.properties && Object.keys(feature.properties).length > 0) {
           Object.entries(feature.properties).forEach(([key, value]) => {
             if (value !== null && value !== undefined && value !== '') {
-              popupContent += `<p><strong>${key}:</strong> ${value}</p>`;
+              // Shapefile attributes are whatever the uploaded file contains: escape them
+              popupContent += `<p><strong>${escapeStatsHtml(key)}:</strong> ${escapeStatsHtml(value)}</p>`;
             }
           });
         }
@@ -9654,16 +9655,16 @@ window.addEventListener('error', function(e) {
       html += `
         <div class="active-map-item" style="margin-bottom: 8px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background: #f9f9f9;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-            <strong style="font-size: 12px;">${map.name}</strong>
+            <strong style="font-size: 12px;">${escapeStatsHtml(map.name)}</strong>
             <div>
-              <button onclick="downloadCaveMapById('${mapId}')" style="padding: 2px 6px; font-size: 10px; margin-right: 3px;" class="btn-success">↓</button>
-              <button onclick="removeCaveMapById('${mapId}')" style="padding: 2px 6px; font-size: 10px;" class="btn-danger">×</button>
+              <button onclick="downloadCaveMapById(${escapeStatsHtml(JSON.stringify(String(mapId)))})" style="padding: 2px 6px; font-size: 10px; margin-right: 3px;" class="btn-success">↓</button>
+              <button onclick="removeCaveMapById(${escapeStatsHtml(JSON.stringify(String(mapId)))})" style="padding: 2px 6px; font-size: 10px;" class="btn-danger">×</button>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <label style="font-size: 10px; margin: 0;">Transparency:</label>
             <input type="range" min="0" max="100" value="${opacity}" 
-                  onchange="updateCaveMapOpacity('${mapId}', this.value)"
+                  onchange="updateCaveMapOpacity(${escapeStatsHtml(JSON.stringify(String(mapId)))}, this.value)"
                   style="flex: 1; height: 4px;">
             <span style="font-size: 10px; min-width: 30px;">${opacity}%</span>
           </div>
@@ -9877,7 +9878,7 @@ window.addEventListener('error', function(e) {
       `;
       indicator.innerHTML = `
         <div style="margin-bottom: 10px;">📊</div>
-        <div>${message}</div>
+        <div>${escapeStatsHtml(message)}</div>
         <div style="margin-top: 10px; font-size: 12px; opacity: 0.8;">Please wait...</div>
       `;
       document.getElementById('map-container').appendChild(indicator);
@@ -10156,8 +10157,8 @@ window.addEventListener('error', function(e) {
 
     if (map.filename.toLowerCase().endsWith(".pdf")) {
       infoDiv.innerHTML = `
-        <strong>${map.name}</strong><br>
-        File: ${map.filename}<br>
+        <strong>${escapeStatsHtml(map.name)}</strong><br>
+        File: ${escapeStatsHtml(map.filename)}<br>
         Size: ${formatFileSize(map.size)}<br>
         Type: PDF Document
       `;
@@ -10167,8 +10168,8 @@ window.addEventListener('error', function(e) {
         if (loadingIndicator) loadingIndicator.style.display = 'none';
         if (previewContainer) previewContainer.style.display = 'block';
         infoDiv.innerHTML = `
-          <strong>${map.name}</strong><br>
-          File: ${map.filename}<br>
+          <strong>${escapeStatsHtml(map.name)}</strong><br>
+          File: ${escapeStatsHtml(map.filename)}<br>
           Size: ${formatFileSize(map.size)}<br>
           Dimensions: ${mediaElement.naturalWidth} × ${mediaElement.naturalHeight} pixels
         `;
@@ -10895,8 +10896,8 @@ function setupImageUploadForDynamicEditor() {
         const imgDiv = document.createElement('div');
         imgDiv.style.marginBottom = '10px';
         imgDiv.innerHTML = `
-          <img src="${withAuthToken(image.url)}" alt="${image.alt}" style="max-width: 200px; max-height: 150px; border: 1px solid #ccc;">
-          <p style="font-size: 12px; margin: 5px 0;">Uploaded: ${image.originalName}</p>
+          <img src="${escapeStatsHtml(withAuthToken(image.url))}" alt="${escapeStatsHtml(image.alt)}" style="max-width: 200px; max-height: 150px; border: 1px solid #ccc;">
+          <p style="font-size: 12px; margin: 5px 0;">Uploaded: ${escapeStatsHtml(image.originalName)}</p>
         `;
         imageContainer.appendChild(imgDiv);
       });

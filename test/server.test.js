@@ -139,6 +139,15 @@ describe("login", () => {
       .send({ username: "lockout-target", password: "CorrectPass123!" });
     assert.equal(correctButLocked.status, 429);
   });
+
+  test("a username that doesn't exist locks out the same way (so lockout can't reveal real names)", async () => {
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app).post("/api/login").send({ username: "no-such-caver", password: "wrong" });
+      assert.equal(res.status, 401);
+    }
+    const res = await request(app).post("/api/login").send({ username: "no-such-caver", password: "wrong" });
+    assert.equal(res.status, 429);
+  });
 });
 
 // The "who's online" notice (a live count + "so-and-so just logged in") on
@@ -971,6 +980,16 @@ describe("password reset", () => {
     assert.equal(known.status, 200);
     assert.equal(unknown.status, 200);
     assert.deepEqual(known.body, unknown.body);
+  });
+
+  test("finds the account whatever the email's capitalisation", async () => {
+    const token = await requestResetToken("ResetUser@Example.COM");
+    assert.ok(token);
+  });
+
+  test("rejects a reset code that isn't a string", async () => {
+    const res = await request(app).post("/api/reset-password").send({ token: { a: 1 }, newPassword: "NewPassword123!" });
+    assert.equal(res.status, 400);
   });
 
   test("resets the password with a valid token, and the new password works on login", async () => {
@@ -1955,7 +1974,7 @@ describe("narrative image upload validates real file content", () => {
       // still reflect the DETECTED type (.png), not this claim.
       .attach("image", pngBuffer, { filename: "whatever.svg", contentType: "image/svg+xml" });
     assert.equal(res.status, 200);
-    assert.match(res.body.imageUrl, /^\/cave-pictures\/\d+-\d+\.png$/);
+    assert.match(res.body.imageUrl, /^\/cave-pictures\/\d+-[0-9a-f]{24}\.png$/);
   });
 });
 
@@ -2351,6 +2370,27 @@ describe("website management: site status, banner, and maintenance mode", () => 
         .set("Authorization", `Bearer ${token}`)
         .send({ action: "createNew", cave: { state: "FL", county: "RO", name: "Webmaster Still Writes During Read-Only" } });
       assert.equal(res.status, 200);
+    });
+  });
+
+  describe("hidden Upload Cave Maps is enforced by the server", () => {
+    before(async () => { await seedUser({ username: "uploadadmin", password: "UploadAdminPass123!", role: "admin" }); });
+    after(async () => {
+      const token = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app).post("/api/site-config").set("Authorization", `Bearer ${token}`).send({ hiddenMapTools: [] });
+    });
+
+    test("an admin can't upload while it's hidden; a webmaster still can", async () => {
+      const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+      await request(app).post("/api/site-config").set("Authorization", `Bearer ${wm}`).send({ hiddenMapTools: ["cave-map-upload"] });
+      const admin = await login("uploadadmin", "UploadAdminPass123!");
+      const blocked = await request(app).post("/api/cave-maps/upload").set("Authorization", `Bearer ${admin}`)
+        .attach("mapFiles", Buffer.from("x"), { filename: "hidden-test.prj", contentType: "text/plain" });
+      assert.equal(blocked.status, 403);
+      const ok = await request(app).post("/api/cave-maps/upload").set("Authorization", `Bearer ${wm}`)
+        .attach("mapFiles", Buffer.from("x"), { filename: "hidden-test.prj", contentType: "text/plain" });
+      assert.equal(ok.status, 200);
+      await request(app).delete("/api/cave-maps/shapefiles/hidden-test").set("Authorization", `Bearer ${wm}`);
     });
   });
 

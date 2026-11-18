@@ -2024,6 +2024,8 @@ const DUES_EXPIRED_ALLOWED_PATHS = new Set([
   "/api/feedback",
   "/api/change-password",
   "/api/cave-jump/scores",
+  "/api/cave-jump/leaderboard",
+  "/api/session",
 ]);
 
 // Restricts a route to one of the given roles. Must run after authenticateToken.
@@ -2046,6 +2048,24 @@ function getAllowedStatesForUser(user) {
   return null;
 }
 
+// Failed logins for usernames that don't exist, kept in memory so they
+// lock out after the same number of tries as a real account (see /api/login).
+const unknownLoginFailures = new Map(); // username -> { count, last }
+const MAX_TRACKED_UNKNOWN_LOGINS = 5000;
+function isUnknownLoginLockedOut(username) {
+  const f = unknownLoginFailures.get(username);
+  return !!f && f.count >= siteConfig.loginLockoutThreshold &&
+    Date.now() - f.last < siteConfig.loginLockoutMinutes * 60 * 1000;
+}
+function recordUnknownLoginFailure(username) {
+  const f = unknownLoginFailures.get(username) || { count: 0, last: 0 };
+  unknownLoginFailures.delete(username); // re-insert so the map stays oldest-first
+  unknownLoginFailures.set(username, { count: f.count + 1, last: Date.now() });
+  while (unknownLoginFailures.size > MAX_TRACKED_UNKNOWN_LOGINS) {
+    unknownLoginFailures.delete(unknownLoginFailures.keys().next().value);
+  }
+}
+
 app.post("/api/login", authLimiter, express.json(), async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -2064,7 +2084,15 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     const user = users.find((u) => u.username === username);
 
     if (!user) {
+      // Behaves exactly like a real account, lockout included - otherwise
+      // "too many attempts" after a few tries would show the name exists.
+      if (isUnknownLoginLockedOut(username)) {
+        return res.status(429).json({
+          error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
+        });
+      }
       await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      recordUnknownLoginFailure(username);
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
@@ -2208,7 +2236,6 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
       delete user.twoFactorResends;
-    delete user.twoFactorResends;
       saveUsers(users, { backup: false });
       return res.status(401).json({ error: "Verification code expired. Please log in again." });
     }
@@ -2221,7 +2248,6 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
       delete user.twoFactorCodeExpires;
       delete user.twoFactorAttempts;
       delete user.twoFactorResends;
-    delete user.twoFactorResends;
       saveUsers(users, { backup: false });
       return res.status(429).json({ error: "Too many incorrect attempts. Please log in again." });
     }
@@ -3966,7 +3992,9 @@ app.get("/api/cave-maps/validate/:type/:filename", authenticateToken, (req, res)
       },
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // Logged, not sent: file system errors name folders on the server
+    console.error("Error validating shapefile:", error);
+    res.status(500).json({ error: "Could not check that shapefile." });
   }
 });
 
@@ -4098,6 +4126,14 @@ app.post(
   authenticateToken,
   requireRole("admin", "webmaster"),
   requireLargeFilesEnabled,
+  (req, res, next) => {
+    // Hiding "Upload Cave Maps" in Website Management is enforced here as
+    // well as in the page, so a hidden tool can't still be used directly.
+    if (req.user.role !== "webmaster" && (siteConfig.hiddenMapTools || []).includes("cave-map-upload")) {
+      return res.status(403).json({ error: "Uploading cave maps is turned off right now." });
+    }
+    next();
+  },
   (req, res) => {
     caveMapUpload.array("mapFiles", 20)(req, res, (err) => {
       if (err) {
@@ -4197,6 +4233,10 @@ const NARRATIVE_SANITIZE_OPTIONS = {
     "ins",
     "video",
   ]),
+  // Only the editor's own "ql-..." classes (alignment, indent, size): an
+  // open class attribute would let a narrative borrow the site's own
+  // classes (e.g. a full-screen overlay) to dress up fake page content.
+  allowedClasses: { "*": ["ql-*"] },
   allowedAttributes: {
     "*": ["style", "class"],
     a: ["href", "name", "target", "rel"],
@@ -4901,7 +4941,7 @@ app.post("/upload-narrative-image", authenticateToken, requireNotReadOnly, requi
       return res.status(400).json({ error: "Only JPEG, PNG, GIF, and WebP images are allowed" });
     }
 
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}.${detected.ext}`;
+    const filename = `${Date.now()}-${crypto.randomBytes(12).toString("hex")}.${detected.ext}`;
     try {
       fs.writeFileSync(path.join(CAVE_PICTURES_DIR, filename), req.file.buffer);
     } catch (writeErr) {
@@ -6165,12 +6205,13 @@ app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) =
   try {
     const { email } = req.body;
 
-    if (!email) {
+    if (typeof email !== "string" || !email.trim() || email.length > 254) {
       return res.status(400).json({ error: "Email is required" });
     }
 
     const users = loadUsers();
-    const user = users.find((u) => u.email === email);
+    const wanted = email.trim().toLowerCase();
+    const user = users.find((u) => typeof u.email === "string" && u.email.toLowerCase() === wanted);
 
     if (!user) {
       return res.json(genericResponse);
@@ -6184,16 +6225,15 @@ app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) =
     const origin = (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
     const resetUrl = `${origin}/?resetToken=${rawToken}`;
 
-    try {
-      await sendPasswordResetEmail(user, resetUrl);
-    } catch (mailErr) {
-      // Don't let a mail-sending failure change the response (that would
-      // leak account existence) or block the request - the [DEV] console
-      // fallback inside sendPasswordResetEmail already covers the
-      // no-SMTP-configured case; this branch is a real send() failure with
-      // SMTP configured.
-      console.error("Failed to send password reset email:", mailErr);
-    }
+    // Sent in the background, not awaited: waiting for the mail server
+    // would make the reply for a registered address noticeably slower than
+    // for an unknown one, and that difference alone gives away which
+    // addresses have accounts. A failure only goes to the log, for the
+    // same reason (the [DEV] console fallback inside
+    // sendPasswordResetEmail covers the no-SMTP case).
+    Promise.resolve()
+      .then(() => sendPasswordResetEmail(user, resetUrl))
+      .catch((mailErr) => console.error("Failed to send password reset email:", mailErr));
 
     res.json(genericResponse);
   } catch (error) {
@@ -6207,7 +6247,7 @@ app.post("/api/reset-password", authLimiter, express.json(), async (req, res) =>
   try {
     const { token, newPassword } = req.body;
 
-    if (!token || !newPassword) {
+    if (typeof token !== "string" || !token || !newPassword) {
       return res.status(400).json({ error: "Token and new password are required" });
     }
     if (typeof newPassword !== "string" || newPassword.length < MIN_PASSWORD_LENGTH) {

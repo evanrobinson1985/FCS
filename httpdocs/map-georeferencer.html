@@ -543,7 +543,7 @@ async function loadCaveMapsCollection(){
       return;
     }
     sel.innerHTML='<option value="">— select a map —</option>' +
-      maps.map(m=>`<option value="${m.filename.replace(/"/g,'&quot;')}">${m.name}</option>`).join('');
+      maps.map(m=>`<option value="${_escHtml(m.filename)}">${_escHtml(m.name)}</option>`).join('');
     sel.addEventListener('change',()=>{ btn.disabled=!sel.value; });
   }catch(err){
     sel.innerHTML='<option value="">Unavailable</option>';
@@ -2091,7 +2091,7 @@ function endGeoref(){
 function updateGeorefBar(){
   const m=georef.map; if(!m) return;
   const n=(m.gcps||[]).length;
-  $('grMap').innerHTML=`<span class="sw" style="background:${m.color}"></span>${m.name}`;
+  $('grMap').innerHTML=`<span class="sw" style="background:${m.color}"></span>${_escHtml(m.name)}`;
   let txt, eff;
   if(georef.phase==='orient'){ txt='<b>First:</b> rotate this sheet so its north arrow points up (Rotate, under Selected map). Then tap Begin.'; eff='1 pt moves · 2 pts rotate + scale · 3+ pts stretch to fit'; }
   else if(georef.phase==='feature'){ txt=`<b>Point ${n+1}:</b> tap a known feature on the cave map (entrance, junction, corner…).`; eff = n===0?'this point will move the map':n===1?'adds rotate + scale':'adds stretch/warp'; }
@@ -2145,7 +2145,7 @@ function buildMapList(){
     const stitched=m.stitchGroup && m.stitchGroup.trim();
     const stitchReady=stitched && m.vecMask && m.vecMask.length;
     const badge = stitched ? `<span class="stitchBadge${stitchReady?'':' warn'}" title="${stitchReady?'Stitch group — merges with other maps sharing this name on export':'Stitch group set, but this map has no Outline lasso yet, so it won\u2019t actually join the group — see Cave outline \u2192 Shapefile'}">🔗 ${_escHtml(m.stitchGroup.trim())}</span>` : '';
-    row.innerHTML=`<span class="mchk" title="Include in the outline/hole/erase/connect tools"></span><span class="sw" style="background:${m.color}"></span><span class="nm">${m.name}</span>${badge}<span class="eye">${m.visible?'●':'○'}</span>`;
+    row.innerHTML=`<span class="mchk" title="Include in the outline/hole/erase/connect tools"></span><span class="sw" style="background:${m.color}"></span><span class="nm">${_escHtml(m.name)}</span>${badge}<span class="eye">${m.visible?'●':'○'}</span>`;
     row.addEventListener('click',ev=>{
       if(ev.target.classList.contains('eye')){ m.visible=!m.visible; buildMapList(); invalidateOutline(); canvasLayer.redraw(); }
       else if(ev.target.classList.contains('mchk')){ toggleMultiSel(m); }
@@ -3439,7 +3439,7 @@ function updateMaskStatus(){
   const targets=drawTargets();
   $('manualOutlineToggle').checked = selMap.outlineMode==='manual';
   if(targets.length>1){
-    st.innerHTML=`<span class="warn">⚠ ${targets.length} maps checked</span> — this stroke will apply to all of them: ${targets.map(m=>m.name).join(', ')}. <a href="#" id="maskSelOnlyLink">Use just ${selMap.name}</a>`;
+    st.innerHTML=`<span class="warn">⚠ ${targets.length} maps checked</span> — this stroke will apply to all of them: ${_escHtml(targets.map(m=>m.name).join(', '))}. <a href="#" id="maskSelOnlyLink">Use just ${_escHtml(selMap.name)}</a>`;
     const link=$('maskSelOnlyLink');
     if(link) link.addEventListener('click',ev=>{ ev.preventDefault(); selMaps=new Set([selMap]); buildMapList(); updateMaskStatus(); canvasLayer.redraw(); });
   } else {
@@ -3456,7 +3456,7 @@ function updateMaskStatus(){
     if(selMap.manualFills && selMap.manualFills.length) parts.push(`${selMap.manualFills.length} erase mark${selMap.manualFills.length>1?'s':''}`);
     if(selMap.manualLines && selMap.manualLines.length) parts.push(`${selMap.manualLines.length} connect line${selMap.manualLines.length>1?'s':''}`);
     if(selMap.stitchGroup) parts.push(`stitched: “${selMap.stitchGroup}”`);
-    st.innerHTML=`<span class="v">${selMap.name}</span> — ${parts.join(' · ')}`;
+    st.innerHTML=`<span class="v">${_escHtml(selMap.name)}</span> — ${parts.join(' · ')}`;
   }
   $('maskClear').disabled = !targets.some(m=> fillDrawMode ? (m.manualFills && m.manualFills.length)
     : holeDrawMode ? (m.manualHoles && m.manualHoles.length)
