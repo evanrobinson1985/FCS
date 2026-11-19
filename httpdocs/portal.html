@@ -73,8 +73,7 @@
               ["sessionToken", "assetToken", "role"].forEach(function (k) { sessionStorage.removeItem(k); });
               localStorage.removeItem("role");
             } catch (e) { /* storage blocked */ }
-            alert(body.error);
-            window.location.href = "/portal";
+            window.location.href = "/security-lockout?mode=attack";
           }).catch(function () {});
         }
         return response;
@@ -8919,6 +8918,26 @@ window.addEventListener('error', function(e) {
         });
 
         const result = await parseJsonResponse(response);
+
+        // The "access denied" lockout screen (GET /security-lockout): the
+        // wagging-finger version after 3 wrong passwords in a row in this tab
+        // or once the account is locked out; the attack version for an
+        // account restricted for misuse
+        if (result && result.restricted) {
+          window.location.href = '/security-lockout?mode=attack';
+          return;
+        }
+        if (response.status === 401 || response.status === 429) {
+          let fails = 0;
+          try { fails = (parseInt(sessionStorage.getItem('failedLogins'), 10) || 0) + 1; sessionStorage.setItem('failedLogins', String(fails)); } catch (e) { /* storage blocked */ }
+          if (fails >= 3 || response.status === 429) {
+            try { sessionStorage.removeItem('failedLogins'); } catch (e) { /* storage blocked */ }
+            window.location.href = '/security-lockout?mode=password';
+            return;
+          }
+        } else if (response.ok) {
+          try { sessionStorage.removeItem('failedLogins'); } catch (e) { /* storage blocked */ }
+        }
 
         if (response.ok && result.twoFactorRequired) {
           // Correct password, but this account has 2FA enabled - a code was

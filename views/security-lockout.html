@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Access Denied - Florida Cave Survey</title>
+<!-- Served by GET /security-lockout in server.js, which fills in MODE and IP.
+     "password": a wrong password (wagging pointer finger).
+     "attack": a hacking attempt or a restricted account (middle finger). -->
+<style>
+@font-face {
+  font-family: "VT323";
+  src: url("/js/vendor/vt323-5.1.1/vt323-latin-400-normal.woff2") format("woff2");
+  font-display: swap;
+}
+[hidden] { display: none !important; }
+/* Layout: one full-screen CRT terminal; a 90s workstation window opens over its centre. Single dark look by design. */
+:root {
+  --crt-bg: #020802;
+  --phosphor: #00ff00;
+  --phosphor-dim: #0a9f2a;
+  --deny: #ff3b30;
+  --win-face: #c6c6c6;
+  --win-light: #ffffff;
+  --win-shadow: #7b7b7b;
+  --win-dark: #1f1f1f;
+  --title-a: #1c3f94;
+  --title-b: #3c74d6;
+  --mono: "VT323", "Courier New", ui-monospace, Menlo, monospace;
+  --ui: "Geneva", "Tahoma", "Verdana", system-ui, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--crt-bg); color: var(--phosphor); margin: 0; overflow: hidden; }
+
+/* ---------- the terminal ---------- */
+.crt {
+  position: fixed; inset: 0;
+  padding-block: max(18px, env(safe-area-inset-top, 0px)) max(18px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  font-family: var(--mono); font-size: clamp(18px, 2.4vw, 26px); line-height: 1.25;
+  text-shadow: 0 0 2px var(--phosphor), 0 0 9px rgba(0, 255, 0, .45);
+  background: radial-gradient(ellipse at center, #062306 0%, var(--crt-bg) 72%);
+  overflow-y: auto; cursor: text;
+}
+/* scanlines + soft vignette + faint flicker */
+.crt::before, .crt::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
+.crt::before {
+  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.28) 3px, rgba(0,0,0,0) 4px);
+  z-index: 3;
+}
+.crt::after {
+  background: radial-gradient(ellipse at center, rgba(0,0,0,0) 58%, rgba(0,0,0,.65) 100%);
+  animation: flicker 6s infinite steps(1);
+  z-index: 3;
+}
+@keyframes flicker { 0%, 100% { opacity: 1; } 47% { opacity: .93; } 48% { opacity: 1; } 81% { opacity: .96; } }
+
+.line { white-space: pre-wrap; word-break: break-word; min-height: 1.25em; }
+.dim { color: var(--phosphor-dim); text-shadow: none; }
+.deny { color: var(--deny); text-shadow: 0 0 3px var(--deny), 0 0 10px rgba(255, 59, 48, .5); }
+.prompt-line { display: flex; }
+.prompt-line[hidden] { display: none; }
+.cursor {
+  display: inline-block; width: .6em; height: 1.05em; background: var(--phosphor);
+  box-shadow: 0 0 8px var(--phosphor); vertical-align: -0.15em; margin-left: 1px;
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+.flood .line { color: var(--phosphor); }
+#keys { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+
+/* ---------- the workstation window ---------- */
+.backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 16px; }
+.win {
+  width: min(460px, 100%); background: var(--win-face); color: #000;
+  border: 2px solid; border-color: var(--win-light) var(--win-dark) var(--win-dark) var(--win-light);
+  box-shadow: 1px 1px 0 var(--win-shadow), 6px 8px 0 rgba(0, 0, 0, .55);
+  font-family: var(--ui); font-size: 13px;
+  animation: pop .18s steps(3) both;
+}
+@keyframes pop { from { transform: scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
+.titlebar {
+  display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+  background: linear-gradient(90deg, var(--title-a), var(--title-b)); color: #fff; font-weight: 700;
+  user-select: none;
+}
+.titlebar .grip { flex: 1; height: 9px; background: repeating-linear-gradient(to bottom, rgba(255,255,255,.55) 0 1px, transparent 1px 3px); margin: 0 4px; }
+.tb-btn {
+  width: 18px; height: 16px; padding: 0; display: grid; place-items: center; font: 700 11px/1 var(--ui);
+  background: var(--win-face); color: #000; cursor: pointer;
+  border: 2px solid; border-color: var(--win-light) var(--win-dark) var(--win-dark) var(--win-light);
+}
+.tb-btn:active { border-color: var(--win-dark) var(--win-light) var(--win-light) var(--win-dark); }
+.win-body { padding: 10px; display: grid; gap: 10px; }
+.stage {
+  background: #000; height: 220px; display: grid; place-items: center; overflow: hidden;
+  border: 2px solid; border-color: var(--win-shadow) var(--win-light) var(--win-light) var(--win-shadow);
+}
+.stage img { max-height: 100%; max-width: 100%; }
+.stage svg { height: 100%; width: auto; max-width: 100%; }
+.ticker {
+  height: 96px; overflow: hidden; background: #fff; padding: 4px 8px;
+  border: 2px solid; border-color: var(--win-shadow) var(--win-light) var(--win-light) var(--win-shadow);
+  font: 700 13px/1.45 "Courier New", monospace; color: #000;
+}
+.ticker-track { animation: scroll-up 3.2s linear infinite; }
+@keyframes scroll-up { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+.win-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.btn {
+  min-width: 78px; padding: 4px 12px; font: 13px var(--ui); color: #000; background: var(--win-face); cursor: pointer;
+  border: 2px solid; border-color: var(--win-light) var(--win-dark) var(--win-dark) var(--win-light);
+  outline: 1px solid #000;
+}
+.btn:active { border-color: var(--win-dark) var(--win-light) var(--win-light) var(--win-dark); }
+.btn:focus-visible, .tb-btn:focus-visible { outline: 2px dotted #000; outline-offset: 1px; }
+
+/* the caver's arm: a wagging pointer finger, or (for attackers) a jabbing middle finger */
+.wag { transform-origin: 196px 214px; animation: wag .42s ease-in-out infinite alternate; }
+@keyframes wag { from { transform: rotate(-14deg); } to { transform: rotate(12deg); } }
+.jab { transform-origin: 196px 214px; animation: jab .5s cubic-bezier(.3, 1.6, .5, 1) infinite alternate; }
+@keyframes jab { from { transform: translate(0, 6px) scale(.97); } to { transform: translate(0, -6px) scale(1.04); } }
+.for-attack { display: none; }
+.mode-attack .for-attack { display: inline; }
+.mode-attack .for-password { display: none; }
+.ip-line { font: 700 12px/1.3 "Courier New", monospace; color: var(--deny); background: #000; padding: 4px 8px; text-shadow: none; }
+.ip-line[hidden] { display: none; }
+.modes {
+  position: fixed; z-index: 20; top: max(10px, env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 0; font: 12px var(--ui); border: 1px solid var(--phosphor-dim); background: #000;
+}
+.modes button { font: inherit; padding: 5px 10px; background: transparent; color: var(--phosphor-dim); border: 0; cursor: pointer; }
+.modes button[aria-pressed="true"] { background: var(--phosphor-dim); color: #000; }
+.modes button:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 1px; }
+.beam { animation: beam 1.2s ease-in-out infinite alternate; }
+@keyframes beam { from { opacity: .35; } to { opacity: .8; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor, .crt::after, .ticker-track, .wag, .jab, .beam { animation: none; }
+  .win { animation: none; }
+}
+</style>
+
+</head>
+<body>
+<div class="crt" id="crt" aria-live="polite">
+  <div class="line dim">Florida Cave Survey :: secure node FCS-1</div>
+  <div class="line dim">Karst Data System 4.2 (IRIX-compatible) &mdash; authorised members only</div>
+  <div class="line dim">&nbsp;</div>
+  <div class="line">Jurisdiction: 67 counties &middot; 684 cave records &middot; security level 3</div>
+  <div class="line">&nbsp;</div>
+  <div id="out"></div>
+  <div class="line prompt-line" id="promptLine"><span>&gt;&nbsp;</span><span id="typed"></span><span class="cursor" aria-hidden="true"></span></div>
+  <input id="keys" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Terminal command">
+</div>
+
+<div class="backdrop" id="backdrop" hidden>
+  <div class="win" role="dialog" aria-modal="true" aria-labelledby="winTitle">
+    <div class="titlebar">
+      <button class="tb-btn" type="button" id="tbClose" aria-label="Close window">&times;</button>
+      <span class="grip" aria-hidden="true"></span>
+      <span id="winTitle">security.magic</span>
+      <span class="grip" aria-hidden="true"></span>
+      <button class="tb-btn" type="button" id="tbMute" aria-label="Mute sound">&#9834;</button>
+    </div>
+    <div class="win-body">
+      <div class="stage" id="stage">
+        <!-- Original character: a caver in a helmet with a headlamp, wagging a finger.
+             To use your own GIF instead, set CHARACTER_GIF_URL in the script below. -->
+        <svg id="caver" viewBox="0 0 300 260" role="img" aria-label="A caver wagging a finger">
+          <defs>
+            <radialGradient id="lamp" cx="0" cy="0.5" r="1">
+              <stop offset="0" stop-color="#fff7b0" stop-opacity=".9"/>
+              <stop offset="1" stop-color="#fff7b0" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="300" height="260" fill="#0b0b0b"/>
+          <!-- cave wall -->
+          <path d="M0 260 L0 40 Q30 20 52 48 Q66 18 96 30 L96 260 Z" fill="#1d1a16"/>
+          <path d="M300 260 L300 30 Q270 12 252 40 Q236 16 214 34 L214 260 Z" fill="#1d1a16"/>
+          <!-- headlamp beam -->
+          <polygon class="beam" points="168,62 300,10 300,120" fill="url(#lamp)"/>
+          <!-- body -->
+          <path d="M92 260 Q96 168 150 162 Q204 168 208 260 Z" fill="#c4581f"/>
+          <path d="M138 170 L150 196 L162 170" fill="none" stroke="#7a3410" stroke-width="4"/>
+          <!-- head -->
+          <circle cx="150" cy="118" r="40" fill="#f0c9a0"/>
+          <!-- helmet -->
+          <path d="M106 108 Q108 62 150 60 Q192 62 194 108 Z" fill="#f2c200"/>
+          <rect x="100" y="104" width="100" height="9" rx="4" fill="#d9a800"/>
+          <rect x="140" y="64" width="22" height="16" rx="4" fill="#444"/>
+          <circle cx="160" cy="72" r="6" fill="#fff7b0"/>
+          <!-- face for a wrong password: raised brows, smug smile -->
+          <g class="for-password">
+            <path d="M126 116 q8 -7 16 0" fill="none" stroke="#3a2412" stroke-width="3.5" stroke-linecap="round"/>
+            <path d="M158 112 q8 -7 16 0" fill="none" stroke="#3a2412" stroke-width="3.5" stroke-linecap="round"/>
+            <circle cx="134" cy="124" r="4" fill="#1a1a1a"/>
+            <circle cx="166" cy="124" r="4" fill="#1a1a1a"/>
+            <path d="M134 141 q16 12 32 -2" fill="none" stroke="#7a2e18" stroke-width="4" stroke-linecap="round"/>
+          </g>
+          <!-- face for an attacker: scowl -->
+          <g class="for-attack">
+            <path d="M124 112 l18 7" fill="none" stroke="#3a2412" stroke-width="4.5" stroke-linecap="round"/>
+            <path d="M176 112 l-18 7" fill="none" stroke="#3a2412" stroke-width="4.5" stroke-linecap="round"/>
+            <circle cx="135" cy="126" r="4" fill="#1a1a1a"/>
+            <circle cx="165" cy="126" r="4" fill="#1a1a1a"/>
+            <path d="M136 146 q14 -9 28 0" fill="none" stroke="#7a2e18" stroke-width="4" stroke-linecap="round"/>
+          </g>
+          <!-- arm with a wagging pointer finger (wrong password) -->
+          <g class="wag for-password">
+            <path d="M188 228 Q204 196 210 168" fill="none" stroke="#c4581f" stroke-width="22" stroke-linecap="round"/>
+            <rect x="196" y="140" width="30" height="30" rx="9" fill="#f0c9a0"/>
+            <path d="M203 150 h18 M203 158 h18" stroke="#c99a72" stroke-width="2" stroke-linecap="round"/>
+            <rect x="198" y="100" width="10" height="46" rx="5" fill="#f0c9a0"/>
+            <rect x="222" y="146" width="10" height="16" rx="5" fill="#f0c9a0"/>
+          </g>
+          <!-- arm with a middle finger (hacking or misuse) -->
+          <g class="jab for-attack">
+            <path d="M188 228 Q204 196 210 168" fill="none" stroke="#c4581f" stroke-width="22" stroke-linecap="round"/>
+            <rect x="193" y="140" width="36" height="30" rx="9" fill="#f0c9a0"/>
+            <path d="M201 141 v12 M220 141 v12" stroke="#c99a72" stroke-width="2" stroke-linecap="round"/>
+            <rect x="206" y="94" width="11" height="52" rx="5.5" fill="#f0c9a0"/>
+            <rect x="186" y="150" width="10" height="16" rx="5" fill="#f0c9a0"/>
+          </g>
+        </svg>
+      </div>
+      <div class="ip-line" id="ipLine" hidden></div>
+      <div class="ticker" aria-hidden="true"><div class="ticker-track" id="ticker"></div></div>
+      <div class="win-foot">
+        <button class="btn" type="button" id="muteBtn">Mute</button>
+        <button class="btn" type="button" id="closeBtn">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Swap-in points --------------------------------------------------------
+// Your own animated character (a GIF or any image URL). Leave empty to keep
+// the built-in caver drawing.
+const CHARACTER_GIF_URL = "";
+// Your own looping sound effect (mp3/ogg/wav URL). Leave empty to use the
+// built-in synthesized alarm chirp.
+const ALARM_SOUND_URL = "";
+// ---------------------------------------------------------------------------
+
+const MAGIC_LINE = "YOU DIDN'T SAY THE MAGIC WORD!";
+// Which lockout to show: "password" (a wrong password: wagging pointer
+// finger) or "attack" (hacking or misuse: middle finger, IP logged notice).
+// On the website the server decides; this preview has a switch.
+// Filled in by the server (see GET /security-lockout)
+const mode = "{{MODE}}" === "attack" ? "attack" : "password";
+const VISITOR_IP = "{{IP}}";
+const RETURN_TO = "/portal";
+const out = document.getElementById("out");
+const typed = document.getElementById("typed");
+const keys = document.getElementById("keys");
+const crt = document.getElementById("crt");
+const promptLine = document.getElementById("promptLine");
+const backdrop = document.getElementById("backdrop");
+let busy = false, floodTimer = null, muted = false;
+
+function print(text, cls) {
+  const div = document.createElement("div");
+  div.className = "line" + (cls ? " " + cls : "");
+  div.textContent = text;
+  out.appendChild(div);
+  crt.scrollTop = crt.scrollHeight;
+  return div;
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// keep the hidden input focused so typing always lands in the terminal
+crt.addEventListener("pointerdown", () => setTimeout(() => keys.focus(), 0));
+keys.focus();
+keys.addEventListener("input", () => { if (!busy) typed.textContent = keys.value; });
+keys.addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter" || busy) return;
+  e.preventDefault();
+  const command = keys.value.trim();
+  keys.value = ""; typed.textContent = "";
+  print("> " + command);
+  if (!command) return;
+  busy = true;
+  promptLine.hidden = true;
+  const verb = command.split(/\s+/)[0].toLowerCase();
+  await wait(350);
+  print(verb + ": PERMISSION DENIED....", "deny");
+  await wait(1000);
+  print("and....", "deny");
+  await wait(700);
+  openLockout();
+});
+
+// ---- sound -----------------------------------------------------------------
+let audioEl = null, ctx = null, chirpTimer = null;
+function chirp() {
+  // three quick descending beeps, like an old workstation alarm
+  if (!ctx || muted) return;
+  const t0 = ctx.currentTime;
+  [880, 740, 880].forEach((f, i) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "square"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + i * 0.22);
+    g.gain.exponentialRampToValueAtTime(0.08, t0 + i * 0.22 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.22 + 0.18);
+    o.connect(g).connect(ctx.destination);
+    o.start(t0 + i * 0.22); o.stop(t0 + i * 0.22 + 0.2);
+  });
+}
+function startSound() {
+  try {
+    if (ALARM_SOUND_URL) {
+      audioEl = new Audio(ALARM_SOUND_URL);
+      audioEl.loop = true; audioEl.muted = muted;
+      audioEl.play().catch(() => {});
+    } else {
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === "suspended") ctx.resume();
+      chirp();
+      chirpTimer = setInterval(chirp, 1400);
+    }
+  } catch (_) { /* no sound available - the window still works */ }
+}
+function stopSound() {
+  if (audioEl) { audioEl.pause(); audioEl = null; }
+  clearInterval(chirpTimer); chirpTimer = null;
+}
+function setMuted(m) {
+  muted = m;
+  if (audioEl) audioEl.muted = m;
+  document.getElementById("muteBtn").textContent = m ? "Unmute" : "Mute";
+  document.getElementById("tbMute").setAttribute("aria-label", m ? "Unmute sound" : "Mute sound");
+}
+
+// ---- the lockout window ----------------------------------------------------
+function openLockout() {
+  const attack = mode === "attack";
+  document.getElementById("caver").classList.toggle("mode-attack", attack);
+  document.getElementById("caver").setAttribute("aria-label", attack ? "A scowling caver giving the middle finger" : "A caver wagging a finger");
+  document.getElementById("winTitle").textContent = attack ? "security.violation" : "security.magic";
+  const ipLine = document.getElementById("ipLine");
+  ipLine.hidden = !attack;
+  ipLine.textContent = "UNAUTHORIZED ACCESS ATTEMPT. YOUR IP ADDRESS " + VISITOR_IP + " HAS BEEN LOGGED.";
+  if (CHARACTER_GIF_URL) {
+    const stage = document.getElementById("stage");
+    stage.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = CHARACTER_GIF_URL; img.alt = "Character wagging a finger";
+    stage.appendChild(img);
+  }
+  const ticker = document.getElementById("ticker");
+  ticker.innerHTML = "";
+  for (let i = 0; i < 12; i++) { const d = document.createElement("div"); d.textContent = MAGIC_LINE; ticker.appendChild(d); }
+  backdrop.hidden = false;
+  document.getElementById("closeBtn").focus();
+  startSound();
+  // the terminal behind fills up with the same line, over and over
+  floodTimer = setInterval(() => {
+    print(MAGIC_LINE);
+    if (out.children.length > 400) out.removeChild(out.firstChild);
+  }, 140);
+}
+function closeLockout() {
+  backdrop.hidden = true;
+  stopSound();
+  clearInterval(floodTimer); floodTimer = null;
+  print("");
+  print("Returning to the login page...", "dim");
+  setTimeout(() => { window.location.href = RETURN_TO; }, 400);
+}
+document.getElementById("closeBtn").addEventListener("click", closeLockout);
+document.getElementById("tbClose").addEventListener("click", closeLockout);
+document.getElementById("muteBtn").addEventListener("click", () => setMuted(!muted));
+document.getElementById("tbMute").addEventListener("click", () => setMuted(!muted));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !backdrop.hidden) closeLockout(); });
+
+// Plays by itself: types a command, which is denied, then the window opens
+(async function autoplay() {
+  busy = true;
+  const command = mode === "attack" ? "access main security grid" : "access main program";
+  await wait(600);
+  for (const ch of command) { typed.textContent += ch; await wait(55 + Math.random() * 60); }
+  await wait(350);
+  typed.textContent = "";
+  print("> " + command);
+  promptLine.hidden = true;
+  await wait(350);
+  print("access: PERMISSION DENIED....", "deny");
+  await wait(1000);
+  print("and....", "deny");
+  await wait(700);
+  openLockout();
+})();
+
+// Browsers only allow sound after a click or key press on the page
+function wakeSound() {
+  if (ctx && ctx.state === "suspended") ctx.resume();
+  if (audioEl && audioEl.paused) audioEl.play().catch(() => {});
+}
+document.addEventListener("pointerdown", wakeSound);
+document.addEventListener("keydown", wakeSound);
+</script>
+</body>
+</html>

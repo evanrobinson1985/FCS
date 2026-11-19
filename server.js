@@ -788,6 +788,24 @@ function maybeEmailSecurityEvent(event, eventsFromIpThisHour) {
     .catch((err) => console.error("Failed to send security alert:", err));
 }
 
+// The "access denied" lockout screen (views/security-lockout.html): a retro
+// terminal that denies access, then a window with a cartoon caver - wagging
+// a pointer finger for a wrong password ("password"), or giving the middle
+// finger and showing the logged IP for an attack or a restricted account
+// ("attack"). The template is read once; only the mode and the visitor's own
+// address (digits, a-f, ":" and "." only) are put into it.
+const LOCKOUT_TEMPLATE = fs.readFileSync(path.join(__dirname, "views", "security-lockout.html"), "utf8");
+function sendLockoutPage(req, res, mode, status = 200) {
+  const ip = String(req.ip || "unknown").replace(/^::ffff:/, "").replace(/[^0-9A-Fa-f:.]/g, "").slice(0, 45) || "unknown";
+  const html = LOCKOUT_TEMPLATE.replace("{{MODE}}", mode === "attack" ? "attack" : "password").replace("{{IP}}", ip);
+  res.status(status).set({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }).send(html);
+}
+app.get("/security-lockout", (req, res) => sendLockoutPage(req, res, req.query.mode === "attack" ? "attack" : "password"));
+
+// Injection-type findings that, in a page a browser opens without a real
+// login, mean an attack worth stopping (not just logging)
+const BLOCKING_CATEGORIES = new Set(["sqli", "xss", "traversal", "command", "template", "nosql", "forged"]);
+
 // Who a request claims to come from (from its login token), for scoring and
 // attributing requests that never reach a route's own login check. Only
 // ever used to add points or label an alert, never to grant access.
@@ -822,6 +840,17 @@ app.use((req, res, next) => {
     if (apiRateByUser.size > 2000) apiRateByUser.delete(apiRateByUser.keys().next().value);
     if (rate.count === API_FLOOD_PER_MINUTE) noteSuspicious(req, 10, "flood");
   }
+  // A browser opening a page with an attack in its address, with no login of
+  // its own (or a forged one), gets the lockout screen instead of the page.
+  // Requests that could belong to a member (a valid login, or an address a
+  // member has used) are only logged, never shown it, in case of a false alarm.
+  const isPageLoad = req.method === "GET" && /text\/html/.test(String(req.headers.accept || ""));
+  const blockable = findings.some((f) => BLOCKING_CATEGORIES.has(f.category));
+  let blocked = false;
+  if (isPageLoad && blockable && !req.suspectUsername && (req.forgedClaim || membersSeenAt(req.ip).length === 0)) {
+    blocked = true;
+  }
+
   // The JSON body is only read by each route, so it's checked once the
   // request is over (the routes' own validation and sanitizing still apply)
   res.on("close", () => {
@@ -833,8 +862,9 @@ app.use((req, res, next) => {
         console.error("Attack check of request body failed:", err);
       }
     }
-    if (all.length) recordSecurityEvent(req, all);
+    if (all.length) recordSecurityEvent(req, all, blocked ? "Shown the lockout screen instead of the page" : undefined);
   });
+  if (blocked) return sendLockoutPage(req, res, "attack", 403);
   next();
 });
 

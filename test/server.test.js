@@ -4300,3 +4300,43 @@ describe("usernames can't contain profanity or gruesome words", () => {
     assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Enos", lastName: "Slaughter" })).status, 200);
   });
 });
+
+describe("the access-denied lockout screen", () => {
+  test("serves the wrong-password and attack versions with the visitor's address", async () => {
+    const pw = await request(app).get("/security-lockout").set("X-Forwarded-For", "198.51.100.90");
+    assert.equal(pw.status, 200);
+    assert.match(pw.text, /const mode = "password" === "attack"/);
+    assert.match(pw.text, /const VISITOR_IP = "198\.51\.100\.90"/);
+    assert.equal(pw.headers["cache-control"], "no-store");
+    const attack = await request(app).get("/security-lockout?mode=attack").set("X-Forwarded-For", "198.51.100.90");
+    assert.match(attack.text, /const mode = "attack" === "attack"/);
+    const odd = await request(app).get("/security-lockout?mode=<script>");
+    assert.match(odd.text, /const mode = "password"/, "only the two known modes");
+  });
+
+  test("a browser opening a page with an attack in the address gets the attack screen instead", async () => {
+    const res = await request(app).get("/portal?id=1%27%20UNION%20SELECT%20passwordHash%20FROM%20users--")
+      .set("Accept", "text/html,application/xhtml+xml").set("X-Forwarded-For", "203.0.113.200");
+    assert.equal(res.status, 403);
+    assert.match(res.text, /const mode = "attack"/);
+    assert.match(res.text, /203\.0\.113\.200/);
+    await new Promise((r) => setTimeout(r, 20));
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const groups = (await request(app).get("/api/security-alerts").set("Authorization", `Bearer ${wm}`)).body.groups;
+    const g = groups.find((x) => x.ip === "203.0.113.200");
+    assert.ok(g, "still logged");
+    assert.match(JSON.stringify(g.events), /lockout screen/);
+  });
+
+  test("ordinary pages, API calls, and addresses members use are never blocked", async () => {
+    const page = await request(app).get("/portal").set("Accept", "text/html").set("X-Forwarded-For", "203.0.113.201");
+    assert.equal(page.status, 200);
+    assert.doesNotMatch(page.text, /security-lockout\.html|const VISITOR_IP/);
+    const api = await request(app).get("/api/cave-count?q=%3Cscript%3E").set("Accept", "application/json").set("X-Forwarded-For", "203.0.113.202");
+    assert.equal(api.status, 200, "API calls are logged, not swapped for a page");
+    await seedUser({ username: "sameplace", password: "SamePlacePass123!", role: "member" });
+    await request(app).post("/api/login").set("X-Forwarded-For", "203.0.113.203").send({ username: "sameplace", password: "SamePlacePass123!" });
+    const member = await request(app).get("/portal?q=%3Cscript%3E").set("Accept", "text/html").set("X-Forwarded-For", "203.0.113.203");
+    assert.equal(member.status, 200, "could be a member: logged, not shown the screen");
+  });
+});
