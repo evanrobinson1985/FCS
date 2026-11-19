@@ -3317,6 +3317,17 @@ describe("Cave Jump leaderboard", () => {
     assert.equal(res.body.top[0].name, "jumper11");
   });
 
+  test("only a webmaster can reset the whole board", async () => {
+    const h = { Authorization: `Bearer ${await login("jumper2", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).delete("/api/cave-jump/scores").set(h)).status, 403);
+    assert.equal((await request(app).delete("/api/cave-jump/scores")).status, 401);
+    const res = await request(app).delete("/api/cave-jump/scores").set(wm);
+    assert.equal(res.status, 200);
+    assert.ok(res.body.removed > 0);
+    assert.equal((await request(app).get("/api/cave-jump/leaderboard").set(wm)).body.top.length, 0);
+    assert.equal((await post(h, { score: 300, seconds: 60 })).status, 200, "scores can be added again afterwards");
+  });
+
   test("the board still works in maintenance mode", async () => {
     await request(app).post("/api/site-config").set(wm).send({ maintenanceMode: true });
     try {

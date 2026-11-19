@@ -598,6 +598,13 @@
     </div>
 
     <div class="control-section">
+      <h4>Cave Jump Scoreboard</h4>
+      <p style="margin-bottom: 10px;">Clears every score from the Cave Jump Top 10 so everyone starts fresh. A backup of the old scores is kept on the server.</p>
+      <button type="button" class="btn-danger" onclick="resetCaveJumpScoreboard()">Reset Scoreboard</button>
+      <span id="cave-jump-reset-status" style="margin-left: 10px;"></span>
+    </div>
+
+    <div class="control-section">
       <h4>Login Security</h4>
       <p style="margin-bottom: 10px;">After this many failed attempts in a row, an account is temporarily locked out (in addition to the site's own IP-based rate limiting). Applies immediately to the next login attempt.</p>
       <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px;">
@@ -5321,6 +5328,24 @@ function loadFcsDatabaseTable() {
         row.appendChild(cb); row.appendChild(document.createTextNode(label));
         container.appendChild(row);
       });
+    }
+
+    async function resetCaveJumpScoreboard() {
+      const statusEl = document.getElementById('cave-jump-reset-status');
+      if (!confirm('Reset the Cave Jump scoreboard? Every score on the Top 10 will be removed.')) return;
+      try {
+        const response = await fetch('/api/cave-jump/scores', { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Reset failed');
+        statusEl.textContent = result.removed
+          ? `Scoreboard reset. ${result.removed} score${result.removed === 1 ? '' : 's'} removed.`
+          : 'Scoreboard reset. It was already empty.';
+        statusEl.style.color = 'green';
+      } catch (error) {
+        console.error('Error resetting Cave Jump scoreboard:', error);
+        statusEl.textContent = 'Error: ' + error.message;
+        statusEl.style.color = '#b00';
+      }
     }
 
     async function saveMapToolVisibility() {

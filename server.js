@@ -1794,6 +1794,19 @@ app.post("/api/cave-jump/scores", caveJumpLimiter, authenticateToken, express.js
 });
 
 // Webmasters can take an entry off the board (e.g. an obviously fake score)
+// Wipes the whole Top 10 (Website Management "Reset Scoreboard" button).
+// The file is backed up first, like every other save of it.
+app.delete("/api/cave-jump/scores", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const data = loadCaveJump();
+  const removed = Object.keys(data.best).length;
+  data.best = {};
+  data.resetAt = new Date().toISOString();
+  data.resetBy = req.user.username;
+  saveCaveJump(data);
+  console.log(`Cave Jump scoreboard reset by ${req.user.username} (${removed} score(s) removed)`);
+  res.json({ success: true, removed });
+});
+
 app.delete("/api/cave-jump/scores/:userId", authenticateToken, requireRole("webmaster"), (req, res) => {
   const data = loadCaveJump();
   if (!data.best[req.params.userId]) return res.status(404).json({ error: "No score for that account." });
