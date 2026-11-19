@@ -43,6 +43,7 @@ process.env.NODE_ENV = "test";
 process.env.ALLOWED_ORIGINS = "http://localhost:3000";
 
 const request = require("supertest");
+const jwt = require("jsonwebtoken");
 const app = require("../server");
 
 const WEBMASTER_PASSWORD = "WebmasterPass123!";
@@ -4165,5 +4166,102 @@ describe("automatic restriction of suspicious accounts", () => {
     assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: 2 })).status, 400);
     assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: -1 })).status, 400);
     assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictEnabled: "yes" })).status, 400);
+  });
+});
+
+describe("attack detection and Security Alerts", () => {
+  let wm;
+  const alerts = async () => (await request(app).get("/api/security-alerts").set(wm)).body;
+  const groupFor = async (ip) => (await alerts()).groups.find((g) => g.ip === ip);
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await seedUser({ username: "attacker1", password: "Attacker1Pass!", role: "member" });
+    await seedUser({ username: "guessme", password: "GuessMePass123!", role: "member" });
+  });
+
+  test("an anonymous injection attempt is logged with its IP and emailed", async () => {
+    const originalLog = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.join(" ")); originalLog(...args); };
+    try {
+      await request(app).get("/api/cave-count?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E").set("X-Forwarded-For", "203.0.113.9");
+    } finally {
+      console.log = originalLog;
+    }
+    const g = await groupFor("203.0.113.9");
+    assert.ok(g, "logged under the attacker's address");
+    assert.equal(g.whoType, "anonymous");
+    assert.equal(g.severity, "high");
+    assert.ok(g.categories.xss);
+    assert.ok(lines.some((l) => /Security alert: Script injection/.test(l) && /203\.0\.113\.9/.test(l)), "webmasters are emailed");
+  });
+
+  test("a member's own login is named, including attacks in a JSON body", async () => {
+    const h = { Authorization: `Bearer ${await login("attacker1", "Attacker1Pass!")}` };
+    await request(app).post("/api/feedback").set(h).set("X-Forwarded-For", "198.51.100.20")
+      .send({ type: "bug", title: "x' UNION SELECT passwordHash FROM users--", description: "hello there friend" });
+    const g = await groupFor("198.51.100.20");
+    assert.equal(g.whoType, "member");
+    assert.match(g.who, /attacker1/);
+    assert.ok(g.categories.sqli);
+  });
+
+  test("no login, but an address a member has used, is flagged as possibly a member", async () => {
+    const ok = await request(app).post("/api/login").set("X-Forwarded-For", "198.51.100.33").send({ username: "attacker1", password: "Attacker1Pass!" });
+    assert.equal(ok.status, 200);
+    await request(app).get("/.env").set("X-Forwarded-For", "198.51.100.33");
+    const g = await groupFor("198.51.100.33");
+    assert.ok(g.categories.probe);
+    assert.equal(g.whoType, "ip-match");
+    assert.match(g.who, /attacker1/);
+  });
+
+  test("a forged login token is recognised and says who it pretends to be", async () => {
+    const forged = jwt.sign({ username: "webmaster1", role: "webmaster" }, "not-the-real-secret");
+    const res = await request(app).get("/api/users").set("Authorization", `Bearer ${forged}`).set("X-Forwarded-For", "192.0.2.50");
+    assert.equal(res.status, 403);
+    const g = await groupFor("192.0.2.50");
+    assert.equal(g.whoType, "forged");
+    assert.match(g.who, /webmaster1/);
+  });
+
+  test("attack tools and password guessing are recognised", async () => {
+    await request(app).get("/api/cave-count").set("User-Agent", "sqlmap/1.7.2#stable").set("X-Forwarded-For", "192.0.2.60");
+    assert.ok((await groupFor("192.0.2.60")).categories.tool);
+    for (let i = 0; i < 6; i++) {
+      await request(app).post("/api/login").set("X-Forwarded-For", "192.0.2.61").send({ username: "guessme", password: "wrong-guess" });
+    }
+    const g = await groupFor("192.0.2.61");
+    assert.ok(g.categories.bruteforce);
+    assert.match(JSON.stringify(g.events), /guessme/);
+  });
+
+  test("passwords and login tokens are never written to the log", async () => {
+    await request(app).post("/api/login").set("X-Forwarded-For", "192.0.2.70").send({ username: "nobody-here", password: "<script>alert(1)</script>" });
+    assert.equal(await groupFor("192.0.2.70"), undefined, "a password is never scanned");
+    await request(app).get("/cave-pictures/x.php?token=SECRETTOKENVALUE").set("X-Forwarded-For", "192.0.2.71");
+    const g = await groupFor("192.0.2.71");
+    assert.ok(g);
+    assert.doesNotMatch(JSON.stringify(g), /SECRETTOKENVALUE/);
+  });
+
+  test("ordinary cave text isn't flagged", async () => {
+    const h = { Authorization: `Bearer ${await login("attacker1", "Attacker1Pass!")}` };
+    await request(app).post("/api/feedback").set(h).set("X-Forwarded-For", "192.0.2.80").send({
+      type: "bug", title: "Map overlay; cat food at entrance", description: "Select the union of both rooms, sleep (2 nights) at camp & id the bats. Depth: 30 ft; ls is fine.",
+    });
+    assert.equal(await groupFor("192.0.2.80"), undefined);
+  });
+
+  test("only webmasters can see, review or clear alerts", async () => {
+    const h = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).get("/api/security-alerts").set(h)).status, 403);
+    assert.equal((await request(app).delete("/api/security-alerts").set(h)).status, 403);
+    assert.ok((await alerts()).unreviewed > 0);
+    assert.equal((await request(app).post("/api/security-alerts/reviewed").set(wm)).status, 200);
+    assert.equal((await alerts()).unreviewed, 0);
+    const cleared = await request(app).delete("/api/security-alerts").set(wm);
+    assert.equal(cleared.status, 200);
+    assert.equal((await alerts()).groups.length, 0);
   });
 });

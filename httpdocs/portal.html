@@ -501,11 +501,42 @@
 </div>
 
 <!-- Website Management Tab Content -->
+<style>
+  #security-alerts-section .sa-new, #website-management-tab .sa-tab-count { display: inline-block; min-width: 1.4em; padding: 1px 7px; border-radius: 999px; background: #b3261e; color: #fff; font-size: 0.78em; font-weight: 700; text-align: center; margin-left: 6px; }
+  #security-alerts-section .sa-new[hidden], #website-management-tab .sa-tab-count[hidden] { display: none; }
+  .sa-group { border: 1px solid #e0e0e0; border-left: 4px solid #9aa5ad; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: #fff; }
+  .sa-group.sev-high { border-left-color: #b3261e; } .sa-group.sev-medium { border-left-color: #d68910; }
+  .sa-group.unreviewed { background: #fffaf3; }
+  .sa-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+  .sa-ip { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; font-size: 1.05em; }
+  .sa-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8em; background: #eef1f4; color: #33404a; margin: 2px 4px 2px 0; }
+  .sa-sev { text-transform: uppercase; font-size: 0.72em; font-weight: 700; letter-spacing: .04em; padding: 1px 7px; border-radius: 999px; }
+  .sa-sev.high { background: #fbe9e7; color: #b3261e; } .sa-sev.medium { background: #fdf0dc; color: #9a5b00; } .sa-sev.low { background: #eef1f4; color: #55606a; }
+  .sa-who { margin: 6px 0 4px; font-size: 0.95em; }
+  .sa-who.member, .sa-who.forged { color: #b3261e; font-weight: 600; } .sa-who.ip-match { color: #9a5b00; font-weight: 600; } .sa-who.anonymous { color: #55606a; }
+  .sa-meta { color: #666; font-size: 0.85em; }
+  .sa-group details { margin-top: 6px; } .sa-group summary { cursor: pointer; color: #2a5d84; font-size: 0.9em; }
+  .sa-event { border-top: 1px solid #eee; padding: 6px 0; font-size: 0.85em; overflow-wrap: anywhere; }
+  .sa-event code { background: #f4f5f7; padding: 0 4px; border-radius: 3px; }
+</style>
 <div class="tab-content" id="website-management">
   <h3>Website Management</h3>
   <p>Site-wide controls: take the site down for maintenance, or post a notice banner for everyone to see.</p>
 
   <div class="account-management-controls">
+    <!-- Detected attacks, grouped by the address they came from (server.js "Attack detection") -->
+    <div class="control-section" id="security-alerts-section">
+      <h4>Security Alerts <span id="security-alerts-new" class="sa-new" hidden></span></h4>
+      <p style="margin: 0 0 10px; color: #555;">Attacks the site detected: injection attempts, attack tools, probing for hidden files, forged logins and password guessing. Each is listed by the attacker's IP address, with whether it came from a member account or looks like a random attack. Webmasters are also emailed (at most once per address every 6 hours).</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+        <button type="button" class="btn-success" onclick="loadSecurityAlerts()">Refresh</button>
+        <button type="button" onclick="markSecurityAlertsReviewed()">Mark all as reviewed</button>
+        <button type="button" class="btn-danger" onclick="clearSecurityAlerts()">Clear log</button>
+        <span id="security-alerts-status" style="align-self: center; color: #555;"></span>
+      </div>
+      <div id="security-alerts-list"></div>
+    </div>
+
     <div class="control-section">
       <h4>Maintenance Mode</h4>
       <p style="margin-bottom: 10px;">
@@ -5274,9 +5305,99 @@ function loadFcsDatabaseTable() {
       const tab = document.getElementById('website-management-tab');
       const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
       if (tab) tab.style.display = (currentRole === 'webmaster') ? 'block' : 'none';
+      // Count of new security alerts on the tab, refreshed every few minutes
+      if (currentRole === 'webmaster') {
+        loadSecurityAlerts({ badgeOnly: true });
+        if (!window.__securityAlertTimer) window.__securityAlertTimer = setInterval(() => {
+          if ((sessionStorage.getItem('role')) === 'webmaster' && sessionStorage.getItem('sessionToken')) loadSecurityAlerts({ badgeOnly: true });
+        }, 3 * 60 * 1000);
+      }
 
       const portalUrlDisplay = document.getElementById('portal-url-display');
       if (portalUrlDisplay) portalUrlDisplay.textContent = window.location.origin + '/portal';
+    }
+
+    function setSecurityAlertCount(n) {
+      const tab = document.getElementById('website-management-tab');
+      if (tab) {
+        let badge = tab.querySelector('.sa-tab-count');
+        if (!badge) { badge = document.createElement('span'); badge.className = 'sa-tab-count'; badge.title = 'New security alerts'; tab.appendChild(badge); }
+        badge.textContent = String(n);
+        badge.hidden = !n;
+      }
+      const head = document.getElementById('security-alerts-new');
+      if (head) { head.textContent = n ? `${n} new` : ''; head.hidden = !n; }
+    }
+
+    async function loadSecurityAlerts({ badgeOnly = false } = {}) {
+      const list = document.getElementById('security-alerts-list');
+      try {
+        const response = await fetch('/api/security-alerts');
+        if (!response.ok) throw new Error('Could not load security alerts');
+        const data = await response.json();
+        setSecurityAlertCount(data.unreviewed || 0);
+        if (badgeOnly || !list) return;
+        renderSecurityAlerts(data);
+      } catch (error) {
+        if (!badgeOnly && list) list.textContent = error.message;
+      }
+    }
+
+    function renderSecurityAlerts(data) {
+      const list = document.getElementById('security-alerts-list');
+      const labels = data.categoryLabels || {};
+      const reviewedAt = data.reviewedAt ? new Date(data.reviewedAt).getTime() : 0;
+      const fmt = (iso) => new Date(iso).toLocaleString();
+      if (!data.groups || !data.groups.length) {
+        list.innerHTML = '<p style="color: #2e7d32; margin: 0;">No attacks detected.</p>';
+        return;
+      }
+      list.innerHTML = data.groups.map(g => {
+        const cats = Object.entries(g.categories)
+          .map(([c, n]) => `<span class="sa-chip">${escapeStatsHtml(labels[c] || c)}${n > 1 ? ' &times;' + n : ''}</span>`).join('');
+        const events = g.events.map(e => `
+          <div class="sa-event">
+            <div><strong>${escapeStatsHtml(fmt(e.at))}</strong> &middot; <code>${escapeStatsHtml(e.method + ' ' + e.url)}</code>${new Date(e.at).getTime() > reviewedAt ? ' <span class="sa-sev high">new</span>' : ''}</div>
+            ${e.samples.map(sm => `<div>${escapeStatsHtml(labels[sm.category] || sm.category)}${sm.field ? ' in ' + escapeStatsHtml(sm.field) : ''}: <code>${escapeStatsHtml(sm.sample)}</code></div>`).join('')}
+            ${e.detail ? `<div>${escapeStatsHtml(e.detail)}</div>` : ''}
+            <div class="sa-meta">Browser/tool: ${escapeStatsHtml(e.userAgent || '(none given)')}</div>
+          </div>`).join('');
+        return `
+          <div class="sa-group sev-${escapeStatsHtml(g.severity)}${g.unreviewed ? ' unreviewed' : ''}">
+            <div class="sa-head">
+              <span class="sa-ip">${escapeStatsHtml(g.ip)}</span>
+              <span class="sa-sev ${escapeStatsHtml(g.severity)}">${escapeStatsHtml(g.severity)}</span>
+              ${g.unreviewed ? `<span class="sa-sev high">${g.unreviewed} new</span>` : ''}
+              <span class="sa-meta">${g.count} event${g.count === 1 ? '' : 's'}${g.notLogged ? ` (+${g.notLogged} more not logged this hour)` : ''} &middot; first ${escapeStatsHtml(fmt(g.firstAt))} &middot; last ${escapeStatsHtml(fmt(g.lastAt))}</span>
+            </div>
+            <div class="sa-who ${escapeStatsHtml(g.whoType)}">${escapeStatsHtml(g.who)}</div>
+            <div>${cats}</div>
+            <details><summary>Show the latest ${g.events.length} request${g.events.length === 1 ? '' : 's'}</summary>${events}</details>
+          </div>`;
+      }).join('');
+    }
+
+    async function markSecurityAlertsReviewed() {
+      try {
+        const response = await fetch('/api/security-alerts/reviewed', { method: 'POST' });
+        if (!response.ok) throw new Error('Could not mark them as reviewed');
+        loadSecurityAlerts();
+      } catch (error) {
+        document.getElementById('security-alerts-status').textContent = error.message;
+      }
+    }
+
+    async function clearSecurityAlerts() {
+      if (!confirm('Clear the whole security alert log? This can\'t be undone.')) return;
+      try {
+        const response = await fetch('/api/security-alerts', { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Could not clear the log');
+        document.getElementById('security-alerts-status').textContent = `Cleared ${result.removed} event${result.removed === 1 ? '' : 's'}.`;
+        loadSecurityAlerts();
+      } catch (error) {
+        document.getElementById('security-alerts-status').textContent = error.message;
+      }
     }
 
     function copyPortalUrl() {
@@ -8879,6 +9000,7 @@ window.addEventListener('error', function(e) {
             return;
           }
           loadWebsiteManagementSettings();
+          loadSecurityAlerts();
         }
 
         if (tabContentId === 'statistics') {

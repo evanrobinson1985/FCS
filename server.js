@@ -23,6 +23,7 @@ const bcrypt = require("bcryptjs");
 const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
 const githubUpdates = require("./lib/github-updates");
+const attackDetect = require("./lib/attack-detect");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
 // the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
 const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
@@ -532,8 +533,7 @@ const SUSPICION_THRESHOLD = 20;
 const API_FLOOD_PER_MINUTE = 300;
 const suspicionByUser = new Map(); // username -> [{ at, points, reason }]
 const apiRateByUser = new Map(); // username -> { minute, count }
-const SUSPICIOUS_INPUT =
-  /(\.\.[\/\\]|%2e%2e|%252e|<\s*script|javascript:|\/etc\/(passwd|shadow)|\bunion\s+(all\s+)?select\b|'\s*or\s+'?1'?\s*=\s*'?1|\$where|\bsleep\s*\(\s*\d|\bwaitfor\s+delay\b|\bxp_cmdshell\b)/i;
+// (Attack patterns live in lib/attack-detect.js)
 
 const SUSPICION_LABELS = {
   role: "tried features their role can't use",
@@ -628,34 +628,207 @@ function restrictAccount(username, reason, req) {
   }
 }
 
-// Who a request claims to come from (from its login token), for scoring
-// requests that never reach a route's own login check - unknown pages, and
-// the input check below. Only ever used to add points, never to grant access.
+// ---- Attack detection and the Security Alerts log --------------------------
+// Every request is checked for web attacks (lib/attack-detect.js): injection
+// attempts in the address or JSON body, attack tools by User-Agent, probes
+// for files attackers look for, forged login tokens, and (from /api/login)
+// password guessing. Each detection is logged with the attacker's IP and who
+// it appears to be - a member's own login, a forged one, an address a member
+// has used before, or an anonymous visitor - and shown to webmasters in
+// Website Management (Security Alerts), with an email for anything notable.
+// A member's own login doing it also counts towards automatic restriction.
+const SECURITY_EVENTS_FILE = path.join(DATA_DIR, "security-events.json");
+const MAX_SECURITY_EVENTS = 2000;
+const MAX_EVENTS_PER_IP_PER_HOUR = 100;
+const SECURITY_EMAIL_PER_IP_MS = 6 * 60 * 60 * 1000;
+const SECURITY_EMAILS_PER_HOUR = 10;
+
+function loadSecurityEvents() {
+  try {
+    if (fs.existsSync(SECURITY_EVENTS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SECURITY_EVENTS_FILE, "utf8"));
+      if (data && Array.isArray(data.events)) return { events: data.events, reviewedAt: data.reviewedAt || null };
+    }
+  } catch (err) {
+    console.error("Error loading security events:", err);
+  }
+  return { events: [], reviewedAt: null };
+}
+let securityLog = loadSecurityEvents();
+let securityLogSaveTimer = null;
+function saveSecurityLogSoon() {
+  if (securityLogSaveTimer) return;
+  securityLogSaveTimer = setTimeout(() => {
+    securityLogSaveTimer = null;
+    try {
+      writeFileAtomicSync(SECURITY_EVENTS_FILE, JSON.stringify(securityLog));
+    } catch (err) {
+      console.error("Failed to save security events:", err);
+    }
+  }, 1500);
+  if (securityLogSaveTimer.unref) securityLogSaveTimer.unref();
+}
+
+// Usernames whose logins or sign-ups came from this IP (refreshed each minute)
+let ipOwners = { at: 0, map: new Map() };
+function membersSeenAt(ip) {
+  if (!ip) return [];
+  if (Date.now() - ipOwners.at > 60 * 1000) {
+    const map = new Map();
+    loadUsers().forEach((u) => {
+      [...(Array.isArray(u.loginIPs) ? u.loginIPs : []), u.signupIP].filter(Boolean).forEach((addr) => {
+        if (!map.has(addr)) map.set(addr, new Set());
+        map.get(addr).add(u.username);
+      });
+    });
+    ipOwners = { at: Date.now(), map };
+  }
+  return [...(ipOwners.map.get(ip) || [])];
+}
+
+function attributeRequest(req) {
+  const username = (req.user && req.user.username) || req.suspectUsername;
+  if (username) {
+    const u = loadUsers().find((x) => x.username === username);
+    return { type: "member", username, role: u ? u.role : "unknown" };
+  }
+  if (req.forgedClaim) return { type: "forged", username: req.forgedClaim, alsoSeenAt: membersSeenAt(req.ip) };
+  const seen = membersSeenAt(req.ip);
+  if (seen.length) return { type: "ip-match", usernames: seen.slice(0, 10) };
+  return { type: "anonymous" };
+}
+
+const eventsPerIp = new Map(); // ip -> { hour, count, dropped }
+const lastSecurityEmail = new Map(); // ip -> time
+let securityEmailWindow = { hour: 0, count: 0 };
+
+function recordSecurityEvent(req, findings, extraDetail) {
+  if (!findings.length) return;
+  const hour = Math.floor(Date.now() / 3600000);
+  const ip = req.ip || "unknown";
+  const rate = eventsPerIp.get(ip);
+  const r = rate && rate.hour === hour ? rate : { hour, count: 0, dropped: 0 };
+  eventsPerIp.set(ip, r);
+  if (eventsPerIp.size > 5000) eventsPerIp.delete(eventsPerIp.keys().next().value);
+  if (r.count >= MAX_EVENTS_PER_IP_PER_HOUR) {
+    r.dropped++;
+    return;
+  }
+  r.count++;
+
+  const categories = [...new Set(findings.map((f) => f.category))];
+  const event = {
+    id: crypto.randomBytes(6).toString("hex"),
+    at: new Date().toISOString(),
+    ip,
+    method: req.method,
+    url: attackDetect.cleanUrl(req.originalUrl),
+    categories,
+    severity: attackDetect.worstSeverity(categories),
+    samples: findings.slice(0, 4).map((f) => ({ category: f.category, field: f.field || "", sample: String(f.sample || "").slice(0, 200) })),
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 200),
+    attribution: attributeRequest(req),
+  };
+  if (extraDetail) event.detail = String(extraDetail).slice(0, 200);
+  securityLog.events.push(event);
+  if (securityLog.events.length > MAX_SECURITY_EVENTS) securityLog.events.splice(0, securityLog.events.length - MAX_SECURITY_EVENTS);
+  saveSecurityLogSoon();
+  console.warn(`Security event from ${ip} (${event.attribution.type}${event.attribution.username ? " " + event.attribution.username : ""}): ${categories.join(", ")} - ${event.method} ${event.url}`);
+
+  // A member's own login sending attacks counts towards restricting it
+  if (event.attribution.type === "member" && event.severity !== "low") noteSuspicious(req, 5, "input");
+  maybeEmailSecurityEvent(event, r.count);
+}
+
+function describeAttribution(a) {
+  switch (a.type) {
+    case "member": return `Member account "${a.username}" (${a.role}), using its own login`;
+    case "forged": return `Someone with a forged or tampered login token claiming to be "${a.username}"` +
+      (a.alsoSeenAt && a.alsoSeenAt.length ? ` (this address has also been used by: ${a.alsoSeenAt.join(", ")})` : "");
+    case "ip-match": return `No login, but this address has been used by member account(s): ${a.usernames.join(", ")}`;
+    default: return "Anonymous: no login, and the address has never been used by a member (likely a random attack or bot)";
+  }
+}
+
+function maybeEmailSecurityEvent(event, eventsFromIpThisHour) {
+  const probeOnly = event.severity === "low";
+  const notable =
+    event.severity === "high" ||
+    event.attribution.type !== "anonymous" ||
+    (probeOnly ? eventsFromIpThisHour >= 25 : eventsFromIpThisHour >= 3);
+  if (!notable) return;
+  const now = Date.now();
+  if (now - (lastSecurityEmail.get(event.ip) || 0) < SECURITY_EMAIL_PER_IP_MS) return;
+  const hour = Math.floor(now / 3600000);
+  if (securityEmailWindow.hour !== hour) securityEmailWindow = { hour, count: 0 };
+  if (securityEmailWindow.count >= SECURITY_EMAILS_PER_HOUR) return;
+  securityEmailWindow.count++;
+  lastSecurityEmail.set(event.ip, now);
+  if (lastSecurityEmail.size > 5000) lastSecurityEmail.delete(lastSecurityEmail.keys().next().value);
+
+  const labels = event.categories.map((c) => attackDetect.CATEGORY_LABELS[c] || c).join(", ");
+  const text =
+    `The website detected a possible attack.\n\n` +
+    `What: ${labels} (severity: ${event.severity})\n` +
+    `Who: ${describeAttribution(event.attribution)}\n` +
+    `IP address: ${event.ip}\n` +
+    `When: ${event.at}\n` +
+    `Request: ${event.method} ${event.url}\n` +
+    (event.samples.length ? `Matched: ${event.samples.map((s) => `${s.field ? s.field + ": " : ""}${s.sample}`).join(" | ")}\n` : "") +
+    (event.detail ? `Detail: ${event.detail}\n` : "") +
+    `Browser/tool: ${event.userAgent || "(none given)"}\n\n` +
+    `More details are in Website Management > Security Alerts. You'll get at most one email per address every 6 hours.`;
+  sendAdminNotification(getNotificationRecipients(["webmaster"]), `Florida Cave Survey - Security alert: ${labels}`, text)
+    .catch((err) => console.error("Failed to send security alert:", err));
+}
+
+// Who a request claims to come from (from its login token), for scoring and
+// attributing requests that never reach a route's own login check. Only
+// ever used to add points or label an alert, never to grant access.
 app.use((req, res, next) => {
   const h = req.headers["authorization"];
   const token = h && h.startsWith("Bearer ") ? h.slice(7) : typeof req.query.token === "string" ? req.query.token : null;
+  const findings = attackDetect.scanRequestLine({
+    originalUrl: req.originalUrl,
+    path: req.path,
+    userAgent: req.headers["user-agent"],
+  });
   if (token) {
     try {
       const d = jwt.verify(token, JWT_SECRET);
       if (d && !d.pending2FA && d.username) req.suspectUsername = d.username;
-    } catch {
-      // not a valid login - the rate limiters deal with anonymous traffic
+    } catch (err) {
+      // An expired login is normal. A token that isn't signed with this
+      // site's secret was made or altered by someone else.
+      if (err && err.name === "JsonWebTokenError" && /signature|algorithm/i.test(err.message)) {
+        const claimed = jwt.decode(token);
+        req.forgedClaim = claimed && typeof claimed.username === "string" ? claimed.username.slice(0, 40) : "(no username)";
+        findings.push({ category: "forged", field: "login token", sample: `claims to be "${req.forgedClaim}" (${err.message})` });
+      }
     }
   }
-  if (req.suspectUsername) {
-    let url = String(req.originalUrl || "");
-    try { url = decodeURIComponent(url); } catch { /* keep it encoded */ }
-    if (SUSPICIOUS_INPUT.test(url) || SUSPICIOUS_INPUT.test(String(req.originalUrl || ""))) noteSuspicious(req, 5, "input");
-    if (req.path.startsWith("/api/") && !req.path.startsWith("/api/sqlite-hillshades/tiles/")) {
-      const minute = Math.floor(Date.now() / 60000);
-      const r = apiRateByUser.get(req.suspectUsername);
-      const rate = r && r.minute === minute ? r : { minute, count: 0 };
-      rate.count++;
-      apiRateByUser.set(req.suspectUsername, rate);
-      if (apiRateByUser.size > 2000) apiRateByUser.delete(apiRateByUser.keys().next().value);
-      if (rate.count === API_FLOOD_PER_MINUTE) noteSuspicious(req, 10, "flood");
-    }
+  if (req.suspectUsername && req.path.startsWith("/api/") && !req.path.startsWith("/api/sqlite-hillshades/tiles/")) {
+    const minute = Math.floor(Date.now() / 60000);
+    const r = apiRateByUser.get(req.suspectUsername);
+    const rate = r && r.minute === minute ? r : { minute, count: 0 };
+    rate.count++;
+    apiRateByUser.set(req.suspectUsername, rate);
+    if (apiRateByUser.size > 2000) apiRateByUser.delete(apiRateByUser.keys().next().value);
+    if (rate.count === API_FLOOD_PER_MINUTE) noteSuspicious(req, 10, "flood");
   }
+  // The JSON body is only read by each route, so it's checked once the
+  // request is over (the routes' own validation and sanitizing still apply)
+  res.on("close", () => {
+    const all = findings.slice();
+    if (req.body && typeof req.body === "object" && req.method !== "GET") {
+      try {
+        attackDetect.scanBody(req.body).forEach((f) => all.push(f));
+      } catch (err) {
+        console.error("Attack check of request body failed:", err);
+      }
+    }
+    if (all.length) recordSecurityEvent(req, all);
+  });
   next();
 });
 
@@ -2078,6 +2251,7 @@ function endActiveSession(username) {
 // raw count. user is the full user record, so the event can carry a
 // display name.
 function recordLogin(user) {
+  ipOwners.at = 0; // a new login address: refresh who has used which address (Security Alerts)
   touchActiveSession(user.username, user.role);
   loginEventSeq++;
   recentLogins.push({ seq: loginEventSeq, username: user.username, fullName: user.fullName || user.username, role: user.role, at: Date.now() });
@@ -2270,6 +2444,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       // Behaves exactly like a real account, lockout included - otherwise
       // "too many attempts" after a few tries would show the name exists.
       if (isUnknownLoginLockedOut(username)) {
+        recordSecurityEvent(req, [{ category: "bruteforce", field: "username", sample: `"${username.slice(0, 40)}" (no such account)` }]);
         return res.status(429).json({
           error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
         });
@@ -2298,6 +2473,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       user.lastFailedLogin &&
       Date.now() - new Date(user.lastFailedLogin).getTime() < lockoutMs
     ) {
+      recordSecurityEvent(req, [{ category: "bruteforce", field: "username", sample: `"${user.username}" (a real ${user.role} account)` }]);
       return res.status(429).json({
         error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
       });
@@ -6211,6 +6387,63 @@ app.delete("/api/delete-user", authenticateToken, requireRole("webmaster"), expr
 });
 
 // Get security logs
+// Security Alerts (Website Management): detected attacks grouped by the
+// address they came from, newest first
+app.get("/api/security-alerts", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const reviewedAt = securityLog.reviewedAt ? new Date(securityLog.reviewedAt).getTime() : 0;
+  const byIp = new Map();
+  for (const e of securityLog.events) {
+    let g = byIp.get(e.ip);
+    if (!g) {
+      g = { ip: e.ip, firstAt: e.at, lastAt: e.at, count: 0, unreviewed: 0, categories: {}, severity: "low", attributions: [], events: [] };
+      byIp.set(e.ip, g);
+    }
+    g.count++;
+    if (new Date(e.at).getTime() > reviewedAt) g.unreviewed++;
+    if (e.at < g.firstAt) g.firstAt = e.at;
+    if (e.at > g.lastAt) g.lastAt = e.at;
+    e.categories.forEach((c) => { g.categories[c] = (g.categories[c] || 0) + 1; });
+    g.severity = attackDetect.worstSeverity([...Object.keys(g.categories)]);
+    const key = JSON.stringify(e.attribution);
+    if (!g.attributions.some((a) => JSON.stringify(a) === key)) g.attributions.push(e.attribution);
+    g.events.push(e);
+  }
+  const rank = { member: 4, forged: 3, "ip-match": 2, anonymous: 1 };
+  const groups = [...byIp.values()]
+    .map((g) => {
+      g.attributions.sort((a, b) => (rank[b.type] || 0) - (rank[a.type] || 0));
+      g.who = describeAttribution(g.attributions[0]);
+      g.whoType = g.attributions[0].type;
+      const dropped = eventsPerIp.get(g.ip);
+      g.notLogged = dropped && dropped.hour === Math.floor(Date.now() / 3600000) ? dropped.dropped : 0;
+      g.events = g.events.slice(-10).reverse();
+      return g;
+    })
+    .sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+  res.set("Cache-Control", "no-store");
+  res.json({
+    reviewedAt: securityLog.reviewedAt,
+    unreviewed: groups.reduce((n, g) => n + g.unreviewed, 0),
+    totalEvents: securityLog.events.length,
+    categoryLabels: attackDetect.CATEGORY_LABELS,
+    groups: groups.slice(0, 200),
+  });
+});
+
+app.post("/api/security-alerts/reviewed", authenticateToken, requireRole("webmaster"), (req, res) => {
+  securityLog.reviewedAt = new Date().toISOString();
+  saveSecurityLogSoon();
+  res.json({ success: true, reviewedAt: securityLog.reviewedAt });
+});
+
+app.delete("/api/security-alerts", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const removed = securityLog.events.length;
+  securityLog = { events: [], reviewedAt: new Date().toISOString() };
+  saveSecurityLogSoon();
+  console.log(`Security alerts cleared by ${req.user.username} (${removed} events)`);
+  res.json({ success: true, removed });
+});
+
 app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req, res) => {
   try {
     // Create a simple security log from user login data
