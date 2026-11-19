@@ -515,6 +515,133 @@ app.use(
   })
 );
 
+// ---- Suspicious activity: automatic, temporary account restriction --------
+// Each logged-in account builds up a score from things ordinary use of the
+// site never does: calling features its role can't use, probing for pages
+// that don't exist, sending hacking-style input (path traversal, script
+// tags, SQL fragments), flooding the API, or getting its own current
+// password wrong while changing account settings (a hijacked session).
+// Points expire after 10 minutes. At SUSPICION_THRESHOLD the account is
+// signed out and can't log in for siteConfig.autoRestrictMinutes; the
+// webmasters are emailed and it shows in Account Management, where a
+// webmaster can lift it. Webmaster accounts are never restricted (so the
+// site can't lock out its own owner), only reported in the server log.
+const SUSPICION_WINDOW_MS = 10 * 60 * 1000;
+const SUSPICION_THRESHOLD = 20;
+const API_FLOOD_PER_MINUTE = 300;
+const suspicionByUser = new Map(); // username -> [{ at, points, reason }]
+const apiRateByUser = new Map(); // username -> { minute, count }
+const SUSPICIOUS_INPUT =
+  /(\.\.[\/\\]|%2e%2e|%252e|<\s*script|javascript:|\/etc\/(passwd|shadow)|\bunion\s+(all\s+)?select\b|'\s*or\s+'?1'?\s*=\s*'?1|\$where|\bsleep\s*\(\s*\d|\bwaitfor\s+delay\b|\bxp_cmdshell\b)/i;
+
+const SUSPICION_LABELS = {
+  role: "tried features their role can't use",
+  probe: "requested pages that don't exist",
+  input: "sent hacking-style input (path tricks, script or database code)",
+  flood: "sent an unusually large number of requests",
+  password: "entered the wrong current password while changing account settings",
+};
+
+function suspicionSummary(events) {
+  const counts = {};
+  events.forEach((e) => { counts[e.reason] = (counts[e.reason] || 0) + 1; });
+  return Object.entries(counts)
+    .map(([reason, n]) => `${SUSPICION_LABELS[reason] || reason} (${n}x)`)
+    .join("; ");
+}
+
+function noteSuspicious(req, points, reason) {
+  const username = (req.user && req.user.username) || req.suspectUsername;
+  if (!username || !siteConfig.autoRestrictEnabled) return;
+  const now = Date.now();
+  const events = (suspicionByUser.get(username) || []).filter((e) => now - e.at < SUSPICION_WINDOW_MS);
+  events.push({ at: now, points, reason });
+  suspicionByUser.delete(username);
+  suspicionByUser.set(username, events);
+  while (suspicionByUser.size > 2000) suspicionByUser.delete(suspicionByUser.keys().next().value);
+  const total = events.reduce((sum, e) => sum + e.points, 0);
+  if (total >= SUSPICION_THRESHOLD) {
+    suspicionByUser.delete(username);
+    restrictAccount(username, suspicionSummary(events), req);
+  }
+}
+
+function isRestricted(user) {
+  return !!user && !!user.restrictedUntil && new Date(user.restrictedUntil).getTime() > Date.now();
+}
+
+function restrictedMessage(user) {
+  const minutes = Math.max(1, Math.ceil((new Date(user.restrictedUntil).getTime() - Date.now()) / 60000));
+  const wait = minutes >= 120 ? `about ${Math.round(minutes / 60)} hours` : `about ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return `This account has been temporarily restricted because of unusual activity. You can log in again in ${wait}. If you think this is a mistake, contact a webmaster.`;
+}
+
+function restrictAccount(username, reason, req) {
+  try {
+    const users = loadUsers();
+    const user = users.find((u) => u.username === username);
+    if (!user || isRestricted(user)) return;
+    if (user.role === "webmaster") {
+      console.warn(`Suspicious activity from webmaster account ${username} (not restricted): ${reason}`);
+      return;
+    }
+    const now = new Date();
+    user.restrictedUntil = new Date(now.getTime() + siteConfig.autoRestrictMinutes * 60 * 1000).toISOString();
+    user.restrictedReason = reason;
+    user.restrictedAt = now.toISOString();
+    user.restrictedIP = req.ip;
+    // Ends every session it has open right now
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.restrictionLog = [
+      ...(user.restrictionLog || []),
+      { at: user.restrictedAt, action: "Account Restricted", details: `Automatically, for ${siteConfig.autoRestrictMinutes} minutes: ${reason}`, ip: req.ip },
+    ].slice(-50);
+    saveUsers(users);
+    endActiveSession(username);
+    console.warn(`Account ${username} automatically restricted until ${user.restrictedUntil}: ${reason}`);
+    sendAdminNotification(
+      getNotificationRecipients(["webmaster"]),
+      "Florida Cave Survey - Account automatically restricted",
+      `The account "${username}" (${user.role}) was automatically restricted for ${siteConfig.autoRestrictMinutes} minutes ` +
+        `because it ${reason}.\n\nLast address: ${req.ip}\nRequest: ${req.method} ${String(req.originalUrl).slice(0, 200)}\n\n` +
+        "It has been signed out and can't log in until the restriction ends. You can lift it early in Account Management."
+    ).catch((err) => console.error("Failed to send restriction notice:", err));
+  } catch (err) {
+    console.error("Failed to restrict account:", err);
+  }
+}
+
+// Who a request claims to come from (from its login token), for scoring
+// requests that never reach a route's own login check - unknown pages, and
+// the input check below. Only ever used to add points, never to grant access.
+app.use((req, res, next) => {
+  const h = req.headers["authorization"];
+  const token = h && h.startsWith("Bearer ") ? h.slice(7) : typeof req.query.token === "string" ? req.query.token : null;
+  if (token) {
+    try {
+      const d = jwt.verify(token, JWT_SECRET);
+      if (d && !d.pending2FA && d.username) req.suspectUsername = d.username;
+    } catch {
+      // not a valid login - the rate limiters deal with anonymous traffic
+    }
+  }
+  if (req.suspectUsername) {
+    let url = String(req.originalUrl || "");
+    try { url = decodeURIComponent(url); } catch { /* keep it encoded */ }
+    if (SUSPICIOUS_INPUT.test(url) || SUSPICIOUS_INPUT.test(String(req.originalUrl || ""))) noteSuspicious(req, 5, "input");
+    if (req.path.startsWith("/api/") && !req.path.startsWith("/api/sqlite-hillshades/tiles/")) {
+      const minute = Math.floor(Date.now() / 60000);
+      const r = apiRateByUser.get(req.suspectUsername);
+      const rate = r && r.minute === minute ? r : { minute, count: 0 };
+      rate.count++;
+      apiRateByUser.set(req.suspectUsername, rate);
+      if (apiRateByUser.size > 2000) apiRateByUser.delete(apiRateByUser.keys().next().value);
+      if (rate.count === API_FLOOD_PER_MINUTE) noteSuspicious(req, 10, "flood");
+    }
+  }
+  next();
+});
+
 // ---- Website management: maintenance mode + site-wide banner --------------
 //
 // Runtime, webmaster-editable settings (Website Management tab). Stored the
@@ -551,6 +678,10 @@ const DEFAULT_SITE_CONFIG = {
   // hardcoded; exposed here so a webmaster can tune it without a deploy.
   loginLockoutThreshold: 5,
   loginLockoutMinutes: 15,
+  // Automatic restriction of logged-in accounts that act maliciously (see
+  // "Suspicious activity" below)
+  autoRestrictEnabled: true,
+  autoRestrictMinutes: 60,
   // Tab IDs (data-tab values in portal.html's tab bar) currently hidden
   // site-wide - for taking a broken or in-progress feature out of
   // circulation without a deploy. Applies to every role equally,
@@ -773,6 +904,8 @@ app.post(
       disableLargeFilesMessage,
       loginLockoutThreshold,
       loginLockoutMinutes,
+      autoRestrictEnabled,
+      autoRestrictMinutes,
       hiddenTabs,
       hiddenMapTools,
     } = req.body;
@@ -825,6 +958,15 @@ app.post(
     ) {
       return res.status(400).json({ error: "loginLockoutMinutes must be a whole number between 1 and 1440." });
     }
+    if (autoRestrictEnabled !== undefined && typeof autoRestrictEnabled !== "boolean") {
+      return res.status(400).json({ error: "autoRestrictEnabled must be true or false." });
+    }
+    if (
+      autoRestrictMinutes !== undefined &&
+      (!Number.isInteger(autoRestrictMinutes) || autoRestrictMinutes < 5 || autoRestrictMinutes > 10080)
+    ) {
+      return res.status(400).json({ error: "autoRestrictMinutes must be a whole number between 5 and 10080 (one week)." });
+    }
 
     const updated = { ...siteConfig };
     if (typeof maintenanceMode === "boolean") updated.maintenanceMode = maintenanceMode;
@@ -840,6 +982,8 @@ app.post(
     if (typeof disableLargeFilesMessage === "string") updated.disableLargeFilesMessage = disableLargeFilesMessage.slice(0, 2000);
     if (loginLockoutThreshold !== undefined) updated.loginLockoutThreshold = loginLockoutThreshold;
     if (loginLockoutMinutes !== undefined) updated.loginLockoutMinutes = loginLockoutMinutes;
+    if (autoRestrictEnabled !== undefined) updated.autoRestrictEnabled = autoRestrictEnabled;
+    if (autoRestrictMinutes !== undefined) updated.autoRestrictMinutes = autoRestrictMinutes;
     if (hiddenTabs !== undefined) updated.hiddenTabs = [...new Set(hiddenTabs)];
     if (hiddenMapTools !== undefined) updated.hiddenMapTools = [...new Set(hiddenMapTools)];
 
@@ -2006,7 +2150,14 @@ function authenticateToken(req, res, next) {
       (decoded.id && liveUser.id && decoded.id !== liveUser.id) ||
       (decoded.tv || 0) !== (liveUser.tokenVersion || 0)
     ) {
+      // Restricting an account ends its sessions: say why
+      if (isRestricted(liveUser) && (!decoded.id || decoded.id === liveUser.id)) {
+        return res.status(403).json({ error: restrictedMessage(liveUser), restricted: true });
+      }
       return res.status(401).json({ error: "Your session has ended. Please log in again." });
+    }
+    if (isRestricted(liveUser)) {
+      return res.status(403).json({ error: restrictedMessage(liveUser), restricted: true });
     }
     req.user = { ...decoded, role: liveUser.role };
     touchActiveSession(liveUser.username, liveUser.role);
@@ -2045,6 +2196,7 @@ const DUES_EXPIRED_ALLOWED_PATHS = new Set([
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
+      noteSuspicious(req, 3, "role");
       return res.status(403).json({ error: "You do not have permission to perform this action." });
     }
     next();
@@ -2159,6 +2311,10 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
           ? "This account is waiting for an administrator's approval."
           : "This account is inactive.",
       });
+    }
+
+    if (isRestricted(user)) {
+      return res.status(403).json({ error: restrictedMessage(user), restricted: true });
     }
 
     // Update last login and reset login attempts
@@ -2395,6 +2551,7 @@ app.post("/api/toggle-2fa", authenticateToken, express.json(), async (req, res) 
       const passwordMatches =
         !!password && !!user.passwordHash && (await bcrypt.compare(password, user.passwordHash));
       if (!passwordMatches) {
+        noteSuspicious(req, 3, "password");
         return res.status(401).json({ error: "Incorrect password." });
       }
       user.twoFactorEnabled = false;
@@ -5819,6 +5976,8 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
       signupIP: user.signupIP || null,
+      restrictedUntil: isRestricted(user) ? user.restrictedUntil : null,
+      restrictedReason: isRestricted(user) ? user.restrictedReason || "" : null,
       isActive: user.status === "active",
       isTreasurer: isTreasurerAccount(user),
       dues: duesView(user),
@@ -5949,6 +6108,23 @@ app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), e
 });
 
 // Toggle user status (active/inactive)
+// Ends an automatic restriction early (see "Suspicious activity")
+app.post("/api/users/:username/lift-restriction", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const users = loadUsers();
+  const user = users.find((u) => u.username === req.params.username);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  if (!isRestricted(user)) return res.status(400).json({ error: "This account isn't restricted." });
+  delete user.restrictedUntil;
+  delete user.restrictedReason;
+  user.restrictionLog = [
+    ...(user.restrictionLog || []),
+    { at: new Date().toISOString(), action: "Restriction Lifted", details: `Lifted early by ${req.user.username}`, ip: req.ip },
+  ].slice(-50);
+  saveUsers(users);
+  suspicionByUser.delete(user.username);
+  res.json({ success: true });
+});
+
 app.post("/api/toggle-user-status", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
   try {
     const { username, isActive } = req.body;
@@ -6044,6 +6220,16 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
           details: user.signupIP ? `Signed up as a ${user.role}` : `Account created with role: ${user.role}`
         });
       }
+
+      (user.restrictionLog || []).forEach((entry) => {
+        logs.push({
+          timestamp: entry.at,
+          action: entry.action,
+          username: user.username,
+          ipAddress: entry.ip || "unknown",
+          details: entry.details,
+        });
+      });
 
       (user.duesLog || []).forEach((entry) => {
         logs.push({
@@ -6444,6 +6630,7 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
     const passwordMatches =
       !!user.passwordHash && (await bcrypt.compare(currentPassword, user.passwordHash));
     if (!passwordMatches) {
+      noteSuspicious(req, 3, "password");
       return res.status(401).json({ error: "Incorrect current password." });
     }
 
@@ -6495,6 +6682,7 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
     const passwordMatches =
       !!user.passwordHash && (await bcrypt.compare(currentPassword, user.passwordHash));
     if (!passwordMatches) {
+      noteSuspicious(req, 3, "password");
       return res.status(401).json({ error: "Incorrect current password." });
     }
 
@@ -6773,6 +6961,7 @@ function generateNextCaveId(stateCode, countyCode, existingCaves) {
 // Reached only when nothing above matched - a mistyped URL, or a route a
 // client is still calling that was since removed.
 app.use((req, res) => {
+  if (req.path.startsWith("/api/")) noteSuspicious(req, 1, "probe");
   res.status(404).json({ error: `Not found: ${req.method} ${req.path}` });
 });
 

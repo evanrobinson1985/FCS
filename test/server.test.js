@@ -108,6 +108,11 @@ before(async () => {
   // specifically exercise state *restriction* use their own dedicated,
   // narrowly-scoped user instead - see "allowed states" describe block.
   await seedUser({ username: "member1", password: MEMBER_PASSWORD, role: "member", allowedStates: ["FL", "GA"] });
+  // Many tests deliberately have a member try forbidden things, which would
+  // otherwise get member1 automatically restricted part-way through the run.
+  // "automatic restriction of suspicious accounts" below turns it back on.
+  const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+  await request(app).post("/api/site-config").set("Authorization", `Bearer ${wm}`).send({ autoRestrictEnabled: false });
 });
 
 after(() => {
@@ -4059,5 +4064,83 @@ describe("email confirmation at sign-up", () => {
       assert.equal(usersRes.body.find((u) => u.username === name).emailUnconfirmed, false);
     }
     await login("member1", MEMBER_PASSWORD);
+  });
+});
+
+describe("automatic restriction of suspicious accounts", () => {
+  let wm;
+  const setEnabled = (on) => request(app).post("/api/site-config").set(wm).send({ autoRestrictEnabled: on, autoRestrictMinutes: 60 });
+  before(async () => {
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await seedUser({ username: "snoop", password: "SnoopPass123!", role: "member" });
+    await seedUser({ username: "prober", password: "ProberPass123!", role: "member" });
+    await seedUser({ username: "calmmember", password: "CalmMemberPass1!", role: "member" });
+    await seedUser({ username: "boldadmin", password: "BoldAdminPass123!", role: "admin" });
+    await setEnabled(true);
+  });
+  after(async () => { await setEnabled(false); });
+
+  test("repeatedly using webmaster-only features signs the account out and blocks login", async () => {
+    const h = { Authorization: `Bearer ${await login("snoop", "SnoopPass123!")}` };
+    for (let i = 0; i < 6; i++) assert.equal((await request(app).get("/api/users").set(h)).status, 403);
+    assert.equal((await request(app).get("/api/cave-database").set(h)).status, 200, "not restricted yet");
+    assert.equal((await request(app).get("/api/security-logs").set(h)).status, 403); // 7th: over the line
+    const after = await request(app).get("/api/cave-database").set(h);
+    assert.equal(after.status, 403);
+    assert.equal(after.body.restricted, true);
+    const relog = await request(app).post("/api/login").send({ username: "snoop", password: "SnoopPass123!" });
+    assert.equal(relog.status, 403);
+    assert.equal(relog.body.restricted, true);
+    assert.match(relog.body.error, /temporarily restricted/);
+
+    const list = await request(app).get("/api/users").set(wm);
+    const row = list.body.find((u) => u.username === "snoop");
+    assert.ok(row.restrictedUntil);
+    assert.match(row.restrictedReason, /role can't use/);
+    const logs = await request(app).get("/api/security-logs").set(wm);
+    assert.ok(logs.body.some((l) => l.username === "snoop" && l.action === "Account Restricted"));
+  });
+
+  test("a webmaster can lift it early", async () => {
+    const h = { Authorization: `Bearer ${await login("prober", "ProberPass123!")}` };
+    assert.equal((await request(app).post("/api/users/prober/lift-restriction").set(h)).status, 403);
+    for (let i = 0; i < 4; i++) await request(app).get("/api/cave-database?path=../../etc/passwd").set(h);
+    assert.equal((await request(app).post("/api/login").send({ username: "prober", password: "ProberPass123!" })).status, 403);
+    const lift = await request(app).post("/api/users/prober/lift-restriction").set(wm);
+    assert.equal(lift.status, 200);
+    await login("prober", "ProberPass123!");
+    assert.equal((await request(app).post("/api/users/prober/lift-restriction").set(wm)).status, 400, "nothing left to lift");
+  });
+
+  test("probing for pages that don't exist counts too", async () => {
+    const h = { Authorization: `Bearer ${await login("calmmember", "CalmMemberPass1!")}` };
+    for (let i = 0; i < 19; i++) await request(app).get(`/api/admin-${i}`).set(h);
+    assert.equal((await request(app).get("/api/cave-database").set(h)).status, 200, "19 points: still fine");
+    await request(app).post("/api/users/calmmember/lift-restriction").set(wm);
+  });
+
+  test("admins can be restricted; webmasters never are", async () => {
+    const a = { Authorization: `Bearer ${await login("boldadmin", "BoldAdminPass123!")}` };
+    for (let i = 0; i < 7; i++) await request(app).get("/api/site-config").set(a);
+    assert.equal((await request(app).get("/api/cave-database").set(a)).status, 403);
+    await request(app).post("/api/users/boldadmin/lift-restriction").set(wm);
+    for (let i = 0; i < 8; i++) await request(app).get("/api/cave-database?q=<script>x</script>").set(wm);
+    assert.equal((await request(app).get("/api/users").set(wm)).status, 200);
+  });
+
+  test("turned off, nothing is restricted", async () => {
+    await setEnabled(false);
+    try {
+      const h = { Authorization: `Bearer ${await login("calmmember", "CalmMemberPass1!")}` };
+      for (let i = 0; i < 10; i++) await request(app).get("/api/users").set(h);
+      assert.equal((await request(app).get("/api/cave-database").set(h)).status, 200);
+    } finally {
+      await setEnabled(true);
+    }
+  });
+
+  test("validates the settings", async () => {
+    assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: 2 })).status, 400);
+    assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictEnabled: "yes" })).status, 400);
   });
 });

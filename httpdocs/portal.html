@@ -60,7 +60,25 @@
         }
       }
 
-      return originalFetch(input, init);
+      var result = originalFetch(input, init);
+      if (!isSameOrigin) return result;
+      // An account the server has just restricted for suspicious activity
+      // (see server.js): say so once and go back to the login screen.
+      return result.then(function (response) {
+        if (response.status === 403 && !window.__fcsRestrictedShown) {
+          response.clone().json().then(function (body) {
+            if (!body || !body.restricted || window.__fcsRestrictedShown) return;
+            window.__fcsRestrictedShown = true;
+            try {
+              ["sessionToken", "assetToken", "role"].forEach(function (k) { sessionStorage.removeItem(k); });
+              localStorage.removeItem("role");
+            } catch (e) { /* storage blocked */ }
+            alert(body.error);
+            window.location.href = "/portal";
+          }).catch(function () {});
+        }
+        return response;
+      });
     };
   })();
 
@@ -613,6 +631,15 @@
         </label>
         <label>Lockout duration (minutes):<br>
           <input type="number" id="login-lockout-minutes-input" min="1" max="1440" step="1" style="padding: 6px; width: 80px;">
+        </label>
+      </div>
+      <div style="margin: 14px 0 10px; padding-top: 12px; border-top: 1px solid #e3e3e3;">
+        <label style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
+          <input type="checkbox" id="auto-restrict-enabled-input"> Automatically restrict accounts that act maliciously
+        </label>
+        <p style="margin: 6px 0 10px; color: #555;">A logged-in account is signed out and blocked for a while if, within 10 minutes, it keeps trying features its role can't use, probes for pages that don't exist, sends hacking-style input, floods the site with requests, or keeps entering the wrong current password. Webmasters are emailed, and can lift it early in Account Management. Webmaster accounts are never restricted.</p>
+        <label>Restriction length (minutes):<br>
+          <input type="number" id="auto-restrict-minutes-input" min="5" max="10080" step="1" style="padding: 6px; width: 90px;">
         </label>
       </div>
       <div>
@@ -5521,6 +5548,10 @@ function loadFcsDatabaseTable() {
       const lockoutMinutesInput = document.getElementById('login-lockout-minutes-input');
       if (lockoutThresholdInput) lockoutThresholdInput.value = status.loginLockoutThreshold ?? 5;
       if (lockoutMinutesInput) lockoutMinutesInput.value = status.loginLockoutMinutes ?? 15;
+      const autoRestrictEnabledInput = document.getElementById('auto-restrict-enabled-input');
+      const autoRestrictMinutesInput = document.getElementById('auto-restrict-minutes-input');
+      if (autoRestrictEnabledInput) autoRestrictEnabledInput.checked = status.autoRestrictEnabled !== false;
+      if (autoRestrictMinutesInput) autoRestrictMinutesInput.value = status.autoRestrictMinutes ?? 60;
 
       renderTabVisibilityList(status.hiddenTabs || []);
       renderMapToolVisibilityList(status.hiddenMapTools || []);
@@ -5623,7 +5654,12 @@ function loadFcsDatabaseTable() {
         const response = await fetch('/api/site-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ loginLockoutThreshold, loginLockoutMinutes }),
+          body: JSON.stringify({
+            loginLockoutThreshold,
+            loginLockoutMinutes,
+            autoRestrictEnabled: document.getElementById('auto-restrict-enabled-input').checked,
+            autoRestrictMinutes: parseInt(document.getElementById('auto-restrict-minutes-input').value, 10),
+          }),
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Save failed');
@@ -11963,7 +11999,11 @@ function displayUsers(users) {
   users.filter(u => u.status !== 'pending').forEach(user => {
     const row = document.createElement('tr');
     
-    const statusBadge = (user.isActive ?
+    const restrictedBadge = user.restrictedUntil
+      ? `<div style="margin-top: 3px; color: #b3261e; font-size: 0.85em;" title="${escapeStatsHtml(user.restrictedReason || '')}">⛔ Restricted until ${escapeStatsHtml(new Date(user.restrictedUntil).toLocaleString())}</div>` +
+        (user.restrictedReason ? `<div style="color: #6b4b4b; font-size: 0.8em; max-width: 260px;">${escapeStatsHtml(user.restrictedReason)}</div>` : '')
+      : '';
+    const statusBadge = restrictedBadge + (user.isActive ?
       '<span style="color: green;">Active</span>' :
       user.status === 'pending' ?
       '<span style="color: #b45309;">Awaiting approval</span>' :
@@ -12029,6 +12069,7 @@ function displayUsers(users) {
           ${user.isActive ? 'Disable' : 'Enable'}
         </button>
         <button onclick="deleteUser(${jsUsername})" class="btn-danger" style="margin-left: 5px;">Delete</button>
+        ${user.restrictedUntil ? `<button onclick="liftRestriction(${jsUsername})" class="btn-success" style="margin-top: 5px; display: block;">Lift restriction</button>` : ''}
         `}
       </td>
     `;
@@ -12130,6 +12171,18 @@ async function approveSignup(username) {
 async function rejectSignup(username) {
   if (!confirm(`Reject ${username}'s sign-up? Their account is deleted and they would need to sign up again.`)) return;
   await deleteUser(username, { skipConfirm: true, quiet: true });
+}
+
+async function liftRestriction(username) {
+  if (!confirm(`Lift the restriction on ${username}? They'll be able to log in again straight away.`)) return;
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(username)}/lift-restriction`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.error || 'Could not lift the restriction');
+    loadAccountManagement();
+  } catch (error) {
+    alert('Could not lift the restriction: ' + error.message);
+  }
 }
 
 // Toggle user status
