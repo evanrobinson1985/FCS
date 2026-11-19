@@ -4139,8 +4139,31 @@ describe("automatic restriction of suspicious accounts", () => {
     }
   });
 
+  test("by default it lasts until a webmaster lifts it", async () => {
+    await seedUser({ username: "lingerer", password: "LingererPass123!", role: "member" });
+    await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: 0 });
+    try {
+      const h = { Authorization: `Bearer ${await login("lingerer", "LingererPass123!")}` };
+      for (let i = 0; i < 7; i++) await request(app).get("/api/users").set(h);
+      const stored = JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).find((u) => u.username === "lingerer");
+      assert.equal(stored.restrictedIndefinitely, true);
+      assert.equal(stored.restrictedUntil, undefined, "no end time");
+      const relog = await request(app).post("/api/login").send({ username: "lingerer", password: "LingererPass123!" });
+      assert.equal(relog.status, 403);
+      assert.match(relog.body.error, /webmaster needs to review it/);
+      const row = (await request(app).get("/api/users").set(wm)).body.find((u) => u.username === "lingerer");
+      assert.equal(row.restricted, true);
+      assert.equal(row.restrictedUntil, null);
+      assert.equal((await request(app).post("/api/users/lingerer/lift-restriction").set(wm)).status, 200);
+      await login("lingerer", "LingererPass123!");
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: 60 });
+    }
+  });
+
   test("validates the settings", async () => {
     assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: 2 })).status, 400);
+    assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictMinutes: -1 })).status, 400);
     assert.equal((await request(app).post("/api/site-config").set(wm).send({ autoRestrictEnabled: "yes" })).status, 400);
   });
 });

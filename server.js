@@ -522,7 +522,8 @@ app.use(
 // tags, SQL fragments), flooding the API, or getting its own current
 // password wrong while changing account settings (a hijacked session).
 // Points expire after 10 minutes. At SUSPICION_THRESHOLD the account is
-// signed out and can't log in for siteConfig.autoRestrictMinutes; the
+// signed out and can't log in until a webmaster lifts it (or, if a length
+// is set in siteConfig.autoRestrictMinutes, until that runs out); the
 // webmasters are emailed and it shows in Account Management, where a
 // webmaster can lift it. Webmaster accounts are never restricted (so the
 // site can't lock out its own owner), only reported in the server log.
@@ -567,10 +568,15 @@ function noteSuspicious(req, points, reason) {
 }
 
 function isRestricted(user) {
-  return !!user && !!user.restrictedUntil && new Date(user.restrictedUntil).getTime() > Date.now();
+  if (!user) return false;
+  if (user.restrictedIndefinitely) return true;
+  return !!user.restrictedUntil && new Date(user.restrictedUntil).getTime() > Date.now();
 }
 
 function restrictedMessage(user) {
+  if (user.restrictedIndefinitely) {
+    return "This account has been restricted because of unusual activity. A webmaster needs to review it before you can log in again. If you think this is a mistake, contact a webmaster.";
+  }
   const minutes = Math.max(1, Math.ceil((new Date(user.restrictedUntil).getTime() - Date.now()) / 60000));
   const wait = minutes >= 120 ? `about ${Math.round(minutes / 60)} hours` : `about ${minutes} minute${minutes === 1 ? "" : "s"}`;
   return `This account has been temporarily restricted because of unusual activity. You can log in again in ${wait}. If you think this is a mistake, contact a webmaster.`;
@@ -586,7 +592,16 @@ function restrictAccount(username, reason, req) {
       return;
     }
     const now = new Date();
-    user.restrictedUntil = new Date(now.getTime() + siteConfig.autoRestrictMinutes * 60 * 1000).toISOString();
+    // 0 minutes means until a webmaster lifts it
+    const minutes = siteConfig.autoRestrictMinutes;
+    const howLong = minutes > 0 ? `for ${minutes} minutes` : "until a webmaster lifts it";
+    if (minutes > 0) {
+      user.restrictedUntil = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
+      delete user.restrictedIndefinitely;
+    } else {
+      user.restrictedIndefinitely = true;
+      delete user.restrictedUntil;
+    }
     user.restrictedReason = reason;
     user.restrictedAt = now.toISOString();
     user.restrictedIP = req.ip;
@@ -594,17 +609,19 @@ function restrictAccount(username, reason, req) {
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     user.restrictionLog = [
       ...(user.restrictionLog || []),
-      { at: user.restrictedAt, action: "Account Restricted", details: `Automatically, for ${siteConfig.autoRestrictMinutes} minutes: ${reason}`, ip: req.ip },
+      { at: user.restrictedAt, action: "Account Restricted", details: `Automatically, ${howLong}: ${reason}`, ip: req.ip },
     ].slice(-50);
     saveUsers(users);
     endActiveSession(username);
-    console.warn(`Account ${username} automatically restricted until ${user.restrictedUntil}: ${reason}`);
+    console.warn(`Account ${username} automatically restricted ${howLong}: ${reason}`);
     sendAdminNotification(
       getNotificationRecipients(["webmaster"]),
       "Florida Cave Survey - Account automatically restricted",
-      `The account "${username}" (${user.role}) was automatically restricted for ${siteConfig.autoRestrictMinutes} minutes ` +
+      `The account "${username}" (${user.role}) was automatically restricted ${howLong} ` +
         `because it ${reason}.\n\nLast address: ${req.ip}\nRequest: ${req.method} ${String(req.originalUrl).slice(0, 200)}\n\n` +
-        "It has been signed out and can't log in until the restriction ends. You can lift it early in Account Management."
+        (minutes > 0
+          ? "It has been signed out and can't log in until the restriction ends. You can lift it early in Account Management."
+          : "It has been signed out and can't log in until you lift the restriction in Account Management.")
     ).catch((err) => console.error("Failed to send restriction notice:", err));
   } catch (err) {
     console.error("Failed to restrict account:", err);
@@ -681,7 +698,8 @@ const DEFAULT_SITE_CONFIG = {
   // Automatic restriction of logged-in accounts that act maliciously (see
   // "Suspicious activity" below)
   autoRestrictEnabled: true,
-  autoRestrictMinutes: 60,
+  // 0 = until a webmaster lifts it
+  autoRestrictMinutes: 0,
   // Tab IDs (data-tab values in portal.html's tab bar) currently hidden
   // site-wide - for taking a broken or in-progress feature out of
   // circulation without a deploy. Applies to every role equally,
@@ -963,9 +981,9 @@ app.post(
     }
     if (
       autoRestrictMinutes !== undefined &&
-      (!Number.isInteger(autoRestrictMinutes) || autoRestrictMinutes < 5 || autoRestrictMinutes > 10080)
+      (!Number.isInteger(autoRestrictMinutes) || (autoRestrictMinutes !== 0 && (autoRestrictMinutes < 5 || autoRestrictMinutes > 10080)))
     ) {
-      return res.status(400).json({ error: "autoRestrictMinutes must be a whole number between 5 and 10080 (one week)." });
+      return res.status(400).json({ error: "autoRestrictMinutes must be 0 (until a webmaster lifts it) or a whole number between 5 and 10080 (one week)." });
     }
 
     const updated = { ...siteConfig };
@@ -5976,7 +5994,8 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
       signupIP: user.signupIP || null,
-      restrictedUntil: isRestricted(user) ? user.restrictedUntil : null,
+      restricted: isRestricted(user),
+      restrictedUntil: isRestricted(user) && !user.restrictedIndefinitely ? user.restrictedUntil : null,
       restrictedReason: isRestricted(user) ? user.restrictedReason || "" : null,
       isActive: user.status === "active",
       isTreasurer: isTreasurerAccount(user),
@@ -6115,6 +6134,7 @@ app.post("/api/users/:username/lift-restriction", authenticateToken, requireRole
   if (!user) return res.status(404).json({ error: "User not found" });
   if (!isRestricted(user)) return res.status(400).json({ error: "This account isn't restricted." });
   delete user.restrictedUntil;
+  delete user.restrictedIndefinitely;
   delete user.restrictedReason;
   user.restrictionLog = [
     ...(user.restrictionLog || []),

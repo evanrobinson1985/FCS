@@ -637,10 +637,17 @@
         <label style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
           <input type="checkbox" id="auto-restrict-enabled-input"> Automatically restrict accounts that act maliciously
         </label>
-        <p style="margin: 6px 0 10px; color: #555;">A logged-in account is signed out and blocked for a while if, within 10 minutes, it keeps trying features its role can't use, probes for pages that don't exist, sends hacking-style input, floods the site with requests, or keeps entering the wrong current password. Webmasters are emailed, and can lift it early in Account Management. Webmaster accounts are never restricted.</p>
-        <label>Restriction length (minutes):<br>
-          <input type="number" id="auto-restrict-minutes-input" min="5" max="10080" step="1" style="padding: 6px; width: 90px;">
-        </label>
+        <p style="margin: 6px 0 10px; color: #555;">A logged-in account is signed out and blocked if, within 10 minutes, it keeps trying features its role can't use, probes for pages that don't exist, sends hacking-style input, floods the site with requests, or keeps entering the wrong current password. Webmasters are emailed, and can lift it early in Account Management. Webmaster accounts are never restricted.</p>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <span>How long the restriction lasts:</span>
+          <label style="display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="auto-restrict-length" id="auto-restrict-indefinite-input" value="indefinite"> Until a webmaster lifts it
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <input type="radio" name="auto-restrict-length" id="auto-restrict-timed-input" value="timed"> For
+            <input type="number" id="auto-restrict-minutes-input" min="5" max="10080" step="1" style="padding: 6px; width: 90px;"> minutes
+          </label>
+        </div>
       </div>
       <div>
         <button type="button" class="btn-success" onclick="saveLoginLockoutSettings()">Save Login Security Settings</button>
@@ -5551,7 +5558,12 @@ function loadFcsDatabaseTable() {
       const autoRestrictEnabledInput = document.getElementById('auto-restrict-enabled-input');
       const autoRestrictMinutesInput = document.getElementById('auto-restrict-minutes-input');
       if (autoRestrictEnabledInput) autoRestrictEnabledInput.checked = status.autoRestrictEnabled !== false;
-      if (autoRestrictMinutesInput) autoRestrictMinutesInput.value = status.autoRestrictMinutes ?? 60;
+      const savedRestrictMinutes = status.autoRestrictMinutes ?? 0;
+      if (autoRestrictMinutesInput) autoRestrictMinutesInput.value = savedRestrictMinutes > 0 ? savedRestrictMinutes : 60;
+      const indefiniteInput = document.getElementById('auto-restrict-indefinite-input');
+      const timedInput = document.getElementById('auto-restrict-timed-input');
+      if (indefiniteInput) indefiniteInput.checked = savedRestrictMinutes === 0;
+      if (timedInput) timedInput.checked = savedRestrictMinutes > 0;
 
       renderTabVisibilityList(status.hiddenTabs || []);
       renderMapToolVisibilityList(status.hiddenMapTools || []);
@@ -5658,7 +5670,9 @@ function loadFcsDatabaseTable() {
             loginLockoutThreshold,
             loginLockoutMinutes,
             autoRestrictEnabled: document.getElementById('auto-restrict-enabled-input').checked,
-            autoRestrictMinutes: parseInt(document.getElementById('auto-restrict-minutes-input').value, 10),
+            autoRestrictMinutes: document.getElementById('auto-restrict-indefinite-input').checked
+              ? 0
+              : parseInt(document.getElementById('auto-restrict-minutes-input').value, 10),
           }),
         });
         const result = await response.json();
@@ -11999,8 +12013,8 @@ function displayUsers(users) {
   users.filter(u => u.status !== 'pending').forEach(user => {
     const row = document.createElement('tr');
     
-    const restrictedBadge = user.restrictedUntil
-      ? `<div style="margin-top: 3px; color: #b3261e; font-size: 0.85em;" title="${escapeStatsHtml(user.restrictedReason || '')}">⛔ Restricted until ${escapeStatsHtml(new Date(user.restrictedUntil).toLocaleString())}</div>` +
+    const restrictedBadge = user.restricted
+      ? `<div style="margin-top: 3px; color: #b3261e; font-size: 0.85em;" title="${escapeStatsHtml(user.restrictedReason || '')}">⛔ Restricted ${user.restrictedUntil ? 'until ' + escapeStatsHtml(new Date(user.restrictedUntil).toLocaleString()) : 'until lifted'}</div>` +
         (user.restrictedReason ? `<div style="color: #6b4b4b; font-size: 0.8em; max-width: 260px;">${escapeStatsHtml(user.restrictedReason)}</div>` : '')
       : '';
     const statusBadge = restrictedBadge + (user.isActive ?
@@ -12069,7 +12083,7 @@ function displayUsers(users) {
           ${user.isActive ? 'Disable' : 'Enable'}
         </button>
         <button onclick="deleteUser(${jsUsername})" class="btn-danger" style="margin-left: 5px;">Delete</button>
-        ${user.restrictedUntil ? `<button onclick="liftRestriction(${jsUsername})" class="btn-success" style="margin-top: 5px; display: block;">Lift restriction</button>` : ''}
+        ${user.restricted ? `<button onclick="liftRestriction(${jsUsername})" class="btn-success" style="margin-top: 5px; display: block;">Lift restriction</button>` : ''}
         `}
       </td>
     `;
