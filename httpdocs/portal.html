@@ -421,8 +421,30 @@
     <!-- Membership Dues settings (webmasters), filled by js/membership.js -->
     <div class="control-section" id="dues-settings-section"></div>
 
+    <!-- New sign-ups waiting for a webmaster, kept apart from the member list -->
+    <div class="control-section" id="pending-approvals-section">
+      <h4>Awaiting Approval <span id="pending-approvals-count" style="display: inline-block; min-width: 1.6em; padding: 1px 8px; margin-left: 6px; border-radius: 999px; background: #fdf0dc; color: #9a5b00; font-size: 0.85em; text-align: center;">0</span></h4>
+      <p style="margin: 0 0 10px; color: #555;">People who signed up and confirmed their email address. Approve to let them log in, or reject to delete the sign-up.</p>
+      <p id="pending-approvals-empty" style="margin: 0; color: #777; font-style: italic;">No accounts are waiting for approval.</p>
+      <div class="user-list-container" id="pending-approvals-list" hidden>
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Signed up</th>
+              <th>Sign-up IP</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="pending-approvals-table"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="control-section">
-      <h4>User Accounts</h4>
+      <h4>Members</h4>
       <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
         <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" autocomplete="off" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
         <button type="button" class="btn-success" onclick="searchUserAccounts()">Search</button>
@@ -11907,10 +11929,14 @@ function clearUserAccountSearch() {
 
 // Display users in the table
 function displayUsers(users) {
+  // New sign-ups awaiting approval get their own list above the members
+  const pending = users.filter(u => u.status === 'pending');
+  displayPendingApprovals(pending);
+
   const tableBody = document.getElementById('user-list-table');
   tableBody.innerHTML = '';
 
-  users.forEach(user => {
+  users.filter(u => u.status !== 'pending').forEach(user => {
     const row = document.createElement('tr');
     
     const statusBadge = (user.isActive ?
@@ -12021,6 +12047,67 @@ async function changeUserRole(username, newRole) {
   }
 }
 
+// The "Awaiting Approval" list on Account Management
+function displayPendingApprovals(pending) {
+  const body = document.getElementById('pending-approvals-table');
+  const list = document.getElementById('pending-approvals-list');
+  const empty = document.getElementById('pending-approvals-empty');
+  const count = document.getElementById('pending-approvals-count');
+  if (!body) return;
+  // The badge counts every waiting sign-up, even while a search narrows the list
+  const allPending = (lastLoadedUsers || []).filter(u => u.status === 'pending').length;
+  count.textContent = String(allPending);
+  body.innerHTML = '';
+  list.hidden = pending.length === 0;
+  empty.hidden = pending.length > 0;
+  empty.textContent = allPending && !pending.length ? 'No waiting sign-ups match the search.' : 'No accounts are waiting for approval.';
+
+  pending
+    .slice()
+    .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0)) // oldest first
+    .forEach(user => {
+      const jsUsername = escapeStatsHtml(JSON.stringify(user.username));
+      const signedUp = user.created
+        ? new Date(user.created).toLocaleDateString() + ' ' + new Date(user.created).toLocaleTimeString()
+        : 'Unknown';
+      const ip = user.signupIP || (Array.isArray(user.loginIPs) && user.loginIPs[0]) || 'Not recorded';
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${escapeStatsHtml(user.username)}</td>
+        <td>${escapeStatsHtml(user.fullName || [user.firstName, user.lastName].filter(Boolean).join(' '))}</td>
+        <td>${escapeStatsHtml(user.email)}${user.emailUnconfirmed ? '<div style="color: #b45309; font-size: 0.85em;">Email not confirmed</div>' : ''}</td>
+        <td>${escapeStatsHtml(signedUp)}</td>
+        <td style="font-size: 0.9em;">${escapeStatsHtml(ip)}</td>
+        <td style="white-space: nowrap;">
+          <button type="button" class="btn-success" onclick="approveSignup(${jsUsername})">Approve</button>
+          <button type="button" class="btn-danger" style="margin-left: 5px;" onclick="rejectSignup(${jsUsername})">Reject</button>
+        </td>
+      `;
+      body.appendChild(row);
+    });
+}
+
+async function approveSignup(username) {
+  if (!confirm(`Approve ${username}? They'll be able to log in as a member.`)) return;
+  try {
+    const response = await fetch('/api/toggle-user-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRFToken() },
+      body: JSON.stringify({ username, isActive: true })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) throw new Error(result.error || 'Could not approve the account');
+    loadAccountManagement();
+  } catch (error) {
+    alert('Could not approve ' + username + ': ' + error.message);
+  }
+}
+
+async function rejectSignup(username) {
+  if (!confirm(`Reject ${username}'s sign-up? Their account is deleted and they would need to sign up again.`)) return;
+  await deleteUser(username, { skipConfirm: true, quiet: true });
+}
+
 // Toggle user status
 async function toggleUserStatus(username, currentStatus) {
   const newStatus = !currentStatus;
@@ -12057,8 +12144,8 @@ async function toggleUserStatus(username, currentStatus) {
 }
 
 // Delete user
-async function deleteUser(username) {
-  if (!confirm(`Permanently delete user ${username}? This action cannot be undone.`)) {
+async function deleteUser(username, { skipConfirm = false, quiet = false } = {}) {
+  if (!skipConfirm && !confirm(`Permanently delete user ${username}? This action cannot be undone.`)) {
     return;
   }
 
@@ -12077,7 +12164,7 @@ async function deleteUser(username) {
 
     const result = await response.json();
     if (result.success) {
-      alert(`User ${username} deleted successfully`);
+      if (!quiet) alert(`User ${username} deleted successfully`);
       loadAccountManagement();
     } else {
       throw new Error(result.error);

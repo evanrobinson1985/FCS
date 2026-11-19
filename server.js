@@ -5805,6 +5805,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       twoFactorEnabled: !!user.twoFactorEnabled,
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
+      signupIP: user.signupIP || null,
       isActive: user.status === "active",
       isTreasurer: isTreasurerAccount(user),
       dues: duesView(user),
