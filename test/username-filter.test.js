@@ -1,6 +1,6 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const { isOffensiveName } = require("../lib/username-filter");
+const { isOffensiveName, isOffensivePersonName } = require("../lib/username-filter");
 
 describe("username filter", () => {
   test("blocks profanity, slurs and gruesome words, however they're disguised", () => {
@@ -24,6 +24,31 @@ describe("username filter", () => {
       "Kathleen", "Cassandra", "Titus", "Shelley", "Dixon",
     ]) {
       assert.equal(isOffensiveName(name), false, name);
+    }
+  });
+});
+
+describe("first and last name filter", () => {
+  test("blocks profanity, slurs and well-known joke names", () => {
+    for (const [first, last] of [
+      ["Heywood", "Jablowme"], ["Mike", "Hunt"], ["Ben", "Dover"], ["Hugh", "Jass"], ["Seymour", "Butts"],
+      ["Dixie", "Normus"], ["Fuck", "You"], ["Shit", "Head"], ["Adolf", "Hitler"], ["Corpse", "Eater"],
+      ["Jack", "Mehoff"], ["Amanda", "Hugginkiss"], ["Phil", "McCracken"],
+    ]) {
+      assert.equal(isOffensivePersonName(first, last), true, `${first} ${last}`);
+    }
+  });
+
+  test("accepts real names, including surnames that are also words", () => {
+    for (const [first, last] of [
+      ["Evan", "Robinson"], ["Daniel", "Aumack"], ["Shane", "Phillips"], ["Tom", "Turner"], ["Uriah", "Pryor"],
+      ["Scott", "Wilder"], ["Al", "Gore"], ["Enos", "Slaughter"], ["Dick", "Smith"], ["Richard", "Cockburn"],
+      ["John", "Hancock"], ["Mary", "Butts"], ["Bob", "Coon"], ["Joe", "Blood"], ["Mike", "Hunter"], ["Ben", "Dovey"],
+      ["Hugh", "Jackman"], ["Dixie", "Carter"], ["Anita", "Baker"], ["Barry", "White"], ["Ann", "Killer"],
+      ["Kathy", "Kuntz"], ["Mary-Jane", "O'Neil"], ["José", "St. John"], ["Jo", "Boner"], ["Peter", "Fagg"],
+      ["Ted", "Crapper"],
+    ]) {
+      assert.equal(isOffensivePersonName(first, last), false, `${first} ${last}`);
     }
   });
 });

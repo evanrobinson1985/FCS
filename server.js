@@ -24,7 +24,7 @@ const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
 const githubUpdates = require("./lib/github-updates");
 const attackDetect = require("./lib/attack-detect");
-const { isOffensiveName, OFFENSIVE_NAME_MESSAGE } = require("./lib/username-filter");
+const { isOffensiveName, OFFENSIVE_NAME_MESSAGE, isOffensivePersonName, OFFENSIVE_PERSON_NAME_MESSAGE } = require("./lib/username-filter");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
 // the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
 const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
@@ -337,6 +337,11 @@ function nameFields(req, res) {
   const lastName = cleanPersonName(req.body && req.body.lastName);
   if (!firstName || !lastName) {
     res.status(400).json({ error: "Please enter a first and last name (letters, spaces, hyphens, apostrophes and periods; up to 50 characters each)." });
+    return null;
+  }
+  // No profanity, slurs or joke names (lib/username-filter.js)
+  if (isOffensivePersonName(firstName, lastName)) {
+    res.status(400).json({ error: OFFENSIVE_PERSON_NAME_MESSAGE });
     return null;
   }
   return { firstName, lastName, fullName: `${firstName} ${lastName}` };

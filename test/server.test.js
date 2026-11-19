@@ -4288,4 +4288,15 @@ describe("usernames can't contain profanity or gruesome words", () => {
     const fine = await request(app).post("/api/change-username").set(h).send({ newUsername: "Sinkhole_Sam", currentPassword: "RenamerPass123!" });
     assert.equal(fine.status, 200);
   });
+
+  test("joke or offensive first and last names are refused too", async () => {
+    const signup = await request(app).post("/api/create-account").send({
+      firstName: "Heywood", lastName: "Jablowme", username: "heywood1", email: "heywood@example.com", password: "HeywoodPass123!",
+    });
+    assert.equal(signup.status, 400);
+    assert.match(signup.body.error, /real first and last name/);
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Mike", lastName: "Hunt" })).status, 400);
+    assert.equal((await request(app).post("/api/users/member1/name").set(wm).send({ firstName: "Enos", lastName: "Slaughter" })).status, 200);
+  });
 });
