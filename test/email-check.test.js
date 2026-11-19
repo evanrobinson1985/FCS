@@ -66,6 +66,12 @@ describe("email check", () => {
     assert.match((await check("x@10minutemail.com")).reason, /permanent/);
   });
 
+  test("uses the large maintained list too, including subdomains", async () => {
+    assert.equal((await check("x@anonmart.com")).ok, false);
+    assert.equal((await check("x@guerrillamail.info")).ok, false);
+    assert.equal((await check("x@inbox.mailinator.com")).ok, false);
+  });
+
   test("rejects malformed addresses", async () => {
     for (const bad of ["", "nope", "a@b", "a@@b.com", "a b@c.com", "<x>@y.com", "a@-.com", "a@b..com"]) {
       assert.equal((await check(bad)).ok, false, bad);

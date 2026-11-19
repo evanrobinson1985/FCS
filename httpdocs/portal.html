@@ -11910,6 +11910,8 @@ function displayUsers(users) {
     
     const statusBadge = (user.isActive ?
       '<span style="color: green;">Active</span>' :
+      user.status === 'pending' ?
+      '<span style="color: #b45309;">Awaiting approval</span>' :
       '<span style="color: red;">Inactive</span>') +
       (user.emailUnconfirmed ? '<div style="color: #b45309; font-size: 0.85em;">Email not confirmed</div>' : '');
     

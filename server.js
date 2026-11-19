@@ -5964,8 +5964,11 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
           timestamp: user.created,
           action: "Account Created",
           username: user.username,
-          ipAddress: "system",
-          details: `Account created with role: ${user.role}`
+          // Where a self sign-up came from. Accounts from before this was
+          // recorded fall back to their first address if they've never
+          // logged in (the list is reordered by later logins).
+          ipAddress: user.signupIP || (!user.lastLogin && user.loginIPs && user.loginIPs[0]) || "not recorded",
+          details: user.signupIP ? `Signed up as a ${user.role}` : `Account created with role: ${user.role}`
         });
       }
 
@@ -6066,6 +6069,7 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       isEmailVerified: false,
       twoFactorEnabled: false,
       loginIPs: [req.ip],
+      signupIP: req.ip,
     };
     const verifyUrl = startEmailVerification(newUser, req);
 
