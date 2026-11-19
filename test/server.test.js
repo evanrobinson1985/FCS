@@ -3950,6 +3950,8 @@ describe("email confirmation at sign-up", () => {
     assert.equal(stored("confirmme"), undefined, "nothing is created before confirming");
     const waiting = JSON.parse(fs.readFileSync(pendingFile(), "utf8")).find((p) => p.username === "confirmme");
     assert.ok(waiting.passwordHash.startsWith("$2"));
+    const minutesLeft = (new Date(waiting.emailVerifyExpires) - Date.now()) / 60000;
+    assert.ok(minutesLeft > 9 && minutesLeft <= 10, `the link should last 10 minutes, got ${minutesLeft}`);
     assert.notEqual(waiting.emailVerifyTokenHash, token, "only a hash of the code is stored");
 
     const wm = await login("webmaster1", WEBMASTER_PASSWORD);

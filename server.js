@@ -2587,7 +2587,9 @@ function isAssetRequest(req) {
 //
 // Only accounts created with this in place carry a confirmation token;
 // accounts from before it are left exactly as they were.
-const EMAIL_VERIFY_HOURS = 48;
+// Short on purpose: the person is at the sign-up form and should have the
+// email within a minute or two. An expired link just means signing up again.
+const EMAIL_VERIFY_MINUTES = 10;
 
 function isEmailUnconfirmed(user) {
   return !!user && !user.isEmailVerified && !!user.emailVerifyTokenHash;
@@ -2598,7 +2600,7 @@ function isEmailUnconfirmed(user) {
 function startEmailVerification(user, req) {
   const rawToken = crypto.randomBytes(32).toString("hex");
   user.emailVerifyTokenHash = hashResetToken(rawToken);
-  user.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_HOURS * 60 * 60 * 1000).toISOString();
+  user.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_MINUTES * 60 * 1000).toISOString();
   // /portal, not /, so the link also works while the site is in
   // maintenance mode
   return `${siteOrigin(req)}/portal?verifyEmail=${rawToken}`;
@@ -2614,9 +2616,9 @@ async function sendVerificationEmail(user, verifyUrl) {
     text:
       `Hi ${user.firstName || user.username},\n\n` +
       "Thanks for signing up for the Florida Cave Survey. Please confirm this is your email address " +
-      `by opening this link (it works for ${EMAIL_VERIFY_HOURS} hours):\n\n` +
+      `by opening this link within ${EMAIL_VERIFY_MINUTES} minutes:\n\n` +
       `${verifyUrl}\n\n` +
-      "Once it's confirmed, your account goes to an administrator for approval, and you'll be able to log in after that.\n\n" +
+      "Your account is created when you open the link, then it goes to an administrator for approval. If the link has expired, just sign up again.\n\n" +
       "If you didn't sign up, you can ignore this email - nothing will happen.",
   });
 }
@@ -2652,7 +2654,7 @@ function savePendingSignups(list) {
 function startPendingSignupVerification(pending, req) {
   const rawToken = crypto.randomBytes(32).toString("hex");
   pending.emailVerifyTokenHash = hashResetToken(rawToken);
-  pending.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_HOURS * 60 * 60 * 1000).toISOString();
+  pending.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_MINUTES * 60 * 1000).toISOString();
   return `${siteOrigin(req)}/portal?verifyEmail=${rawToken}`;
 }
 
@@ -6148,7 +6150,7 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       emailConfirmationSent: true,
       message:
         "Check your email. Your account has NOT been created yet: it is created only when you open the " +
-        `confirmation link we just sent (it works for ${EMAIL_VERIFY_HOURS} hours). An administrator then reviews it before you can log in.`,
+        `confirmation link we just sent, and the link expires in ${EMAIL_VERIFY_MINUTES} minutes. An administrator then reviews it before you can log in.`,
     });
   } catch (error) {
     console.error("Error creating account:", error);
@@ -6234,7 +6236,7 @@ app.post("/api/verify-email", authLimiter, express.json(), async (req, res) => {
     const user = users.find((u) => u.emailVerifyTokenHash === tokenHash);
     if (!user || !user.emailVerifyExpires || new Date(user.emailVerifyExpires) < new Date()) {
       return res.status(400).json({
-        error: "This confirmation link is invalid or has expired. Log in with your username and password to be sent a new one.",
+        error: `This confirmation link is invalid or has expired (links work for ${EMAIL_VERIFY_MINUTES} minutes). No account was created. Please sign up again.`,
       });
     }
     user.isEmailVerified = true;
