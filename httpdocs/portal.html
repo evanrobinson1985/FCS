@@ -694,10 +694,22 @@
 
     <div class="control-section">
       <h4>Usage Snapshot</h4>
-      <p style="margin-bottom: 10px;">A current snapshot of accounts, not a historical trend - this app doesn't keep a login history beyond each account's most recent login.</p>
+      <p style="margin-bottom: 10px;">A current snapshot of accounts, not a historical trend - this app doesn't keep a login history beyond each account's most recent login. Select a number to see which accounts it counts.</p>
+      <style>
+        #usage-snapshot-grid .us-pick { cursor: pointer; border: 0; background: none; font: inherit; color: inherit; padding: 2px 6px; border-radius: 6px; }
+        #usage-snapshot-grid .stats-card.us-card { cursor: pointer; transition: box-shadow .15s, outline-color .15s; outline: 2px solid transparent; }
+        #usage-snapshot-grid .stats-card.us-card:hover, #usage-snapshot-grid .stats-card.us-card:focus-visible { box-shadow: 0 2px 10px rgba(42, 93, 132, .25); }
+        #usage-snapshot-grid .stats-card.us-selected, #usage-snapshot-grid .us-pick.us-selected { outline: 2px solid #2a5d84; }
+        #usage-snapshot-grid .us-pick:hover, #usage-snapshot-grid .us-pick:focus-visible { background: #e8f0f7; }
+        #usage-snapshot-detail { margin-top: 12px; }
+        #usage-snapshot-detail table { width: 100%; border-collapse: collapse; }
+        #usage-snapshot-detail th, #usage-snapshot-detail td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; }
+        #usage-snapshot-detail th { background: #f4f6f8; font-weight: 600; }
+      </style>
       <div id="usage-snapshot-grid" class="stats-grid">
         <!-- Populated by loadUsageSnapshot() -->
       </div>
+      <div id="usage-snapshot-detail" hidden></div>
     </div>
 
     <div class="control-section">
@@ -5854,27 +5866,102 @@ function loadFcsDatabaseTable() {
         const loggedInLast7d = users.filter(u => u.lastLogin && (now - new Date(u.lastLogin).getTime()) < 7 * DAY_MS).length;
         const neverLoggedIn = users.filter(u => !u.lastLogin).length;
 
-        const stat = (label, value) => `
-          <div class="stats-card">
+        // Every count keeps the accounts behind it, so selecting it can list them
+        const groups = {
+          total: { title: 'All accounts', users },
+          active: { title: 'Active accounts', users: users.filter(u => u.isActive) },
+          inactive: { title: 'Inactive accounts (disabled or awaiting approval)', users: users.filter(u => !u.isActive) },
+          member: { title: 'Members', users: users.filter(u => u.role === 'member') },
+          admin: { title: 'Admins', users: users.filter(u => u.role === 'admin') },
+          webmaster: { title: 'Webmasters', users: users.filter(u => u.role === 'webmaster') },
+          twofactor: { title: 'Accounts with 2FA turned on', users: users.filter(u => u.twoFactorEnabled) },
+          day: { title: 'Logged in during the last 24 hours', users: users.filter(u => u.lastLogin && (now - new Date(u.lastLogin).getTime()) < DAY_MS) },
+          week: { title: 'Logged in during the last 7 days', users: users.filter(u => u.lastLogin && (now - new Date(u.lastLogin).getTime()) < 7 * DAY_MS) },
+          never: { title: 'Never logged in', users: users.filter(u => !u.lastLogin) },
+        };
+        window.__usageSnapshotGroups = groups;
+
+        const stat = (label, key, value) => `
+          <div class="stats-card us-card" role="button" tabindex="0" data-us-group="${key}" aria-label="${escapeStatsHtml(label)}: ${value}. Show these accounts">
             <div class="stats-card-body">
               <div class="stat-item"><span class="stat-label">${label}:</span><span class="stat-value">${value}</span></div>
             </div>
           </div>`;
+        const pick = (key, value, label) =>
+          `<button type="button" class="us-pick" data-us-group="${key}" aria-label="${label}: ${value}. Show these accounts">${value}</button>`;
 
         gridEl.innerHTML = [
-          stat('Total Accounts', total),
-          stat('Active', active),
-          stat('Inactive', total - active),
-          stat('Members / Admins / Webmasters', `${byRole.member} / ${byRole.admin} / ${byRole.webmaster}`),
-          stat('2FA Enabled', twoFactorOn),
-          stat('Logged In (last 24h)', loggedInLast24h),
-          stat('Logged In (last 7 days)', loggedInLast7d),
-          stat('Never Logged In', neverLoggedIn),
+          stat('Total Accounts', 'total', total),
+          stat('Active', 'active', active),
+          stat('Inactive', 'inactive', total - active),
+          `<div class="stats-card">
+            <div class="stats-card-body">
+              <div class="stat-item"><span class="stat-label">Members / Admins / Webmasters:</span><span class="stat-value">${pick('member', byRole.member, 'Members')} / ${pick('admin', byRole.admin, 'Admins')} / ${pick('webmaster', byRole.webmaster, 'Webmasters')}</span></div>
+            </div>
+          </div>`,
+          stat('2FA Enabled', 'twofactor', twoFactorOn),
+          stat('Logged In (last 24h)', 'day', loggedInLast24h),
+          stat('Logged In (last 7 days)', 'week', loggedInLast7d),
+          stat('Never Logged In', 'never', neverLoggedIn),
         ].join('');
+
+        if (!gridEl.dataset.usWired) {
+          gridEl.dataset.usWired = '1';
+          const choose = (target) => {
+            const el = target.closest('[data-us-group]');
+            if (el) showUsageSnapshotGroup(el.dataset.usGroup, el);
+          };
+          gridEl.addEventListener('click', (e) => choose(e.target));
+          gridEl.addEventListener('keydown', (e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.us-card')) { e.preventDefault(); choose(e.target); }
+          });
+        }
+        // Keep an open list current after a refresh
+        const open = document.getElementById('usage-snapshot-detail');
+        if (open && !open.hidden && open.dataset.group) {
+          const el = gridEl.querySelector(`[data-us-group="${open.dataset.group}"]`);
+          open.dataset.group = '';
+          if (el) showUsageSnapshotGroup(el.dataset.usGroup, el);
+        }
       } catch (error) {
         console.error('Error loading usage snapshot:', error);
         gridEl.textContent = 'Unable to load usage snapshot.';
       }
+    }
+
+    // Lists the accounts behind one Usage Snapshot number (selecting the
+    // same number again closes the list)
+    function showUsageSnapshotGroup(key, el) {
+      const detail = document.getElementById('usage-snapshot-detail');
+      const group = (window.__usageSnapshotGroups || {})[key];
+      if (!detail || !group) return;
+      document.querySelectorAll('#usage-snapshot-grid .us-selected').forEach(x => x.classList.remove('us-selected'));
+      if (!detail.hidden && detail.dataset.group === key) {
+        detail.hidden = true;
+        detail.dataset.group = '';
+        return;
+      }
+      el.classList.add('us-selected');
+      detail.dataset.group = key;
+      detail.hidden = false;
+      const when = (iso) => iso ? new Date(iso).toLocaleString() : 'Never';
+      const statusText = (u) => u.isActive ? 'Active' : (u.status === 'pending' ? 'Awaiting approval' : 'Inactive');
+      const rows = group.users.slice().sort((a, b) => String(a.username).localeCompare(String(b.username)))
+        .map(u => `<tr>
+            <td>${escapeStatsHtml(u.username)}</td>
+            <td>${escapeStatsHtml(u.fullName || [u.firstName, u.lastName].filter(Boolean).join(' '))}</td>
+            <td>${escapeStatsHtml(u.role)}</td>
+            <td>${escapeStatsHtml(statusText(u))}</td>
+            <td>${escapeStatsHtml(when(u.lastLogin))}</td>
+          </tr>`).join('');
+      detail.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px;">
+          <strong>${escapeStatsHtml(group.title)} (${group.users.length})</strong>
+          <button type="button" class="btn-warning" style="padding: 4px 10px;" onclick="showUsageSnapshotGroup(${escapeStatsHtml(JSON.stringify(key))})">Close</button>
+        </div>
+        ${group.users.length
+          ? `<div style="overflow-x: auto;"><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Last login</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : '<p style="margin: 0; color: #777;">No accounts.</p>'}`;
     }
 
     // Calls GET /api/diagnostics/storage-paths and prints the result as
