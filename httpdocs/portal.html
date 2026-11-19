@@ -935,9 +935,6 @@
 <button class="btn-warning" onclick="clearDatabaseSearch()">Clear</button>
 </div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-<select id="database-filter-state" onchange="filterDatabase()" style="padding: 8px;">
-<option value="all">All States</option>
-</select>
 <select id="database-filter-county" onchange="filterDatabase()" style="padding: 8px;">
 <option value="all">All Counties</option>
 </select>
@@ -5105,7 +5102,6 @@ function loadFcsDatabaseTable() {
       }
 
       const pairs = [
-        { stateId: 'database-filter-state', countyId: 'database-filter-county', includeAllOption: true, onChange: () => { if (typeof filterDatabase === 'function') filterDatabase(); } },
       ];
 
       pairs.forEach(({ stateId, countyId, includeAllOption, onChange }) => {
@@ -5139,6 +5135,15 @@ function loadFcsDatabaseTable() {
         if ([...editCountySelect.options].some(o => o.value === previousEditCountyValue)) {
           editCountySelect.value = previousEditCountyValue;
         }
+      }
+
+      // The Cave Database tab's county filter: this site only covers
+      // Florida, so there's no state picker - just Florida's counties.
+      const dbCountySelect = document.getElementById('database-filter-county');
+      if (dbCountySelect) {
+        const previousDbCountyValue = dbCountySelect.value || 'all';
+        populateCountySelect(dbCountySelect, 'FL', { includeAllOption: true });
+        dbCountySelect.value = [...dbCountySelect.options].some(o => o.value === previousDbCountyValue) ? previousDbCountyValue : 'all';
       }
 
       // The Interactive Map's county filter isn't part of a state/county
@@ -7761,16 +7766,16 @@ window.addEventListener('error', function(e) {
 
     function clearDatabaseSearch() {
       document.getElementById('database-search').value = '';
-      document.getElementById('database-filter-state').value = 'all';
-      populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
+      document.getElementById('database-filter-county').value = 'all';
       document.getElementById('database-filter-type').value = 'all';
       document.getElementById('database-filter-status').value = 'all';
       document.getElementById('database-filter-entrance-type').value = 'all';
       filterDatabase();
     }
 
-    function filterDatabase(searchTerm = '') {
-      const state = document.getElementById('database-filter-state')?.value || 'all';
+    function filterDatabase(searchTerm) {
+      // The dropdowns call this with no argument: keep whatever is in the search box
+      if (searchTerm === undefined) searchTerm = (document.getElementById('database-search').value || '').trim().toLowerCase();
       const county = document.getElementById('database-filter-county').value;
       const type = document.getElementById('database-filter-type').value;
       const status = document.getElementById('database-filter-status').value;
@@ -7784,11 +7789,6 @@ window.addEventListener('error', function(e) {
           (cave.name && cave.name.toLowerCase().includes(searchTerm)) ||
           (cave.id && cave.id.toLowerCase().includes(searchTerm))
         );
-      }
-
-      // Apply state filter
-      if (state !== 'all') {
-        filteredData = filteredData.filter(cave => resolveCaveStateAndCounty(cave).state === state);
       }
 
       // Apply county filter
@@ -8778,8 +8778,7 @@ window.addEventListener('error', function(e) {
           
           // Initialize the search/filter state
           document.getElementById('database-search').value = '';
-          document.getElementById('database-filter-state').value = 'all';
-          populateCountySelect(document.getElementById('database-filter-county'), 'all', { includeAllOption: true });
+          document.getElementById('database-filter-county').value = 'all';
           document.getElementById('database-filter-type').value = 'all';
           document.getElementById('database-filter-status').value = 'all';
           document.getElementById('database-filter-entrance-type').value = 'all';
