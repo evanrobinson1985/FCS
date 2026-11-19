@@ -4265,3 +4265,27 @@ describe("attack detection and Security Alerts", () => {
     assert.equal((await alerts()).groups.length, 0);
   });
 });
+
+describe("usernames can't contain profanity or gruesome words", () => {
+  test("refused at sign-up, by a webmaster creating an account, and when renaming", async () => {
+    const signup = await request(app).post("/api/create-account").send({
+      firstName: "Rude", lastName: "Person", username: "Sh1t_Lord", email: "rude@example.com", password: "RudePerson123!",
+    });
+    assert.equal(signup.status, 400);
+    assert.match(signup.body.error, /isn't allowed/);
+    assert.doesNotMatch(signup.body.error, /shit/i, "doesn't repeat the word back");
+
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const created = await request(app).post("/api/create-user").set("Authorization", `Bearer ${wm}`).send({
+      username: "CorpseEater", email: "corpse@example.com", password: "CorpseEater123!", role: "member", firstName: "C", lastName: "E",
+    });
+    assert.equal(created.status, 400);
+
+    await seedUser({ username: "renamer", password: "RenamerPass123!", role: "member" });
+    const h = { Authorization: `Bearer ${await login("renamer", "RenamerPass123!")}` };
+    const rename = await request(app).post("/api/change-username").set(h).send({ newUsername: "Murder_Man", currentPassword: "RenamerPass123!" });
+    assert.equal(rename.status, 400);
+    const fine = await request(app).post("/api/change-username").set(h).send({ newUsername: "Sinkhole_Sam", currentPassword: "RenamerPass123!" });
+    assert.equal(fine.status, 200);
+  });
+});

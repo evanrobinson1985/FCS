@@ -24,6 +24,7 @@ const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
 const githubUpdates = require("./lib/github-updates");
 const attackDetect = require("./lib/attack-detect");
+const { isOffensiveName, OFFENSIVE_NAME_MESSAGE } = require("./lib/username-filter");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
 // the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
 const EMAIL_DNS_CHECK = process.env.NODE_ENV !== "test" && process.env.EMAIL_DNS_CHECK !== "off";
@@ -6208,6 +6209,10 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
         error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
       });
     }
+    // No profanity, slurs or gruesome words (lib/username-filter.js)
+    if (isOffensiveName(username)) {
+      return res.status(400).json({ error: OFFENSIVE_NAME_MESSAGE });
+    }
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
@@ -6525,6 +6530,10 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       return res.status(400).json({
         error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
       });
+    }
+    // No profanity, slurs or gruesome words (lib/username-filter.js)
+    if (isOffensiveName(username)) {
+      return res.status(400).json({ error: OFFENSIVE_NAME_MESSAGE });
     }
     if (!/^[^\s<>"'&]+@[^\s<>"'&]+\.[^\s<>"'&]+$/.test(email)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
@@ -6924,6 +6933,10 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
       return res.status(400).json({
         error: "Username must be 3-32 characters: letters, numbers, periods, underscores, and hyphens only.",
       });
+    }
+    // No profanity, slurs or gruesome words (lib/username-filter.js)
+    if (isOffensiveName(newUsername)) {
+      return res.status(400).json({ error: OFFENSIVE_NAME_MESSAGE });
     }
 
     const users = loadUsers();
