@@ -2091,7 +2091,14 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
           error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
         });
       }
-      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      // Signed up but hasn't opened the email link yet (only said once the
+      // password is proven, like every other account status)
+      if (await findPendingSignupByLogin(loadPendingSignups(), username, password)) {
+        return res.status(403).json({
+          error: "Please confirm your email address first, using the link we emailed you when you signed up. Your account is created when you do.",
+          emailUnconfirmed: true,
+        });
+      }
       recordUnknownLoginFailure(username);
       return res.status(401).json({ error: "Invalid username or password" });
     }
@@ -2612,6 +2619,56 @@ async function sendVerificationEmail(user, verifyUrl) {
       "Once it's confirmed, your account goes to an administrator for approval, and you'll be able to log in after that.\n\n" +
       "If you didn't sign up, you can ignore this email - nothing will happen.",
   });
+}
+
+// ---- Sign-ups waiting for their email to be confirmed ---------------------
+// A sign-up is NOT an account until its email address is confirmed: it waits
+// here (not in users.json), so it can't log in, doesn't appear in Account
+// Management, and simply disappears if the link isn't opened in time. Only
+// opening the emailed link creates the account (still awaiting approval).
+const PENDING_SIGNUPS_FILE = path.join(DATA_DIR, "pending-signups.json");
+const MAX_PENDING_SIGNUPS = 500;
+
+function loadPendingSignups() {
+  let list = [];
+  try {
+    if (fs.existsSync(PENDING_SIGNUPS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PENDING_SIGNUPS_FILE, "utf8"));
+      if (Array.isArray(data)) list = data;
+    }
+  } catch (err) {
+    console.error("Error loading pending sign-ups:", err);
+  }
+  const now = Date.now();
+  return list.filter((p) => p && p.emailVerifyExpires && new Date(p.emailVerifyExpires).getTime() > now);
+}
+
+function savePendingSignups(list) {
+  writeFileAtomicSync(PENDING_SIGNUPS_FILE, JSON.stringify(list, null, 2));
+}
+
+// Gives a waiting sign-up a fresh link (replacing any earlier one) and
+// returns it to email.
+function startPendingSignupVerification(pending, req) {
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  pending.emailVerifyTokenHash = hashResetToken(rawToken);
+  pending.emailVerifyExpires = new Date(Date.now() + EMAIL_VERIFY_HOURS * 60 * 60 * 1000).toISOString();
+  return `${siteOrigin(req)}/portal?verifyEmail=${rawToken}`;
+}
+
+// The waiting sign-up with this username whose password matches, or null.
+// Always does exactly one bcrypt comparison, so it takes as long as a
+// login attempt whether or not such a sign-up exists.
+async function findPendingSignupByLogin(pendingList, username, password) {
+  const candidates = pendingList.filter((p) => p.username === username);
+  if (!candidates.length) {
+    await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+    return null;
+  }
+  for (const p of candidates) {
+    if (await bcrypt.compare(password, p.passwordHash)) return p;
+  }
+  return null;
 }
 
 // An unconfirmed sign-up whose link has run out doesn't hold on to its
@@ -6032,72 +6089,66 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     if (!names) return;
 
     let users = loadUsers();
+    if (usersFileUnreadable) {
+      // Can't tell whether the name or address is taken
+      return res.status(500).json({ error: "Sign-up is temporarily unavailable. Please try again later." });
+    }
 
-    // An unconfirmed sign-up whose link ran out gives way to this one
+    // An unconfirmed sign-up from before confirmation came first, whose
+    // link ran out, gives way to this one
     const sameName = (u) => String(u.username).toLowerCase() === username.toLowerCase();
     const sameEmail = (u) => String(u.email).toLowerCase() === email.toLowerCase();
-    users = users.filter((u) => !(isAbandonedSignup(u) && (sameName(u) || sameEmail(u))));
+    const abandoned = users.filter((u) => isAbandonedSignup(u) && (sameName(u) || sameEmail(u)));
+    if (abandoned.length) {
+      users = users.filter((u) => !abandoned.includes(u));
+      saveUsers(users);
+    }
 
-    // Check if username or email already exists
+    // Check if username or email already belongs to an account
     if (isUsernameInUse(users, username) || isUsernameRetired(username, null)) {
       return res.status(400).json({ error: "Username already exists" });
     }
-
     if (users.find((u) => String(u.email).toLowerCase() === email.toLowerCase())) {
       return res.status(400).json({ error: "Email already exists" });
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    // Signing up again with the same address replaces the earlier attempt
+    // (a new link, the new details). The same username with a different
+    // address may also wait here; whichever is confirmed first gets it.
+    let pendingList = loadPendingSignups().filter((p) => !sameEmail(p));
+    if (pendingList.length >= MAX_PENDING_SIGNUPS) {
+      return res.status(503).json({ error: "Too many sign-ups are waiting to be confirmed. Please try again later." });
+    }
 
-    // Create new user - never store the plaintext password. Starts
-    // "pending" rather than "active": a self-registered account should not
-    // get real access until a webmaster reviews and activates it.
-    const newUser = {
-      id: `member-${Date.now()}`,
+    const pending = {
       username,
       email,
-      passwordHash,
+      passwordHash: await bcrypt.hash(password, 12),
       firstName: names.firstName,
       lastName: names.lastName,
       fullName: names.fullName,
-      nssNumber: "",
-      role: "member",
-      status: "pending",
       created: new Date().toISOString(),
-      lastLogin: null,
-      loginAttempts: 0,
-      isEmailVerified: false,
-      twoFactorEnabled: false,
-      loginIPs: [req.ip],
       signupIP: req.ip,
     };
-    const verifyUrl = startEmailVerification(newUser, req);
+    const verifyUrl = startPendingSignupVerification(pending, req);
+    pendingList.push(pending);
+    savePendingSignups(pendingList);
 
-    users.push(newUser);
-    saveUsers(users);
-
-    let emailSent = true;
     try {
-      await sendVerificationEmail(newUser, verifyUrl);
+      await sendVerificationEmail(pending, verifyUrl);
     } catch (mailErr) {
-      emailSent = false;
-      console.error(`Failed to send email confirmation to ${newUser.email}:`, mailErr.message);
-    }
-
-    // With real email set up, reviewers hear about the account once its
-    // address is confirmed (see /api/verify-email). Without it - or if the
-    // confirmation couldn't be sent - they're told now, as before, so a
-    // sign-up is never left where nobody will see it.
-    if (!mailTransporter || !emailSent) {
-      await notifyNewAccount(newUser, req);
+      // Without the email there's no way to finish signing up, so don't keep it
+      console.error(`Failed to send email confirmation to ${pending.email}:`, mailErr.message);
+      savePendingSignups(loadPendingSignups().filter((p) => p !== pending && !sameEmail(p)));
+      return res.status(502).json({ error: "We couldn't send the confirmation email. Please check the address and try again." });
     }
 
     res.json({
       success: true,
-      emailConfirmationSent: emailSent,
-      message: emailSent
-        ? "Account created. We've emailed you a link to confirm your email address - please open it. An administrator will then review your account before you can log in."
-        : "Account created, but we couldn't send the email to confirm your address. An administrator will review your account before you can log in.",
+      emailConfirmationSent: true,
+      message:
+        "Check your email. Your account has NOT been created yet: it is created only when you open the " +
+        `confirmation link we just sent (it works for ${EMAIL_VERIFY_HOURS} hours). An administrator then reviews it before you can log in.`,
     });
   } catch (error) {
     console.error("Error creating account:", error);
@@ -6131,6 +6182,55 @@ app.post("/api/verify-email", authLimiter, express.json(), async (req, res) => {
     }
     const users = loadUsers();
     const tokenHash = hashResetToken(token);
+
+    // A sign-up waiting for this link: the account is created now
+    const pendingList = loadPendingSignups();
+    const pending = pendingList.find((p) => p.emailVerifyTokenHash === tokenHash);
+    if (pending) {
+      const remaining = pendingList.filter((p) => p !== pending);
+      if (isUsernameInUse(users, pending.username) || isUsernameRetired(pending.username, null)) {
+        savePendingSignups(remaining);
+        return res.status(409).json({
+          error: `Someone else took the username "${pending.username}" before this link was opened. Please sign up again with a different username.`,
+        });
+      }
+      if (users.some((u) => String(u.email).toLowerCase() === pending.email.toLowerCase())) {
+        savePendingSignups(remaining);
+        return res.status(409).json({ error: "An account with this email address already exists. Try logging in, or reset your password." });
+      }
+      const now = new Date().toISOString();
+      const newUser = {
+        id: `member-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+        username: pending.username,
+        email: pending.email,
+        passwordHash: pending.passwordHash,
+        firstName: pending.firstName,
+        lastName: pending.lastName,
+        fullName: pending.fullName,
+        nssNumber: "",
+        role: "member",
+        status: "pending",
+        created: now,
+        signedUpAt: pending.created,
+        lastLogin: null,
+        loginAttempts: 0,
+        isEmailVerified: true,
+        emailVerifiedAt: now,
+        twoFactorEnabled: false,
+        loginIPs: pending.signupIP ? [pending.signupIP] : [],
+        signupIP: pending.signupIP,
+      };
+      users.push(newUser);
+      saveUsers(users);
+      savePendingSignups(remaining);
+      await notifyNewAccount(newUser, req);
+      return res.json({
+        success: true,
+        message: "Your email address is confirmed and your account has been created. An administrator will now review it, and you'll be able to log in once it's approved.",
+      });
+    }
+
+    // An account from before sign-ups waited here, confirming its address
     const user = users.find((u) => u.emailVerifyTokenHash === tokenHash);
     if (!user || !user.emailVerifyExpires || new Date(user.emailVerifyExpires) < new Date()) {
       return res.status(400).json({
@@ -6143,9 +6243,8 @@ app.post("/api/verify-email", authLimiter, express.json(), async (req, res) => {
     delete user.emailVerifyExpires;
     saveUsers(users);
 
-    // Now it goes to the reviewers (they were already told at sign-up if
-    // real email isn't set up - see /api/create-account)
-    if (mailTransporter && user.status === "pending") {
+    // Now it goes to the reviewers
+    if (user.status === "pending") {
       await notifyNewAccount(user, req);
     }
 
@@ -6173,9 +6272,26 @@ app.post("/api/resend-verification", authLimiter, express.json(), async (req, re
     }
     const users = loadUsers();
     const user = users.find((u) => u.username === username);
-    const passwordMatches = user && user.passwordHash
-      ? await bcrypt.compare(password, user.passwordHash)
-      : (await bcrypt.compare(password, DUMMY_PASSWORD_HASH), false);
+
+    // A sign-up still waiting for its link (no account yet)
+    if (!user) {
+      const pendingList = loadPendingSignups();
+      const pending = await findPendingSignupByLogin(pendingList, username, password);
+      if (!pending) {
+        return res.status(401).json({ error: "Invalid username or password" });
+      }
+      const verifyUrl = startPendingSignupVerification(pending, req);
+      savePendingSignups(pendingList);
+      try {
+        await sendVerificationEmail(pending, verifyUrl);
+      } catch (mailErr) {
+        console.error(`Failed to send email confirmation to ${pending.email}:`, mailErr.message);
+        return res.status(502).json({ error: "The confirmation email could not be sent. Please try again later." });
+      }
+      return res.json({ success: true, message: "We've sent a new confirmation link to your email address." });
+    }
+
+    const passwordMatches = user.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false;
     if (!passwordMatches) {
       return res.status(401).json({ error: "Invalid username or password" });
     }

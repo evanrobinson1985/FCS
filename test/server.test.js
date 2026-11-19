@@ -73,6 +73,27 @@ async function seedUser({ username, password, role, status = "active", allowedSt
   fs.writeFileSync(file, JSON.stringify(users, null, 2));
 }
 
+// Signs up and opens the emailed confirmation link (logged to the console
+// in tests, since no SMTP is set up) - a sign-up only becomes an account then.
+async function signUpConfirmed(body) {
+  const originalLog = console.log;
+  let token = null;
+  console.log = (...args) => {
+    const m = args.join(" ").match(/\[DEV\] Email confirmation link for [^:]+: \S+verifyEmail=([a-f0-9]+)/);
+    if (m) token = m[1];
+    originalLog(...args);
+  };
+  let signup;
+  try {
+    signup = await request(app).post("/api/create-account").send(body);
+  } finally {
+    console.log = originalLog;
+  }
+  if (signup.status !== 200) return signup;
+  assert.ok(token, "expected a [DEV] confirmation link to be logged");
+  return request(app).post("/api/verify-email").send({ token });
+}
+
 async function login(username, password) {
   const res = await request(app).post("/api/login").send({ username, password });
   assert.equal(res.status, 200, `login failed for ${username}: ${JSON.stringify(res.body)}`);
@@ -383,7 +404,7 @@ describe("webmaster accounts are protected from other webmasters", () => {
 
 describe("password hashing", () => {
   test("stores a bcrypt hash, never the plaintext password, on self-registration", async () => {
-    const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+    const res = await signUpConfirmed({ firstName: "Test", lastName: "Member",
       username: "newmember",
       email: "newmember@example.com",
       password: "SomeStrongPass123!",
@@ -434,7 +455,7 @@ describe("password hashing", () => {
   });
 
   test("a freshly hashed password actually verifies on login", async () => {
-    await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+    await signUpConfirmed({ firstName: "Test", lastName: "Member",
       username: "roundtrip",
       email: "roundtrip@example.com",
       password: "RoundTripPass123!",
@@ -493,7 +514,7 @@ describe("admin notification emails", () => {
 
   test("a new self-registration notifies active webmasters and the Treasurer, not admins or inactive accounts", async () => {
     const line = await captureNotificationLog(async () => {
-      const res = await request(app).post("/api/create-account").send({ firstName: "Test", lastName: "Member",
+      const res = await signUpConfirmed({ firstName: "Test", lastName: "Member",
         username: "notifytestaccount",
         email: "notifytestaccount@example.com",
         password: "SomeStrongPass123!",
@@ -3311,7 +3332,7 @@ describe("legal first and last names", () => {
     const base = { username: "named-signup", email: "named-signup@example.com", password: "SomeStrongPass123!", states: ["FL"] };
     assert.equal((await request(app).post("/api/create-account").send(base)).status, 400);
     assert.equal((await request(app).post("/api/create-account").send({ ...base, firstName: "Ann", lastName: "<b>x</b>" })).status, 400);
-    const ok = await request(app).post("/api/create-account").send({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
+    const ok = await signUpConfirmed({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
     assert.equal(ok.status, 200);
     const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
     const u = users.find((x) => x.username === "named-signup");
@@ -3914,39 +3935,47 @@ describe("email confirmation at sign-up", () => {
   function stored(username) {
     return JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).find((u) => u.username === username);
   }
+  const pendingFile = () => path.join(process.env.DATA_DIR, "pending-signups.json");
+  function expirePending(username) {
+    const list = JSON.parse(fs.readFileSync(pendingFile(), "utf8"));
+    list.filter((p) => p.username === username).forEach((p) => { p.emailVerifyExpires = new Date(Date.now() - 1000).toISOString(); });
+    fs.writeFileSync(pendingFile(), JSON.stringify(list, null, 2));
+  }
 
-  test("a sign-up is sent a link, and opening it confirms the address", async () => {
+  test("no account exists until the emailed link is opened", async () => {
     const { result, captured: token } = await signUp("confirmme");
     assert.equal(result.status, 200);
-    assert.equal(result.body.emailConfirmationSent, true);
+    assert.match(result.body.message, /NOT been created yet/);
     assert.ok(token, "a confirmation link should have been produced");
+    assert.equal(stored("confirmme"), undefined, "nothing is created before confirming");
+    const waiting = JSON.parse(fs.readFileSync(pendingFile(), "utf8")).find((p) => p.username === "confirmme");
+    assert.ok(waiting.passwordHash.startsWith("$2"));
+    assert.notEqual(waiting.emailVerifyTokenHash, token, "only a hash of the code is stored");
 
-    const before = stored("confirmme");
-    assert.equal(before.isEmailVerified, false);
-    assert.ok(before.emailVerifyTokenHash);
-    assert.notEqual(before.emailVerifyTokenHash, token, "only a hash of the code is stored");
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    const before = await request(app).get("/api/users").set("Authorization", `Bearer ${wm}`);
+    assert.ok(!before.body.some((u) => u.username === "confirmme"), "reviewers don't see unconfirmed sign-ups");
 
     const res = await request(app).post("/api/verify-email").send({ token });
     assert.equal(res.status, 200);
     const after = stored("confirmme");
     assert.equal(after.isEmailVerified, true);
-    assert.equal(after.emailVerifyTokenHash, undefined);
     assert.equal(after.status, "pending", "confirming the address doesn't approve the account");
+    assert.ok(after.passwordHash.startsWith("$2"));
+    assert.ok(!JSON.parse(fs.readFileSync(pendingFile(), "utf8")).some((p) => p.username === "confirmme"));
 
     const again = await request(app).post("/api/verify-email").send({ token });
     assert.equal(again.status, 400, "a link works once");
   });
 
-  test("a wrong or expired link is refused", async () => {
+  test("a wrong or expired link is refused, and nothing is created", async () => {
     assert.equal((await request(app).post("/api/verify-email").send({ token: "f".repeat(64) })).status, 400);
     assert.equal((await request(app).post("/api/verify-email").send({})).status, 400);
 
     const { captured: token } = await signUp("confirmlate");
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
-    users.find((u) => u.username === "confirmlate").emailVerifyExpires = new Date(Date.now() - 1000).toISOString();
-    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
+    expirePending("confirmlate");
     assert.equal((await request(app).post("/api/verify-email").send({ token })).status, 400);
-    assert.equal(stored("confirmlate").isEmailVerified, false);
+    assert.equal(stored("confirmlate"), undefined);
   });
 
   test("logging in before confirming says so, and a new link can be requested with the password", async () => {
@@ -3954,6 +3983,8 @@ describe("email confirmation at sign-up", () => {
     const loginRes = await request(app).post("/api/login").send({ username: "confirmresend", password: "ConfirmTester123!" });
     assert.equal(loginRes.status, 403);
     assert.equal(loginRes.body.emailUnconfirmed, true);
+    const wrongLogin = await request(app).post("/api/login").send({ username: "confirmresend", password: "not-it" });
+    assert.equal(wrongLogin.status, 401, "a wrong password reveals nothing about the sign-up");
 
     const wrong = await request(app).post("/api/resend-verification").send({ username: "confirmresend", password: "not-it" });
     assert.equal(wrong.status, 401);
@@ -3972,36 +4003,39 @@ describe("email confirmation at sign-up", () => {
     assert.match(pendingRes.body.error, /approval/);
   });
 
-  test("reviewers can see which sign-ups haven't confirmed, and may still approve one", async () => {
-    await signUp("confirmnever");
-    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
-    const usersRes = await request(app).get("/api/users").set("Authorization", `Bearer ${wm}`);
-    assert.equal(usersRes.body.find((u) => u.username === "confirmnever").emailUnconfirmed, true);
-    assert.equal(usersRes.body.find((u) => u.username === "member1").emailUnconfirmed, false);
-    const duesRes = await request(app).get("/api/dues/members").set("Authorization", `Bearer ${wm}`);
-    assert.equal(duesRes.body.members.find((u) => u.username === "confirmnever").emailUnconfirmed, true);
-
-    const approve = await request(app)
-      .post("/api/dues/members/confirmnever/status")
-      .set("Authorization", `Bearer ${wm}`)
-      .send({ active: true });
-    assert.equal(approve.status, 200);
-    await login("confirmnever", "ConfirmTester123!");
+  test("signing up again with the same address replaces the earlier attempt", async () => {
+    const first = await signUp("confirmtwice", "twice@example.com");
+    const second = await signUp("confirmtwice2", "twice@example.com");
+    assert.equal(second.result.status, 200);
+    assert.equal((await request(app).post("/api/verify-email").send({ token: first.captured })).status, 400);
+    assert.equal((await request(app).post("/api/verify-email").send({ token: second.captured })).status, 200);
+    assert.ok(stored("confirmtwice2"));
+    assert.equal(stored("confirmtwice"), undefined);
   });
 
-  test("an unconfirmed sign-up whose link ran out doesn't keep its username or email", async () => {
-    await signUp("confirmsquat", "wanted-address@example.com");
-    const blocked = await signUp("confirmsquat2", "wanted-address@example.com");
-    assert.equal(blocked.result.status, 400, "still held while the link is valid");
+  test("whoever confirms first gets a username both asked for", async () => {
+    const a = await signUp("confirmrace", "race-a@example.com");
+    const b = await signUp("confirmrace", "race-b@example.com");
+    assert.equal((await request(app).post("/api/verify-email").send({ token: b.captured })).status, 200);
+    const late = await request(app).post("/api/verify-email").send({ token: a.captured });
+    assert.equal(late.status, 409);
+    assert.match(late.body.error, /different username/);
+    assert.equal(stored("confirmrace").email, "race-b@example.com");
+  });
 
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
-    users.find((u) => u.username === "confirmsquat").emailVerifyExpires = new Date(Date.now() - 1000).toISOString();
-    fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
-
-    const retry = await signUp("confirmsquat2", "wanted-address@example.com");
-    assert.equal(retry.result.status, 200);
-    assert.equal(stored("confirmsquat"), undefined);
-    assert.ok(stored("confirmsquat2"));
+  test("sign-up notifies reviewers only once the address is confirmed", async () => {
+    const originalLog = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.join(" ")); originalLog(...args); };
+    let token;
+    try {
+      ({ captured: token } = await signUp("confirmnotify"));
+      assert.ok(!lines.some((l) => /New Account Awaiting Approval/.test(l)), "nobody is asked to approve an unconfirmed sign-up");
+      await request(app).post("/api/verify-email").send({ token });
+      assert.ok(lines.some((l) => /New Account Awaiting Approval/.test(l)));
+    } finally {
+      console.log = originalLog;
+    }
   });
 
   test("accounts from before email confirmation existed are left alone", async () => {
