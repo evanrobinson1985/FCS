@@ -4440,3 +4440,31 @@ describe("Backups & Recovery", () => {
     assert.ok(lines.some((l) => /Large drop in site data/.test(l) && /caves: \d+ -> 0/.test(l)));
   });
 });
+
+describe("deleting a cave (webmaster, Cave Database tab)", () => {
+  const caveFile = () => path.join(process.env.DATA_DIR, "cave-database.json");
+  test("only a webmaster can delete, the ID must be repeated, and a backup can bring it back", async () => {
+    const caves = JSON.parse(fs.readFileSync(caveFile(), "utf8"));
+    const victim = caves[caves.length - 1];
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).delete(`/api/caves/${victim.id}`).set(member).send({ confirmId: victim.id })).status, 403);
+
+    let wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    assert.equal((await request(app).delete(`/api/caves/${victim.id}`).set(wm).send({})).status, 400, "needs the ID repeated");
+    assert.equal((await request(app).delete("/api/caves/NO-SUCH-CAVE").set(wm).send({ confirmId: "NO-SUCH-CAVE" })).status, 404);
+
+    const res = await request(app).delete(`/api/caves/${victim.id}`).set(wm).send({ confirmId: victim.id });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.remaining, caves.length - 1);
+    assert.ok(!JSON.parse(fs.readFileSync(caveFile(), "utf8")).some((c) => c.id === victim.id));
+    const listed = (await request(app).get("/api/cave-database").set(wm)).body;
+    assert.ok(!(Array.isArray(listed) ? listed : listed.caves || []).some((c) => c.id === victim.id), "gone from the live list too");
+
+    // the backup made just before brings it back
+    const restore = await request(app).post(`/api/snapshots/${res.body.backupId}/restore`).set(wm).send({ password: WEBMASTER_PASSWORD });
+    assert.equal(restore.status, 200);
+    assert.ok(JSON.parse(fs.readFileSync(caveFile(), "utf8")).some((c) => c.id === victim.id));
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    assert.equal((await request(app).get("/api/snapshots").set(wm)).status, 200);
+  });
+});

@@ -6534,6 +6534,31 @@ app.get("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, res
   });
 });
 
+// Deletes one cave record (webmaster only; Cave Database tab). A full backup
+// is made first, so a deleted cave can be put back from Backups & Recovery.
+// The request must repeat the cave's ID as confirmation. Its narratives and
+// photos are left in place.
+app.delete("/api/caves/:id", authenticateToken, requireRole("webmaster"), requireNotReadOnly, express.json(), async (req, res) => {
+  const id = String(req.params.id || "");
+  if (!req.body || req.body.confirmId !== id) {
+    return res.status(400).json({ error: "Deleting a cave needs its ID repeated as confirmation." });
+  }
+  const caves = loadCaveDatabaseFromDisk();
+  const index = caves.findIndex((c) => c && c.id === id);
+  if (index === -1) return res.status(404).json({ error: `No cave with ID ${id}.` });
+  const removed = caves[index];
+  try {
+    const backup = makeSnapshot("before-delete", req.user.username);
+    caves.splice(index, 1);
+    await persistCaveDatabase(caves);
+    console.warn(`Cave ${id} (${removed.name || "unnamed"}) deleted by ${req.user.username}; backup ${backup.id}`);
+    res.json({ success: true, id, name: removed.name || "", backupId: backup.id, remaining: caves.length });
+  } catch (err) {
+    console.error("Failed to delete cave:", err);
+    res.status(500).json({ error: "The cave couldn't be deleted." });
+  }
+});
+
 app.post("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, res) => {
   try {
     const meta = makeSnapshot("manual", req.user.username);

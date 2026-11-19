@@ -5854,7 +5854,7 @@ function loadFcsDatabaseTable() {
     // Fetched (with the session token in a header, never in the URL - this
     // file holds every account record) and then handed to the browser as a
     // download.
-    const BACKUP_TYPE_LABELS = { automatic: 'Daily (automatic)', manual: 'Manual', 'before-restore': 'Before a restore', upload: 'Uploaded' };
+    const BACKUP_TYPE_LABELS = { automatic: 'Daily (automatic)', manual: 'Manual', 'before-restore': 'Before a restore', 'before-delete': 'Before a cave deletion', upload: 'Uploaded' };
     let backupData = null;
 
     function formatBytes(n) {
@@ -8361,8 +8361,6 @@ window.addEventListener('error', function(e) {
           cave.hazardousConditions || '',
           cave.hazardNotes || '',
           cave.ownerEntityInfo || '',
-          cave.lat || cave.latitude || '',
-          cave.lng || cave.longitude || '',
         ];
         
         cells.forEach(value => {
@@ -8390,6 +8388,16 @@ window.addEventListener('error', function(e) {
         actionsTd.appendChild(viewBtn);
         actionsTd.appendChild(document.createTextNode(' '));
         actionsTd.appendChild(editBtn);
+        // Webmasters only: delete the cave (asks twice; see deleteCaveRecord)
+        if (sessionStorage.getItem('role') === 'webmaster') {
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'btn-danger delete-cave-btn';
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.title = 'Delete this cave from the database';
+          deleteBtn.onclick = () => deleteCaveRecord(cave.id, cave.name);
+          actionsTd.appendChild(document.createTextNode(' '));
+          actionsTd.appendChild(deleteBtn);
+        }
         row.appendChild(actionsTd);
         
         tbody.appendChild(row);
@@ -8397,6 +8405,31 @@ window.addEventListener('error', function(e) {
 
       table.appendChild(tbody);
       wrapper.appendChild(table);
+    }
+
+    // Deletes a cave after two confirmations. The server backs the whole
+    // site up first, so it can be undone from Backups & Recovery.
+    async function deleteCaveRecord(id, name) {
+      const label = `${id}${name ? ' - ' + name : ''}`;
+      if (!confirm(`Delete cave ${label} from the database?`)) return;
+      if (!confirm(`Are you absolutely sure? ${label} will be removed for everyone.\n\nA backup is saved first, so it can be restored from Website Management > Backups & Recovery if needed.`)) return;
+      try {
+        const response = await fetch(`/api/caves/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmId: id }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Delete failed');
+        const keep = (c) => c.id !== id;
+        caveDataStore = caveDataStore.filter(keep);
+        if (Array.isArray(window.caveDataStore)) window.caveDataStore = window.caveDataStore.filter(keep);
+        caveDbFilteredData = caveDbFilteredData.filter(keep);
+        renderCaveDatabasePage();
+        alert(`Deleted ${label}.`);
+      } catch (error) {
+        alert('Could not delete the cave: ' + error.message);
+      }
     }
 
     function renderCaveDatabasePaginationControls(totalRows, totalPages, startIdx, pageRowCount) {
