@@ -686,9 +686,44 @@
     </div>
 
     <div class="control-section">
-      <h4>Backups</h4>
-      <p style="margin-bottom: 10px;">A backup of every data file is already taken automatically before each write. This downloads one combined snapshot (accounts, cave database, pending submissions, and this tab's own settings) right now, as a single JSON file - useful right before a risky manual change.</p>
-      <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Backup Now</button>
+      <h4>Backups &amp; Recovery</h4>
+      <style>
+        #backup-section .bk-status { padding: 8px 12px; border-radius: 6px; background: #eef6ee; color: #1f5d27; margin-bottom: 10px; }
+        #backup-section .bk-status.warn { background: #fdf0dc; color: #7a4a00; }
+        #backup-section table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+        #backup-section th, #backup-section td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; white-space: nowrap; }
+        #backup-section th { background: #f4f6f8; }
+        #backup-section td.num, #backup-section th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        #backup-section .bk-restore { margin-top: 10px; padding: 12px; border: 2px solid #b3261e; border-radius: 6px; background: #fff8f7; }
+        #backup-section .bk-restore table td, #backup-section .bk-restore table th { white-space: normal; }
+        #backup-section .bk-row-actions button { padding: 3px 9px; margin-right: 4px; }
+        #backup-section .bk-lower { color: #b3261e; font-weight: 600; }
+      </style>
+      <div id="backup-section">
+        <p style="margin: 0 0 10px; color: #555;">The site's data (accounts, caves, submissions, narratives and settings) is backed up automatically every day and kept for weeks, so it can be put back in one step if anything is damaged or maliciously changed. Restoring needs your password, saves the current data first (so a restore can itself be undone), and signs everyone out. Photos and cave map files aren't included; Plesk's own backups cover those.</p>
+        <div id="backup-status" class="bk-status">Loading backups...</div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+          <button type="button" class="btn-success" onclick="createBackupNow()">Back Up Now</button>
+          <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Full Backup</button>
+          <span id="backup-action-status" style="align-self: center; color: #555;"></span>
+        </div>
+        <p style="margin: 0 0 10px; font-size: 0.9em; color: #555;">Keep a downloaded copy somewhere off the server now and then (your computer or cloud storage): it can rebuild the site even if the server's own backups are lost.</p>
+        <div style="overflow-x: auto;"><table>
+          <thead><tr><th>When</th><th>Type</th><th>By</th><th class="num">Accounts</th><th class="num">Caves</th><th class="num">Narratives</th><th class="num">Submissions</th><th class="num">Size</th><th></th></tr></thead>
+          <tbody id="backup-list"></tbody>
+        </table></div>
+        <div id="backup-restore-panel" class="bk-restore" hidden></div>
+        <details style="margin-top: 12px;">
+          <summary style="cursor: pointer; font-weight: 600;">Restore from a downloaded backup file</summary>
+          <p style="margin: 8px 0; color: #555;">Use this if the server's own backups are missing too. Pick a file saved with "Download Full Backup" (or an older "Download Backup Now" file).</p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <input type="file" id="backup-upload-file" accept=".json,.gz,application/json,application/gzip">
+            <input type="password" id="backup-upload-password" placeholder="Your password" autocomplete="current-password" style="padding: 6px;">
+            <button type="button" class="btn-danger" onclick="restoreBackupFromFile()">Restore This File</button>
+          </div>
+          <div id="backup-upload-status" style="margin-top: 6px;"></div>
+        </details>
+      </div>
     </div>
 
     <div class="control-section">
@@ -5819,6 +5854,152 @@ function loadFcsDatabaseTable() {
     // Fetched (with the session token in a header, never in the URL - this
     // file holds every account record) and then handed to the browser as a
     // download.
+    const BACKUP_TYPE_LABELS = { automatic: 'Daily (automatic)', manual: 'Manual', 'before-restore': 'Before a restore', upload: 'Uploaded' };
+    let backupData = null;
+
+    function formatBytes(n) {
+      return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+    }
+
+    async function loadBackups() {
+      const statusEl = document.getElementById('backup-status');
+      const listEl = document.getElementById('backup-list');
+      if (!statusEl) return;
+      try {
+        const response = await fetch('/api/snapshots');
+        if (!response.ok) throw new Error('Could not load backups');
+        backupData = await response.json();
+        const last = backupData.lastAutomaticAt ? new Date(backupData.lastAutomaticAt) : null;
+        const hours = last ? (Date.now() - last.getTime()) / 3600000 : Infinity;
+        statusEl.className = 'bk-status' + (hours > 36 ? ' warn' : '');
+        statusEl.textContent = last
+          ? `${hours > 36 ? 'Warning: the last' : 'Last'} daily backup: ${last.toLocaleString()}. ${backupData.snapshots.length} backups kept (${formatBytes(backupData.totalSize)}).`
+          : 'No daily backup yet - the first is made within an hour of the server starting. Use "Back Up Now" to make one straight away.';
+        const c = backupData.current;
+        listEl.innerHTML = `<tr style="background: #f9fbf9;"><td><strong>Now (live site)</strong></td><td colspan="2"></td><td class="num">${c.accounts}</td><td class="num">${c.caves}</td><td class="num">${c.narratives}</td><td class="num">${c.submissions}</td><td colspan="2"></td></tr>` +
+          backupData.snapshots.map((m, i) => {
+            // Flag counts that dropped a lot since the backup before this one
+            const older = backupData.snapshots[i + 1];
+            const dropped = (k) => older && (older.counts[k] - m.counts[k]) >= 5 && m.counts[k] <= older.counts[k] * 0.9;
+            const cell = (k) => `<td class="num${dropped(k) ? ' bk-lower' : ''}">${m.counts[k]}</td>`;
+            const anyDrop = ['accounts', 'caves', 'narratives', 'submissions'].some(dropped);
+            return `<tr>
+            <td>${escapeStatsHtml(new Date(m.createdAt).toLocaleString())}</td>
+            <td>${escapeStatsHtml(BACKUP_TYPE_LABELS[m.reason] || m.reason)}${anyDrop ? '<div class="bk-lower" style="font-size: 0.85em;">⚠ Much less data than the backup before</div>' : ''}</td>
+            <td>${escapeStatsHtml(m.by || '')}</td>
+            ${cell('accounts')}${cell('caves')}${cell('narratives')}${cell('submissions')}
+            <td class="num">${formatBytes(m.size || 0)}</td>
+            <td class="bk-row-actions"><button type="button" class="btn-success" onclick="downloadBackupById(${escapeStatsHtml(JSON.stringify(m.id))})">Download</button><button type="button" class="btn-danger" onclick="showRestorePanel(${escapeStatsHtml(JSON.stringify(m.id))})">Restore</button></td>
+          </tr>`;
+          }).join('');
+      } catch (error) {
+        statusEl.className = 'bk-status warn';
+        statusEl.textContent = error.message;
+      }
+    }
+
+    async function createBackupNow() {
+      const statusEl = document.getElementById('backup-action-status');
+      statusEl.textContent = 'Backing up...';
+      try {
+        const response = await fetch('/api/snapshots', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Backup failed');
+        statusEl.textContent = 'Backed up.';
+        loadBackups();
+      } catch (error) {
+        statusEl.textContent = 'Error: ' + error.message;
+      }
+    }
+
+    async function saveResponseAsFile(response, fallbackName) {
+      const blob = await response.blob();
+      const match = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = match ? match[1] : fallbackName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+    }
+
+    async function downloadBackupById(id) {
+      try {
+        const response = await fetch(`/api/snapshots/${encodeURIComponent(id)}/download`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await saveResponseAsFile(response, 'fcs-backup.json.gz');
+      } catch (error) {
+        alert('Could not download the backup: ' + error.message);
+      }
+    }
+
+    function showRestorePanel(id) {
+      const panel = document.getElementById('backup-restore-panel');
+      const m = backupData && backupData.snapshots.find(x => x.id === id);
+      if (!m) return;
+      const c = backupData.current;
+      const row = (label, now, then) => `<tr><td>${label}</td><td class="num">${now}</td><td class="num${then < now ? ' bk-lower' : ''}">${then}</td></tr>`;
+      panel.innerHTML = `
+        <strong>Restore the backup from ${escapeStatsHtml(new Date(m.createdAt).toLocaleString())}?</strong>
+        <p style="margin: 6px 0;">The site's data goes back to exactly how it was then. Anything added or changed since will be undone (it's saved as a "Before a restore" backup first, so you can switch back). Everyone, including you, is signed out.</p>
+        <table style="max-width: 420px; margin-bottom: 8px;"><thead><tr><th></th><th class="num">Now</th><th class="num">In this backup</th></tr></thead><tbody>
+          ${row('Accounts', c.accounts, m.counts.accounts)}${row('Caves', c.caves, m.counts.caves)}${row('Narratives', c.narratives, m.counts.narratives)}${row('Submissions', c.submissions, m.counts.submissions)}
+        </tbody></table>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+          <input type="password" id="backup-restore-password" placeholder="Your password" autocomplete="current-password" style="padding: 6px;">
+          <button type="button" class="btn-danger" id="backup-restore-confirm">Restore This Backup</button>
+          <button type="button" class="btn-warning" onclick="document.getElementById('backup-restore-panel').hidden = true">Cancel</button>
+        </div>
+        <div id="backup-restore-status" style="margin-top: 6px;"></div>`;
+      panel.hidden = false;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      document.getElementById('backup-restore-confirm').onclick = async () => {
+        const status = document.getElementById('backup-restore-status');
+        status.textContent = 'Restoring...';
+        try {
+          const response = await fetch(`/api/snapshots/${encodeURIComponent(id)}/restore`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: document.getElementById('backup-restore-password').value }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'Restore failed');
+          finishRestore(status);
+        } catch (error) {
+          status.style.color = '#b3261e';
+          status.textContent = error.message;
+        }
+      };
+    }
+
+    function finishRestore(statusEl) {
+      statusEl.style.color = '#1f5d27';
+      statusEl.textContent = 'Restored. Everyone has been signed out; taking you to the login page...';
+      try { ['sessionToken', 'assetToken', 'role'].forEach(k => sessionStorage.removeItem(k)); localStorage.removeItem('role'); } catch (e) { /* storage blocked */ }
+      setTimeout(() => { window.location.href = '/portal'; }, 2500);
+    }
+
+    async function restoreBackupFromFile() {
+      const status = document.getElementById('backup-upload-status');
+      const file = document.getElementById('backup-upload-file').files[0];
+      if (!file) { status.textContent = 'Choose a backup file first.'; return; }
+      const form = new FormData();
+      form.append('password', document.getElementById('backup-upload-password').value);
+      form.append('backup', file);
+      status.style.color = '';
+      status.textContent = 'Checking and restoring...';
+      try {
+        const response = await fetch('/api/snapshots/restore-upload', { method: 'POST', body: form });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Restore failed');
+        if (!result.narrativesIncluded) alert('Restored. That older backup file had no narratives in it, so the narratives were left as they are.');
+        finishRestore(status);
+      } catch (error) {
+        status.style.color = '#b3261e';
+        status.textContent = error.message;
+      }
+    }
+
     async function downloadBackupNow() {
       try {
         const response = await fetch('/api/backup-now');
@@ -5826,15 +6007,7 @@ function loadFcsDatabaseTable() {
           const result = await response.json().catch(() => ({}));
           throw new Error(result.error || `HTTP ${response.status}`);
         }
-        const blob = await response.blob();
-        const match = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '');
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = match ? match[1] : 'fcs-backup.json';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+        await saveResponseAsFile(response, 'fcs-backup.json');
       } catch (error) {
         console.error('Backup download failed:', error);
         alert('Could not download the backup: ' + error.message);
@@ -9107,6 +9280,7 @@ window.addEventListener('error', function(e) {
           }
           loadWebsiteManagementSettings();
           loadSecurityAlerts();
+          loadBackups();
         }
 
         if (tabContentId === 'statistics') {

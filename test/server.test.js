@@ -2618,11 +2618,13 @@ describe("website management: site status, banner, and maintenance mode", () => 
       assert.equal(res.status, 200);
       assert.match(res.headers["content-disposition"], /attachment; filename="fcs-backup-\d{4}-\d{2}-\d{2}\.json"/);
       const body = JSON.parse(res.text);
-      assert.ok(body.exportedAt);
-      assert.ok(Array.isArray(body.users));
-      assert.ok(Array.isArray(body.caveDatabase));
-      assert.ok(Array.isArray(body.pendingSubmissions));
-      assert.ok(body.siteConfig);
+      assert.equal(body.format, "fcs-snapshot");
+      assert.ok(body.createdAt);
+      assert.ok(Array.isArray(JSON.parse(body.files.users)));
+      assert.ok(Array.isArray(JSON.parse(body.files.caveDatabase)));
+      assert.ok(body.files.siteConfig);
+      assert.ok(body.narratives && typeof body.narratives === "object");
+      assert.match(body.sha256, /^[a-f0-9]{64}$/);
     });
   });
 
@@ -4338,5 +4340,103 @@ describe("the access-denied lockout screen", () => {
     await request(app).post("/api/login").set("X-Forwarded-For", "203.0.113.203").send({ username: "sameplace", password: "SamePlacePass123!" });
     const member = await request(app).get("/portal?q=%3Cscript%3E").set("Accept", "text/html").set("X-Forwarded-For", "203.0.113.203");
     assert.equal(member.status, 200, "could be a member: logged, not shown the screen");
+  });
+});
+
+describe("Backups & Recovery", () => {
+  const wmHeader = async () => ({ Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` });
+  const caveFile = () => path.join(process.env.DATA_DIR, "cave-database.json");
+  const narrativeDir = () => process.env.NARRATIVE_DIR;
+
+  test("only webmasters can see, make or restore backups", async () => {
+    const h = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).get("/api/snapshots").set(h)).status, 403);
+    assert.equal((await request(app).post("/api/snapshots").set(h)).status, 403);
+    assert.equal((await request(app).post("/api/snapshots/x-manual/restore").set(h).send({ password: MEMBER_PASSWORD })).status, 403);
+  });
+
+  test("a backup can undo damage to the caves, narratives and accounts", async () => {
+    let wm = await wmHeader();
+    fs.mkdirSync(narrativeDir(), { recursive: true });
+    fs.writeFileSync(path.join(narrativeDir(), "BKP001.json"), JSON.stringify([{ user: "member1", html: "<p>Original story</p>", timestamp: "t1" }]));
+    const made = await request(app).post("/api/snapshots").set(wm);
+    assert.equal(made.status, 200);
+    const id = made.body.snapshot.id;
+    const goodCaves = fs.readFileSync(caveFile(), "utf8");
+
+    // "Malicious" changes: caves wiped, a narrative defaced, a new one planted, an account removed
+    fs.writeFileSync(caveFile(), "[]");
+    fs.writeFileSync(path.join(narrativeDir(), "BKP001.json"), JSON.stringify([{ user: "x", html: "<p>defaced</p>", timestamp: "t2" }]));
+    fs.writeFileSync(path.join(narrativeDir(), "PLANTED.json"), "[]");
+    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    fs.writeFileSync(usersFilePath(), JSON.stringify(users.filter((u) => u.username !== "member1"), null, 2));
+
+    const wrong = await request(app).post(`/api/snapshots/${id}/restore`).set(wm).send({ password: "not-my-password" });
+    assert.equal(wrong.status, 401);
+
+    const res = await request(app).post(`/api/snapshots/${id}/restore`).set(wm).send({ password: WEBMASTER_PASSWORD });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.savedCurrentAs, "the damaged state was saved first, so the restore can be undone");
+    assert.equal(fs.readFileSync(caveFile(), "utf8"), goodCaves);
+    assert.match(fs.readFileSync(path.join(narrativeDir(), "BKP001.json"), "utf8"), /Original story/);
+    assert.equal(fs.existsSync(path.join(narrativeDir(), "PLANTED.json")), false);
+    assert.ok(JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).some((u) => u.username === "member1"));
+
+    // the server's in-memory cave list is reloaded, and everyone was signed out
+    assert.equal((await request(app).get("/api/snapshots").set(wm)).status, 401);
+    wm = await wmHeader();
+    const list = (await request(app).get("/api/snapshots").set(wm)).body;
+    assert.equal(list.current.caves, made.body.snapshot.counts.caves);
+    assert.ok(list.snapshots.some((m) => m.reason === "before-restore"));
+    await login("member1", MEMBER_PASSWORD);
+  });
+
+  test("a downloaded backup restores the whole site from a file, and edited files are refused", async () => {
+    const wm = await wmHeader();
+    const download = await request(app).get("/api/backup-now").set(wm);
+    assert.equal(download.status, 200);
+    const goodCaves = fs.readFileSync(caveFile(), "utf8");
+    fs.writeFileSync(caveFile(), "[]");
+
+    const tampered = JSON.parse(download.text);
+    tampered.files.users = tampered.files.users.replace(/"role": "member"/, '"role": "webmaster"');
+    const bad = await request(app).post("/api/snapshots/restore-upload").set(wm)
+      .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(JSON.stringify(tampered)), "fcs-backup.json");
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /checksum/);
+
+    const ok = await request(app).post("/api/snapshots/restore-upload").set(wm)
+      .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(download.text), "fcs-backup.json");
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.narrativesIncluded, true);
+    assert.equal(fs.readFileSync(caveFile(), "utf8"), goodCaves);
+  });
+
+  test("a backup that would lock everyone out is refused", async () => {
+    const wm = await wmHeader();
+    const download = JSON.parse((await request(app).get("/api/backup-now").set(wm)).text);
+    const noWebmaster = { exportedAt: "x", users: JSON.parse(download.files.users).filter((u) => u.role !== "webmaster"), caveDatabase: [] };
+    const res = await request(app).post("/api/snapshots/restore-upload").set(wm)
+      .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(JSON.stringify(noWebmaster)), "old.json");
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /webmaster/);
+  });
+
+  test("webmasters are emailed when a backup shows a big drop in data", async () => {
+    const wm = await wmHeader();
+    await request(app).post("/api/snapshots").set(wm);
+    const goodCaves = fs.readFileSync(caveFile(), "utf8");
+    assert.ok(JSON.parse(goodCaves).length >= 10, "the test cave database needs some caves");
+    const originalLog = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.join(" ")); originalLog(...args); };
+    try {
+      fs.writeFileSync(caveFile(), "[]");
+      await request(app).post("/api/snapshots").set(wm);
+    } finally {
+      console.log = originalLog;
+      fs.writeFileSync(caveFile(), goodCaves);
+    }
+    assert.ok(lines.some((l) => /Large drop in site data/.test(l) && /caves: \d+ -> 0/.test(l)));
   });
 });

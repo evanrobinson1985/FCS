@@ -24,6 +24,7 @@ const dues = require("./lib/dues");
 const { checkEmail } = require("./lib/email-check");
 const githubUpdates = require("./lib/github-updates");
 const attackDetect = require("./lib/attack-detect");
+const { createSnapshotStore } = require("./lib/snapshots");
 const { isOffensiveName, OFFENSIVE_NAME_MESSAGE, isOffensivePersonName, OFFENSIVE_PERSON_NAME_MESSAGE } = require("./lib/username-filter");
 // DNS check of email domains at sign-up (see lib/email-check.js). Off in
 // the test suite (no network there); EMAIL_DNS_CHECK=off turns it off.
@@ -1234,19 +1235,13 @@ app.post(
 app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), (req, res) => {
   try {
     [USERS_FILE, CAVE_DB_FILE, submissionsFile, SITE_CONFIG_FILE].forEach((f) => backupDataFile(f));
-
-    const snapshot = {
-      exportedAt: new Date().toISOString(),
-      users: loadUsers(),
-      caveDatabase: loadCaveDatabaseFromDisk(),
-      pendingSubmissions: fs.existsSync(submissionsFile) ? JSON.parse(fs.readFileSync(submissionsFile, "utf8")) : [],
-      siteConfig,
-    };
-
+    // Everything the site needs (accounts, caves, submissions, settings,
+    // narratives...), in the same form "Restore from a file" accepts
+    const snapshot = snapshots.capture("download", req.user.username);
     const filename = `fcs-backup-${new Date().toISOString().slice(0, 10)}.json`;
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(JSON.stringify(snapshot, null, 2));
+    res.send(JSON.stringify(snapshot));
   } catch (err) {
     console.error("Error creating on-demand backup:", err);
     res.status(500).json({ error: "Failed to create backup." });
@@ -6427,6 +6422,166 @@ app.delete("/api/delete-user", authenticateToken, requireRole("webmaster"), expr
 });
 
 // Get security logs
+// ---- Backups & Recovery: full-site snapshots ------------------------------
+// One file holding every data file the site needs (lib/snapshots.js), made
+// automatically once a day, on demand, and right before every restore, so
+// the site's data can be put back in one step from Website Management.
+// They're kept by date, so a burst of bad edits can't flush the good ones.
+const SNAPSHOT_DIR = path.join(DATA_DIR, "snapshots");
+const snapshots = createSnapshotStore({
+  dir: SNAPSHOT_DIR,
+  files: {
+    users: USERS_FILE,
+    caveDatabase: CAVE_DB_FILE,
+    submissions: submissionsFile,
+    siteConfig: SITE_CONFIG_FILE,
+    feedback: FEEDBACK_FILE,
+    caveJump: CAVE_JUMP_FILE,
+    siteUpdatesVisibility: SITE_UPDATES_VISIBILITY_FILE,
+    retiredUsernames: RETIRED_USERNAMES_FILE,
+    imageOwners: IMAGE_OWNERS_FILE,
+  },
+  narrativeDir: NARRATIVE_DIR,
+  writeFileAtomicSync,
+});
+
+// Emails webmasters if a lot of data vanished since the previous backup -
+// the most likely sign of a malicious or accidental mass deletion
+function checkForDataLoss(previous, latest) {
+  if (!previous || !latest) return null;
+  const drops = [];
+  for (const [key, label] of [["accounts", "accounts"], ["caves", "caves"], ["narratives", "narratives"], ["submissions", "submissions"]]) {
+    const before = previous.counts[key] || 0;
+    const after = latest.counts[key] || 0;
+    if (before - after >= 5 && after <= before * 0.9) drops.push(`${label}: ${before} -> ${after}`);
+  }
+  if (!drops.length) return null;
+  sendAdminNotification(
+    getNotificationRecipients(["webmaster"]),
+    "Florida Cave Survey - Large drop in site data",
+    `The latest backup (${latest.createdAt}) has much less data than the one before it (${previous.createdAt}):\n\n` +
+      drops.join("\n") +
+      "\n\nIf that wasn't intended, restore the earlier backup in Website Management > Backups & Recovery."
+  ).catch((err) => console.error("Failed to send data-loss alert:", err));
+  return drops;
+}
+
+function makeSnapshot(reason, by) {
+  const previous = snapshots.list()[0];
+  const meta = snapshots.create(reason, by);
+  const drops = checkForDataLoss(previous, meta);
+  if (drops) console.warn(`Backup ${meta.id} shows a large drop in data: ${drops.join("; ")}`);
+  return meta;
+}
+
+function lastAutomaticSnapshot() {
+  return snapshots.list().find((m) => m.reason === "automatic");
+}
+function runDailySnapshot() {
+  try {
+    const last = lastAutomaticSnapshot();
+    if (!last || Date.now() - new Date(last.createdAt).getTime() > 23.5 * 60 * 60 * 1000) {
+      const meta = makeSnapshot("automatic", "system");
+      console.log(`Daily backup made: ${meta.id}`);
+    }
+  } catch (err) {
+    console.error("Daily backup failed:", err);
+  }
+}
+if (process.env.NODE_ENV !== "test") {
+  setTimeout(runDailySnapshot, 60 * 1000).unref();
+  setInterval(runDailySnapshot, 60 * 60 * 1000).unref();
+}
+
+// Puts a checked snapshot back, after backing up what's there now, reloads
+// what the server keeps in memory, and signs every account out (a restore
+// may be undoing an attacker's changes, including their sessions)
+function restoreSnapshot(snapshot, by) {
+  const problem = snapshots.validate(snapshot);
+  if (problem) return { error: problem };
+  const before = makeSnapshot("before-restore", by);
+  snapshots.apply(snapshot);
+  reloadCaveDatabase();
+  siteConfig = loadSiteConfig();
+  const users = loadUsers();
+  users.forEach((u) => { u.tokenVersion = (u.tokenVersion || 0) + 1; });
+  writeFileAtomicSync(USERS_FILE, JSON.stringify(users, null, 2));
+  ipOwners.at = 0;
+  console.warn(`Site data restored by ${by} from a backup made ${snapshot.createdAt || "(unknown date)"}; previous data saved as ${before.id}`);
+  return { before };
+}
+
+async function confirmWebmasterPassword(req, res) {
+  const password = req.body && req.body.password;
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  const ok = typeof password === "string" && me && me.passwordHash && (await bcrypt.compare(password, me.passwordHash));
+  if (!ok) {
+    noteSuspicious(req, 3, "password");
+    res.status(401).json({ error: "That password isn't right. Restoring needs your current password." });
+  }
+  return !!ok;
+}
+
+app.get("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const list = snapshots.list();
+  const last = list.find((m) => m.reason === "automatic");
+  res.set("Cache-Control", "no-store");
+  res.json({
+    current: snapshots.currentCounts(),
+    lastAutomaticAt: last ? last.createdAt : null,
+    totalSize: list.reduce((n, m) => n + (m.size || 0), 0),
+    snapshots: list,
+  });
+});
+
+app.post("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, res) => {
+  try {
+    const meta = makeSnapshot("manual", req.user.username);
+    res.json({ success: true, snapshot: meta });
+  } catch (err) {
+    console.error("Manual backup failed:", err);
+    res.status(500).json({ error: "The backup couldn't be made." });
+  }
+});
+
+app.get("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const file = snapshots.fileFor(req.params.id);
+  if (!file) return res.status(404).json({ error: "Backup not found." });
+  res.setHeader("Content-Type", "application/gzip");
+  res.setHeader("Content-Disposition", `attachment; filename="fcs-backup-${req.params.id}.json.gz"`);
+  res.sendFile(file);
+});
+
+app.post("/api/snapshots/:id/restore", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
+  if (!(await confirmWebmasterPassword(req, res))) return;
+  const { snapshot, error } = snapshots.read(req.params.id);
+  if (error) return res.status(400).json({ error });
+  const result = restoreSnapshot(snapshot, req.user.username);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json({ success: true, restoredFrom: snapshot.createdAt, savedCurrentAs: result.before.id });
+});
+
+// Restore from a backup file downloaded earlier (for when the server's own
+// copies are gone too)
+const backupUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024, files: 1 } });
+app.post("/api/snapshots/restore-upload", authenticateToken, requireRole("webmaster"), (req, res) => {
+  backupUpload.single("backup")(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || "Upload failed" });
+    if (!req.file) return res.status(400).json({ error: "Choose a backup file first." });
+    if (!(await confirmWebmasterPassword(req, res))) return;
+    const { snapshot, error } = snapshots.parse(req.file.buffer);
+    if (error) return res.status(400).json({ error });
+    const result = restoreSnapshot(snapshot, req.user.username);
+    if (result.error) return res.status(400).json({ error: result.error });
+    res.json({
+      success: true,
+      restoredFrom: snapshot.createdAt,
+      savedCurrentAs: result.before.id,
+      narrativesIncluded: !!snapshot.narratives,
+    });
+  });
+});
+
 // Security Alerts (Website Management): detected attacks grouped by the
 // address they came from, newest first
 app.get("/api/security-alerts", authenticateToken, requireRole("webmaster"), (req, res) => {
