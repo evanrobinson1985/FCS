@@ -241,9 +241,13 @@ body { background: var(--crt-bg); color: var(--phosphor); margin: 0; overflow: h
 // Your own animated character (a GIF or any image URL). Leave empty to keep
 // the built-in caver drawing.
 const CHARACTER_GIF_URL = "";
-// Your own looping sound effect (mp3/ogg/wav URL). Leave empty to use the
-// built-in synthesized alarm chirp.
-const ALARM_SOUND_URL = "";
+// The voice line that repeats while the window is open (mp3/ogg/wav URL):
+// "Uh uh uh, you didn't say the magic word", recorded for the FCS and made to
+// sound like a 1990s computer (11 kHz, 8-bit, telephone-band). Leave empty
+// to use the built-in synthesized alarm chirp instead.
+const ALARM_SOUND_URL = "/assets/sounds/magic-word.wav";
+// Pause between repeats of the voice line, in milliseconds
+const ALARM_SOUND_GAP_MS = 1200;
 // ---------------------------------------------------------------------------
 
 const MAGIC_LINE = "YOU DIDN'T SAY THE MAGIC WORD!";
@@ -295,7 +299,7 @@ keys.addEventListener("keydown", async (e) => {
 });
 
 // ---- sound -----------------------------------------------------------------
-let audioEl = null, ctx = null, chirpTimer = null;
+let audioEl = null, ctx = null, chirpTimer = null, repeatTimer = null;
 function chirp() {
   // three quick descending beeps, like an old workstation alarm
   if (!ctx || muted) return;
@@ -314,7 +318,11 @@ function startSound() {
   try {
     if (ALARM_SOUND_URL) {
       audioEl = new Audio(ALARM_SOUND_URL);
-      audioEl.loop = true; audioEl.muted = muted;
+      audioEl.muted = muted;
+      // says the line, pauses, says it again - for as long as the window is open
+      audioEl.addEventListener("ended", () => {
+        repeatTimer = setTimeout(() => { repeatTimer = null; if (audioEl) { audioEl.currentTime = 0; audioEl.play().catch(() => {}); } }, ALARM_SOUND_GAP_MS);
+      });
       audioEl.play().catch(() => {});
     } else {
       ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
@@ -326,6 +334,7 @@ function startSound() {
 }
 function stopSound() {
   if (audioEl) { audioEl.pause(); audioEl = null; }
+  clearTimeout(repeatTimer); repeatTimer = null;
   clearInterval(chirpTimer); chirpTimer = null;
 }
 function setMuted(m) {
@@ -398,7 +407,8 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !backdro
 // Browsers only allow sound after a click or key press on the page
 function wakeSound() {
   if (ctx && ctx.state === "suspended") ctx.resume();
-  if (audioEl && audioEl.paused) audioEl.play().catch(() => {});
+  // (not during the pause between repeats - that would cut the pause short)
+  if (audioEl && audioEl.paused && !audioEl.ended && !repeatTimer) audioEl.play().catch(() => {});
 }
 document.addEventListener("pointerdown", wakeSound);
 document.addEventListener("keydown", wakeSound);

@@ -4316,6 +4316,15 @@ describe("the access-denied lockout screen", () => {
     assert.match(odd.text, /const mode = "password"/, "only the two known modes");
   });
 
+  test("the magic-word voice line is served to visitors who aren't logged in", async () => {
+    const page = await request(app).get("/security-lockout");
+    const url = /const ALARM_SOUND_URL = "([^"]+)"/.exec(page.text)[1];
+    const res = await request(app).get(url).buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+    assert.equal(res.status, 200);
+    assert.match(res.headers["content-type"], /audio\/(wav|wave|x-wav)/);
+    assert.equal(res.body.slice(0, 4).toString(), "RIFF");
+  });
+
   test("a browser opening a page with an attack in the address gets the attack screen instead", async () => {
     const res = await request(app).get("/portal?id=1%27%20UNION%20SELECT%20passwordHash%20FROM%20users--")
       .set("Accept", "text/html,application/xhtml+xml").set("X-Forwarded-For", "203.0.113.200");
