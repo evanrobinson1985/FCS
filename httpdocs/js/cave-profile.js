@@ -109,6 +109,8 @@
       .cp-narr-meta { font-size: 12.5px; color: #5b6b78; }
       .cp-narr-text { max-width: 78ch; margin-top: 6px; overflow-wrap: anywhere; }
       .cp-narr-text img { max-width: 100%; height: auto; }
+      .cp-narr-text p { margin: 0 0 .7em; }
+      .cp-narr-text p:last-child { margin-bottom: 0; }
       .cp-narr-text.clamped { max-height: 9.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
       .cp-photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
       .cp-photos a { display: block; width: 132px; aspect-ratio: 4/3; border-radius: 5px; overflow: hidden; border: 1px solid #dfe5ea; background: #eef2f5; }
