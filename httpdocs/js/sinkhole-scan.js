@@ -15,11 +15,24 @@
  *   2. "fill" every depression to the level where water would spill out of it
  *      (Priority-Flood, Barnes et al. 2014) - the filled depth is how deep the
  *      depression is at each spot;
- *   3. group the filled cells into depressions and keep the ones deep and wide
- *      enough to matter, describing each (depth, size, shape, flat bottom =
- *      likely water, known cave nearby).
- * Steps 2-3 run in a background worker, so the page stays responsive. Nothing
- * is sent to this site's server.
+ *   3. group the filled cells into depressions, split each into its separate
+ *      pits, and keep the ones deep and wide enough to matter;
+ *   4. tell them apart from the man-made features that also hold water in LiDAR
+ *      (standard karst-mapping steps, e.g. Doctor & Young 2013, Wu et al. 2016):
+ *      - a morphological opening trims any ditch or drain running off a
+ *        depression, so its size and shape are of the depression itself;
+ *      - shape: how long and narrow, and how round (4 pi A / P^2) - a ditch;
+ *      - straight sides (Douglas-Peucker): a straight edge about as long as
+ *        the depression is wide - a dug basin, field edge or embankment;
+ *      - roads: the US Census road and railroad map (TIGERweb) is overlaid,
+ *        and depressions that run along a road are marked - roadside ditches,
+ *        and low ground split in two by a road embankment.
+ *      Each of those is a filter in the results, on by default, that can be
+ *      turned off to see everything.
+ * Steps 2-4 (apart from the road check) run in a background worker, so the page
+ * stays responsive. The elevation (USGS) and the road map (US Census) are
+ * fetched by the browser straight from those public services, for the scanned
+ * area only; nothing is sent to this site's server.
  *
  * Usage: SinkholeScan.attachControl(map, { getCaves: () => [{ id, name, lat, lng }, ...] });
  */
@@ -45,6 +58,17 @@
     depth: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100, Infinity],
     width: [2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, Infinity],
   };
+  // The tests the results can be filtered by (see the header). Thresholds come from scans of Florida
+  // LiDAR with known sinkholes, ditches, road crossings and retention ponds side by side.
+  const ROAD_BUFFER_M = 15;     // a road's centre line, plus its shoulders and roadside ditch
+  const ROAD_SHARE = 0.2;       // ...along at least this share of its outline (a round one touching a road: 0.14)
+  const STRAIGHT_SHARE = 0.8;   // a straight side at least this share of the width (and 20 m)
+  const isDitch = (f) => (f.narrow && f.elong >= 2) || f.elong > 4 || f.circularity < 0.2;
+  const hasStraightSide = (f) => f.straightRunM >= Math.max(20, STRAIGHT_SHARE * f.diamM);
+  const alongRoad = (f) => f.roadShare != null && f.roadShare >= ROAD_SHARE;
+  // US Census TIGERweb: primary and secondary roads, local roads, railroads (all public roads in the US)
+  const ROADS_URL = 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Transportation/MapServer';
+  const ROAD_LAYERS = [2, 6, 8, 9];
   const MAX_MARKERS = 2000;
   const MAX_OUTLINES = 3000;
 
@@ -125,9 +149,8 @@
       regions.push(r);
     }
 
-    // The outline of one depression, in cell coordinates: trace round the edge of its cells
-    // (Moore neighbour tracing), then drop points that don't change the shape (Douglas-Peucker).
-    function outlineOf(cells) {
+    // The edge of a set of cells, in cell coordinates: Moore neighbour tracing round the cell centres.
+    function traceOf(cells) {
       let x0 = W, y0 = H, x1 = -1, y1 = -1;
       for (const c of cells) { const x = c % W, y = (c / W) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
       const w = x1 - x0 + 3, h = y1 - y0 + 3, m = new Uint8Array(w * h);
@@ -144,6 +167,11 @@
         if (px === sx && py === sy) break;
         pts.push([px, py]);
       }
+      return pts.map(([x, y]) => [x + x0 - 1, y + y0 - 1]);
+    }
+    // ...simplified for drawing: drop points that don't change the shape (Douglas-Peucker)
+    function simplify(pts) {
+      if (pts.length < 4) return pts.slice();
       const keepPt = new Uint8Array(pts.length); keepPt[0] = 1; keepPt[pts.length - 1] = 1;
       const st = [[0, pts.length - 1]];
       while (st.length) {
@@ -153,10 +181,9 @@
         for (let i = a + 1; i < b; i++) { const d = Math.abs((pts[i][0] - ax) * (by - ay) - (pts[i][1] - ay) * (bx - ax)) / len; if (d > dm) { dm = d; ix = i; } }
         if (dm > 0.75) { keepPt[ix] = 1; st.push([a, ix], [ix, b]); }
       }
-      const out = [];
-      for (let i = 0; i < pts.length; i++) if (keepPt[i]) out.push([pts[i][0] + x0 - 1, pts[i][1] + y0 - 1]);
-      return out;
+      return pts.filter((_, i) => keepPt[i]);
     }
+    function outlineOf(cells) { return simplify(traceOf(cells)); }
 
     // ---- one result per pit, not per depression ----
     // A depression often holds several sinkholes: a broad hollow with pits in its floor, or two pits side
@@ -222,33 +249,130 @@
     const pits = [];
     for (const reg of regions) for (const p of pitsOf(reg)) pits.push(measure(p.cells, p.spill));
 
-    const keep = [], cellArea = res * res;
+    // ---- describing each pit ----
+    // Each pit is measured the way the karst-mapping literature does (e.g. Doctor & Young 2013,
+    // Wu et al. 2016), so the results can be told apart from the features that also hold water
+    // in LiDAR: ditches, road embankments that dam a swale, and dug ponds.
+    const cellArea = res * res;
+    const R_OPEN = Math.max(1, Math.round(3 / res));   // trims parts narrower than about 7 m (a ditch)
+    const inPit = new Int32Array(N);                    // set-membership stamps (no clearing between uses)
+    let pitStamp = 0;
+
+    // Morphological opening (erode, then dilate, by R_OPEN): what's left is the depression's
+    // body without any ditch or drain running off it. Done with a chamfer distance transform.
+    function openingOf(cells) {
+      let x0 = W, y0 = H, x1 = -1, y1 = -1;
+      for (const c of cells) { const x = c % W, y = (c / W) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      const P = R_OPEN + 1, w = x1 - x0 + 1 + 2 * P, h = y1 - y0 + 1 + 2 * P, n = w * h;
+      const at = (c) => (((c / W) | 0) - y0 + P) * w + (c % W) - x0 + P;
+      const m = new Uint8Array(n); for (const c of cells) m[at(c)] = 1;
+      const BIG = 1e9, D1 = 1, D2 = Math.SQRT2;
+      const dist = (seedFn) => {
+        const d = new Float32Array(n);
+        for (let i = 0; i < n; i++) d[i] = seedFn(i) ? 0 : BIG;
+        for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x; let v = d[i];
+          v = Math.min(v, d[i - 1] + D1, d[i - w] + D1, d[i - w - 1] + D2, d[i - w + 1] + D2); d[i] = v;
+        }
+        for (let y = h - 2; y > 0; y--) for (let x = w - 2; x > 0; x--) {
+          const i = y * w + x; let v = d[i];
+          v = Math.min(v, d[i + 1] + D1, d[i + w] + D1, d[i + w + 1] + D2, d[i + w - 1] + D2); d[i] = v;
+        }
+        return d;
+      };
+      const toEdge = dist((i) => !m[i]);
+      const eroded = new Uint8Array(n); let any = false;
+      for (let i = 0; i < n; i++) if (m[i] && toEdge[i] > R_OPEN) { eroded[i] = 1; any = true; }
+      if (!any) return [];
+      const toCore = dist((i) => eroded[i]);
+      return cells.filter((c) => toCore[at(c)] <= R_OPEN + 0.01);
+    }
+    // the connected part of a set of cells that holds (or comes nearest) the given cell
+    function partWith(cells, near) {
+      const stamp = ++pitStamp; for (const c of cells) inPit[c] = stamp;
+      let seed = near;
+      if (inPit[near] !== stamp) {
+        let best = Infinity; const nx0 = near % W, ny0 = (near / W) | 0;
+        for (const c of cells) { const d = Math.hypot(c % W - nx0, ((c / W) | 0) - ny0); if (d < best) { best = d; seed = c; } }
+      }
+      const out = [seed], seen = ++pitStamp; inPit[seed] = seen;
+      for (let k = 0; k < out.length; k++) {
+        const c = out[k], cx = c % W, cy = (c / W) | 0;
+        for (let d = 0; d < 8; d++) {
+          const nx = cx + dx[d], ny = cy + dy[d]; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const q = ny * W + nx; if (inPit[q] !== stamp) continue;
+          inPit[q] = seen; out.push(q);
+        }
+      }
+      return out;
+    }
+    const keep = [];
     for (const r of pits) {
-      const area = r.cells * cellArea, diam = 2 * Math.sqrt(area / Math.PI);
-      if (r.maxDepth < minDepth || diam < minDiam) continue;
+      const area0 = r.cells * cellArea, diam0 = 2 * Math.sqrt(area0 / Math.PI);
+      if (r.maxDepth < minDepth || diam0 < minDiam) continue;
+      // the body of the pit, with any ditch running off it trimmed away
+      const opened = openingOf(r.cellsList);
+      const narrow = opened.length === 0;
+      const body = narrow ? r.cellsList : partWith(opened, r.deepest);
+      const m = body === r.cellsList ? r : measure(body, r.spill);
+      const area = m.cells * cellArea, diam = 2 * Math.sqrt(area / Math.PI);
+      if (m.maxDepth < minDepth || diam < minDiam) continue;
       // shape: how long and narrow (ratio of the two axes of its spread)
-      const mx = r.sx / r.cells, my = r.sy / r.cells;
-      const vxx = r.sxx / r.cells - mx * mx, vyy = r.syy / r.cells - my * my, vxy = r.sxy / r.cells - mx * my;
+      const mx = m.sx / m.cells, my = m.sy / m.cells;
+      const vxx = m.sxx / m.cells - mx * mx, vyy = m.syy / m.cells - my * my, vxy = m.sxy / m.cells - mx * my;
       const tr = vxx + vyy, det = vxx * vyy - vxy * vxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
       const l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
       const elong = Math.sqrt(l1 / l2);
       if (maxElong && elong > maxElong) continue;
+      // roundness (4 pi A / P^2, the isoperimetric quotient: 1 for a circle, near 0 for a ditch)
+      const ring = traceOf(body);
+      let perim = 0, ringArea = 0;
+      for (let i = 0; i < ring.length; i++) { const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % ring.length]; perim += Math.hypot(x2 - x1, y2 - y1); ringArea += x1 * y2 - x2 * y1; }
+      ringArea = Math.abs(ringArea) / 2;
+      const circularity = ring.length < 4 || !perim ? 1 : Math.min(1, 4 * Math.PI * ringArea / (perim * perim));
+      // Straight sides: the longest stretch of the outline that lies within 1.2 m of one straight line
+      // (the longest edge once the outline is simplified to that tolerance, Douglas-Peucker). Dug
+      // basins, borrow pits, embankments and field edges give a depression a straight side about as
+      // long as it is wide; a natural sinkhole's rim curves (in Florida LiDAR tests, no natural one
+      // ran straight for more than about 80% of its width, though a few small ones in plowed fields
+      // came close).
+      let straightRunM = 0;
+      if (ring.length >= 8) {
+        const n = ring.length, tol = 1.2 / res;
+        // split the closed ring at two far-apart points, then simplify each half
+        let far = 0, fd = -1;
+        for (let k = 0; k < n; k++) { const d = Math.hypot(ring[k][0] - ring[0][0], ring[k][1] - ring[0][1]); if (d > fd) { fd = d; far = k; } }
+        const longestEdge = (from, to) => {   // ring indices from..to (to > from, may run past n)
+          const P = (k) => ring[k % n], st = [[from, to]]; let best = 0;
+          while (st.length) {
+            const [u, v] = st.pop();
+            const [ax, ay] = P(u), [bx, by] = P(v), L = Math.hypot(bx - ax, by - ay);
+            let dm = 0, ix = -1;
+            if (L > 0) for (let k = u + 1; k < v; k++) { const [qx, qy] = P(k); const d = Math.abs((qx - ax) * (by - ay) - (qy - ay) * (bx - ax)) / L; if (d > dm) { dm = d; ix = k; } }
+            else if (v - u > 1) { dm = Infinity; ix = (u + v) >> 1; }
+            if (dm > tol) st.push([u, ix], [ix, v]); else if (L > best) best = L;
+          }
+          return best;
+        };
+        straightRunM = Math.max(longestEdge(0, far), longestEdge(far, n)) * res;
+      }
       // flat bottom: a good share of it within 10 cm of one level near its lowest point - typical of
       // water, which LiDAR flattens. (That level is the 5th-percentile height, so a single stray low
       // pixel can't stand in for the bottom.)
       let flatBottom = false;
-      if (r.cells * cellArea > 150) {
-        const els = new Float32Array(r.cellsList.length);
-        for (let k = 0; k < els.length; k++) els[k] = dem[r.cellsList[k]];
+      if (area > 150) {
+        const els = new Float32Array(body.length);
+        for (let k = 0; k < els.length; k++) els[k] = dem[body[k]];
         els.sort();
         const base = els[Math.floor(els.length * 0.05)];
         let flat = 0; for (let k = 0; k < els.length; k++) if (Math.abs(els[k] - base) < 0.1) flat++;
         flatBottom = flat / els.length > 0.3;
       }
       keep.push({
-        x: r.deepest % W, y: (r.deepest / W) | 0, cx: mx, cy: my,
-        depthM: r.maxDepth, areaM2: area, diamM: diam, volumeM3: r.volume * cellArea,
-        elong, flatBottom, spillM: r.spill, outline: outlineOf(r.cellsList),
+        x: m.deepest % W, y: (m.deepest / W) | 0, cx: mx, cy: my,
+        depthM: m.maxDepth, areaM2: area, diamM: diam, volumeM3: m.volume * cellArea,
+        elong, flatBottom, spillM: m.spill, outline: simplify(ring),
+        circularity, straightRunM, narrow, trimmedM2: (r.cells - m.cells) * cellArea,
       });
     }
     keep.sort((a, b) => b.depthM - a.depthM);
@@ -274,6 +398,79 @@
       worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || 'scan failed')); };
       worker.postMessage({ dem, W, H, res, opts }, [dem.buffer]);
     });
+  }
+
+  // ---------- roads ----------
+  // The road and railroad centre lines in an area, as line segments in lat/lng.
+  async function loadRoads(b, signal) {
+    const segs = [];
+    await Promise.all(ROAD_LAYERS.map(async (layer) => {
+      for (let offset = 0; offset < 200000; offset += 5000) {
+        const q = new URLSearchParams({
+          geometry: `${b.w},${b.s},${b.e},${b.n}`, geometryType: 'esriGeometryEnvelope', inSR: '4326', spatialRel: 'esriSpatialRelIntersects',
+          outFields: 'MTFCC', returnGeometry: 'true', outSR: '4326', resultOffset: String(offset), resultRecordCount: '5000', f: 'geojson',
+        });
+        const resp = await fetch(`${ROADS_URL}/${layer}/query?${q}`, { signal });
+        if (!resp.ok) throw new Error(`road map returned ${resp.status}`);
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error.message || 'road map error');
+        for (const feat of data.features || []) {
+          const g = feat.geometry; if (!g) continue;
+          const lines = g.type === 'MultiLineString' ? g.coordinates : g.type === 'LineString' ? [g.coordinates] : [];
+          for (const ln of lines) for (let i = 1; i < ln.length; i++) segs.push([ln[i - 1][1], ln[i - 1][0], ln[i][1], ln[i][0]]);
+        }
+        if (!(data.exceededTransferLimit || (data.properties && data.properties.exceededTransferLimit)) || (data.features || []).length < 5000) break;
+      }
+    }));
+    return segs;
+  }
+  // A lookup of road segments by 50 m squares, in metres east/north of the area's south-west corner.
+  function roadIndex(segs, b) {
+    const lat0 = (b.n + b.s) / 2, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110574, G = 50;
+    const toM = (lat, lng) => [(lng - b.w) * kx, (lat - b.s) * ky];
+    const cells = new Map();
+    for (const [la1, ln1, la2, ln2] of segs) {
+      const [x1, y1] = toM(la1, ln1), [x2, y2] = toM(la2, ln2), sg = [x1, y1, x2, y2];
+      const gx0 = Math.floor((Math.min(x1, x2) - ROAD_BUFFER_M) / G), gx1 = Math.floor((Math.max(x1, x2) + ROAD_BUFFER_M) / G);
+      const gy0 = Math.floor((Math.min(y1, y2) - ROAD_BUFFER_M) / G), gy1 = Math.floor((Math.max(y1, y2) + ROAD_BUFFER_M) / G);
+      if ((gx1 - gx0 + 1) * (gy1 - gy0 + 1) > 40000) continue;   // a stray very long segment
+      for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+        const k = `${gx},${gy}`; if (!cells.has(k)) cells.set(k, []); cells.get(k).push(sg);
+      }
+    }
+    return { toM, cells, G };
+  }
+  // The share of an outline ([[lat, lng], ...]) that runs alongside a road: within ROAD_BUFFER_M of it
+  // and roughly parallel to it (within 25 degrees), checked every 2 m. A roadside ditch, or low ground
+  // the road embankment cuts off, has a whole side running along the road; a round sinkhole near a
+  // road only runs parallel to it for a short stretch where its rim comes closest.
+  const PARALLEL_COS = Math.cos(25 * Math.PI / 180);
+  function alongRoadShare(outline, idx) {
+    if (!idx || outline.length < 3) return 0;
+    let near = 0, total = 0;
+    const runsAlong = (x, y, ux, uy) => {
+      for (const [x1, y1, x2, y2] of idx.cells.get(`${Math.floor(x / idx.G)},${Math.floor(y / idx.G)}`) || []) {
+        const vx = x2 - x1, vy = y2 - y1, L2 = vx * vx + vy * vy; if (!L2) continue;
+        const t = Math.max(0, Math.min(1, ((x - x1) * vx + (y - y1) * vy) / L2));
+        if (Math.hypot(x - (x1 + t * vx), y - (y1 + t * vy)) > ROAD_BUFFER_M) continue;
+        if (Math.abs(ux * vx + uy * vy) / Math.sqrt(L2) >= PARALLEL_COS) return true;
+      }
+      return false;
+    };
+    // the outline's direction at each point, smoothed over about 10 m so pixel steps don't count
+    const pts = [];
+    for (let i = 0; i < outline.length; i++) {
+      const [ax, ay] = idx.toM(outline[i][0], outline[i][1]), [bx, by] = idx.toM(outline[(i + 1) % outline.length][0], outline[(i + 1) % outline.length][1]);
+      const steps = Math.max(1, Math.round(Math.hypot(bx - ax, by - ay) / 2));
+      for (let k = 0; k < steps; k++) pts.push([ax + (bx - ax) * k / steps, ay + (by - ay) * k / steps]);
+    }
+    const n = pts.length, h = Math.min(Math.max(1, Math.floor(n / 4)), 5);
+    for (let i = 0; i < n; i++) {
+      const [px, py] = pts[(i - h + n) % n], [qx, qy] = pts[(i + h) % n], L = Math.hypot(qx - px, qy - py);
+      total++;
+      if (L && runsAlong(pts[i][0], pts[i][1], (qx - px) / L, (qy - py) / L)) near++;
+    }
+    return total ? near / total : 0;
   }
 
   // ---------- helpers ----------
@@ -311,7 +508,7 @@
     const getBasemaps = (options && options.getBasemaps) || (() => []);
     // the results filter; kept between scans (and in this browser) so it's set the way you like it
     // (min/max in feet; Infinity = no upper limit, saved as null)
-    let filter = { depthMin: 2, depthMax: Infinity, widthMin: 15, widthMax: Infinity, skipDitches: true };
+    let filter = { depthMin: 2, depthMax: Infinity, widthMin: 15, widthMax: Infinity, skipDitches: true, skipStraight: true, skipRoads: true };
     try {
       const saved = JSON.parse(localStorage.getItem('sinkscan-filter') || 'null');
       if (saved && typeof saved === 'object') {
@@ -321,6 +518,8 @@
         filter.widthMin = num(saved.widthMin, num(saved.widthFt, filter.widthMin));
         filter.widthMax = num(saved.widthMax, Infinity);
         if (typeof saved.skipDitches === 'boolean') filter.skipDitches = saved.skipDitches;
+        if (typeof saved.skipStraight === 'boolean') filter.skipStraight = saved.skipStraight;
+        if (typeof saved.skipRoads === 'boolean') filter.skipRoads = saved.skipRoads;
       }
     } catch (_) { /* ignore */ }
     const E = Terrain3D.elevation;
@@ -381,7 +580,7 @@
         const bBox = el('button', null, 'Select an area to scan'); bBox.type = 'button'; bBox.className = 'ss-opt';
         menu.appendChild(bView); menu.appendChild(bBox);
         menu.appendChild(el('div', 'font-size:11px;color:#64748b;line-height:1.35;margin-top:4px;',
-          'Finds closed low spots in USGS LiDAR elevation (US only) - mostly sinkholes here, but also ponds, pits and spots where a road blocks drainage. Always scanned at 1 m detail; areas bigger than 2 × 2 km are scanned in sections and combined (up to about 10 × 10 km). You can filter the results by depth and width afterwards.'));
+          'Finds closed low spots in USGS LiDAR elevation (US only), then sets aside the ones shaped like ditches, dug basins and road embankments (checked against the US Census road map). Always scanned at 1 m detail; areas bigger than 2 × 2 km are scanned in sections and combined (up to about 10 × 10 km). You can filter the results afterwards.'));
         L.DomEvent.disableClickPropagation(wrap);
         L.DomEvent.disableScrollPropagation(wrap);
         L.DomEvent.on(btn, 'click', (e) => {
@@ -503,13 +702,18 @@
       const caves = (getCaves() || []).filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng));
       const view = buildResultsView(b, ui, sections.length);
       const sectionAt = (lat, lng) => sections.find((s) => lat <= s.core.n && lat >= s.core.s && lng >= s.core.w && lng <= s.core.e) || null;
-      let failed = 0, noData = 0, done = 0;
+      let failed = 0, noData = 0, done = 0, noRoads = 0;
 
       // Downloads run one section ahead of the analysis, so the two overlap.
       const fetchSection = (s) => {
         const plan = E.planGrid(s.bounds, SECTION_BUDGET);
+        // the road map for the same area, fetched alongside; a scan still works without it
+        const roads = loadRoads(s.bounds, signal).then((segs) => roadIndex(segs, s.bounds), (err) => {
+          if (err.name !== 'AbortError') console.error('Sinkhole scan: road map unavailable:', err);
+          return null;
+        });
         return E.downloadDEM(plan, signal, (d, n) => view.progress(done, `Section ${done + 1} of ${sections.length}: downloading… ${d} of ${n}`))
-          .then((grid) => ({ grid, plan }), (err) => { if (err.name === 'AbortError') throw err; return { err }; });
+          .then(async (grid) => ({ grid, plan, roads: await roads }), (err) => { if (err.name === 'AbortError') throw err; return { err }; });
       };
       let next = fetchSection(sections[0]);
       (async () => {
@@ -519,7 +723,8 @@
           if (signal.aborted) return;
           if (k + 1 < sections.length) next = fetchSection(sections[k + 1]);
           if (got.err) { failed++; console.error('Sinkhole scan section failed:', got.err); done++; continue; }
-          const { grid } = got;
+          const { grid, roads } = got;
+          if (!roads) noRoads++;
           let valid = 0; for (let i = 0; i < grid.data.length; i += 7) if (grid.data[i] >= E.ND) { valid++; break; }
           if (!valid) { noData++; done++; view.progress(done, null); continue; }
           view.progress(done, `Section ${k + 1} of ${sections.length}: looking for depressions…`);
@@ -542,14 +747,14 @@
             }
             const reach = f.diamM / 2 + 30;
             if (caves.some((c) => metersBetween({ lat, lng }, c) <= reach)) { view.skipKnown(); continue; }
-            add.push(Object.assign({}, f, { lat, lng, outline }));
+            add.push(Object.assign({}, f, { lat, lng, outline, roadShare: roads ? alongRoadShare(outline, roads) : null }));
           }
           done++;
           view.add(add);
           view.progress(done, null);
         }
         abort = null;
-        view.finished({ failed, noData });
+        view.finished({ failed, noData, noRoads });
       })().catch((err) => {
         if (err.name === 'AbortError' || signal.aborted) return;
         console.error('Sinkhole scan:', err);
@@ -611,11 +816,18 @@
       };
       rangePair('Depth', 'depthMin', 'depthMax', FILTER_STOPS.depth);
       rangePair('Width', 'widthMin', 'widthMax', FILTER_STOPS.width);
-      const dl = el('label', 'display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;cursor:pointer;');
-      const ditch = document.createElement('input'); ditch.type = 'checkbox'; ditch.checked = !!filter.skipDitches;
-      ditch.addEventListener('change', () => { filter.skipDitches = ditch.checked; applyFilter(); });
-      dl.appendChild(ditch); dl.appendChild(document.createTextNode('Hide long, narrow ones (ditches)'));
-      fbox.appendChild(dl);
+      // the man-made look-alikes; each hidden by default, and each can be shown again
+      fbox.appendChild(el('div', 'font-size:12px;margin-top:6px;font-weight:600;', 'Hide ones that look man-made:'));
+      const toggle = (key, text, tip) => {
+        const lab = el('label', 'display:flex;align-items:flex-start;gap:6px;font-size:12px;margin-top:3px;cursor:pointer;');
+        const box = document.createElement('input'); box.type = 'checkbox'; box.checked = !!filter[key]; box.style.marginTop = '2px';
+        box.addEventListener('change', () => { filter[key] = box.checked; applyFilter(); });
+        const t = el('span', null, text); t.title = tip;
+        lab.appendChild(box); lab.appendChild(t); fbox.appendChild(lab);
+      };
+      toggle('skipDitches', 'Long and narrow (ditches)', 'Narrower than about 23 ft all the way along, or much longer than wide');
+      toggle('skipStraight', 'Straight-sided (dug ponds, borrow pits, embankments)', 'A straight side nearly as long as the depression is wide - natural sinkholes have curved rims');
+      toggle('skipRoads', 'Along a road or railroad (roadside ditches, road-dammed low spots)', 'At least a fifth of its edge runs alongside a road or railroad on the US Census road map (within 50 ft and parallel to it)');
       ui.body.appendChild(fbox);
 
       const tools = el('div', 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;');
@@ -645,7 +857,7 @@
         results.shown = all.filter((f) => {
           const dFt = f.depthM * FT, wFt = f.diamM * FT;
           return dFt >= filter.depthMin && dFt <= filter.depthMax && wFt >= filter.widthMin && wFt <= filter.widthMax &&
-            !(filter.skipDitches && f.elong > 4);
+            !(filter.skipDitches && isDitch(f)) && !(filter.skipStraight && hasStraightSide(f)) && !(filter.skipRoads && alongRoad(f));
         });
         const shown = results.shown;
         ui.title.textContent = `${shown.length} possible sinkhole${shown.length === 1 ? '' : 's'}` + (shown.length !== all.length ? ` (of ${all.length})` : '') + (isDone ? '' : '…');
@@ -708,13 +920,14 @@
           statusLine.textContent = text || (done < sectionCount ? `Scanned ${done} of ${sectionCount} sections…` : '');
           if (sectionCount === 1 && !text) statusLine.textContent = '';
         },
-        finished({ failed, noData }) {
+        finished({ failed, noData, noRoads }) {
           isDone = true;
           bar.remove();
           const bits = [];
           if (failed) bits.push(`${failed} section${failed === 1 ? '' : 's'} couldn’t be downloaded, so ${failed === 1 ? 'its' : 'their'} area wasn’t scanned - try again later, or select just that part.`);
           if (noData && noData === sectionCount) bits.push('No elevation data here. USGS 3DEP covers the United States only.');
           else if (noData) bits.push(`${noData} section${noData === 1 ? ' has' : 's have'} no elevation data.`);
+          if (noRoads) bits.push(`The road map couldn’t be loaded for ${noRoads === sectionCount ? 'this area' : `${noRoads} section${noRoads === 1 ? '' : 's'}`}, so ones along roads there aren’t marked.`);
           statusLine.textContent = '';
           writeNote(bits.join(' '));
           applyFilter();
@@ -744,7 +957,9 @@
     function describe(f) {
       const bits = [];
       if (f.flatBottom) bits.push('flat bottom - probably holds water');
-      if (f.elong > 2.5) bits.push('long and narrow');
+      if (isDitch(f)) bits.push('ditch-shaped');
+      if (hasStraightSide(f)) bits.push('straight-sided');
+      if (alongRoad(f)) bits.push('along a road');
       bits.push(`${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}`);
       return bits.join(' · ');
     }
@@ -755,8 +970,12 @@
       const line = (t) => box.appendChild(el('div', null, t));
       line(`Depth: about ${ft(f.depthM)} ft below where it would overflow`);
       line(`Size: about ${ft(f.diamM)} ft across (${Math.round(f.areaM2 * FT * FT).toLocaleString()} sq ft)`);
+      line(`Shape: ${f.circularity >= 0.75 ? 'round' : f.circularity >= 0.5 ? 'rounded' : 'irregular'} (roundness ${Math.round(f.circularity * 100)}%)`);
+      if (f.trimmedM2 > 20) line(`A ditch or drain running off it (${Math.round(f.trimmedM2 * FT * FT).toLocaleString()} sq ft) is left out of its size`);
       if (f.flatBottom) line('Flat bottom: probably holds water (pond or lake)');
-      if (f.elong > 2.5) line('Long and narrow: could be a ditch or drainage feature');
+      if (isDitch(f)) line('Long and narrow: probably a ditch');
+      if (hasStraightSide(f)) line(`Straight side ${ft(f.straightRunM)} ft long: probably dug, or shaped by a field edge or embankment`);
+      if (alongRoad(f)) line(`Runs along a road or railroad (${Math.round(f.roadShare * 100)}% of its edge): probably a roadside ditch or low ground dammed by the road`);
       const coords = `${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}`;
       const c = el('div', 'margin-top:6px;display:flex;align-items:center;gap:6px;');
       c.appendChild(el('code', 'font-size:12px;', coords));
@@ -776,7 +995,9 @@
       return found.map((f) => ({
         number: f.n, latitude: +f.lat.toFixed(6), longitude: +f.lng.toFixed(6),
         depth_ft: +(f.depthM * FT).toFixed(1), width_ft: +(f.diamM * FT).toFixed(0), area_sqft: Math.round(f.areaM2 * FT * FT),
-        flat_bottom: f.flatBottom, long_narrow: f.elong > 2.5,
+        roundness: +f.circularity.toFixed(2), straight_side_ft: ft(f.straightRunM),
+        road_edge_share: f.roadShare == null ? '' : +f.roadShare.toFixed(2),
+        flat_bottom: f.flatBottom, ditch_shaped: isDitch(f), straight_sided: hasStraightSide(f), along_road: alongRoad(f),
       }));
     }
     function stamp() { return new Date().toISOString().slice(0, 10); }
@@ -796,5 +1017,5 @@
     return { control, clear: clearResults, results: () => results };
   }
 
-  window.SinkholeScan = { attachControl, analyze };
+  window.SinkholeScan = { attachControl, analyze, SCAN_FLOOR, isDitch, hasStraightSide, alongRoad, roadIndex, alongRoadShare };
 })();

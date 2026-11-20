@@ -92,3 +92,63 @@ test("sinkholes inside a larger hollow are each reported, not as one wide depres
   assert.equal(r.found.length, 3, "three sinkholes, not the hollow as a whole");
   assert.ok(r.found.every((f) => f.diamM < 250), "none of them is the whole hollow");
 });
+
+// ---- telling sinkholes from ditches, dug basins and road features ----
+const S = ctx.window.SinkholeScan;
+
+test("a ditch running off a sinkhole is trimmed off, so the size is the sinkhole's own", () => {
+  const W = 400, H = 300;
+  // a 30 m sinkhole with a 4 m wide, 1.5 m deep ditch running 120 m east from it at the same level
+  const z = terrain(W, H, [{ x: 120, y: 150, r: 15, depth: 2.5 }]);
+  for (let y = 148; y <= 152; y++) for (let x = 120; x < 255; x++) z[y * W + x] = Math.min(z[y * W + x], 30 + 0.004 * 120 + 0.003 * 150 - 1.5);
+  const r = analyze(z, W, H, 1, opts);
+  const f = near(r.found, 120, 150);
+  assert.ok(f, "the sinkhole is found");
+  assert.ok(Math.abs(f.diamM - 30) < 6, `width without the ditch: ${f.diamM}`);
+  assert.ok(f.trimmedM2 > 300, `the ditch was trimmed (${f.trimmedM2} m²)`);
+  assert.ok(f.outline.every(([x]) => x < 145), "the outline stops where the ditch begins");
+  assert.equal(S.isDitch(f), false);
+});
+
+test("a narrow ditch on its own is marked ditch-shaped", () => {
+  const W = 400, H = 300;
+  const r = analyze(terrain(W, H, [{ ditch: true, x: 200, y: 150, len: 120, depth: 1.2 }]), W, H, 1, { ...opts, maxElong: 0 });
+  assert.equal(r.found.length, 1);
+  assert.equal(r.found[0].narrow, true);
+  assert.equal(S.isDitch(r.found[0]), true);
+});
+
+test("a dug, straight-sided basin is marked straight-sided; a round sinkhole is not", () => {
+  const W = 400, H = 300;
+  const z = terrain(W, H, [{ x: 300, y: 150, r: 25, depth: 3 }]);
+  // a 60 x 30 m retention basin: steep sides, flat floor 2 m down
+  for (let y = 135; y < 165; y++) for (let x = 60; x < 120; x++) {
+    const edge = Math.min(x - 60, 119 - x, y - 135, 164 - y);
+    z[y * W + x] -= Math.min(2, 0.5 * (edge + 1));
+  }
+  const r = analyze(z, W, H, 1, opts);
+  const basin = near(r.found, 90, 150) || r.found.find((f) => f.x >= 60 && f.x < 120);
+  const sink = near(r.found, 300, 150);
+  assert.ok(basin && sink, "both found");
+  assert.equal(S.hasStraightSide(basin), true, `basin straight run ${basin.straightRunM} m, width ${basin.diamM} m`);
+  assert.equal(S.hasStraightSide(sink), false, `sinkhole straight run ${sink.straightRunM} m`);
+  assert.ok(sink.circularity > 0.8 && basin.circularity < sink.circularity);
+});
+
+test("road overlay: a depression running along a road is marked, one away from it is not", () => {
+  const b = { n: 29.01, s: 29.0, e: -82.0, w: -82.01 };
+  // a road running east-west through the middle of the area
+  const idx = S.roadIndex([[29.005, -82.01, 29.005, -82.0]], b);
+  const dLat = 1 / 110574, dLng = 1 / (111320 * Math.cos(29.005 * Math.PI / 180));
+  const ring = (lat, lng, rx, ry) => Array.from({ length: 48 }, (_, k) => [lat + ry * Math.sin(k / 48 * 2 * Math.PI) * dLat, lng + rx * Math.cos(k / 48 * 2 * Math.PI) * dLng]);
+  // a long, thin roadside ditch 8 m off the road, and a sinkhole 150 m away
+  const ditch = S.alongRoadShare(ring(29.005 - 8 * dLat, -82.005, 60, 6), idx);
+  const away = S.alongRoadShare(ring(29.005 - 150 * dLat, -82.005, 20, 20), idx);
+  // a round sinkhole just touching the road: only the near part of its rim counts
+  const touching = S.alongRoadShare(ring(29.005 - 30 * dLat, -82.005, 25, 25), idx);
+  assert.ok(ditch > 0.9, `ditch ${ditch}`);
+  assert.equal(away, 0);
+  assert.ok(touching > 0 && touching < 0.2, `touching ${touching}`);
+  assert.equal(S.alongRoad({ roadShare: ditch }), true);
+  assert.equal(S.alongRoad({ roadShare: null }), false, "no road map: nothing marked");
+});
