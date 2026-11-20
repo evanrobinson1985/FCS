@@ -4627,3 +4627,22 @@ describe("security log: how long each session lasted", () => {
     assert.ok(mine.some((l) => /inactive for 30 minutes/.test(l.details)));
   });
 });
+
+describe("histoplasmosis hazard", () => {
+  test("a member's proposal can include it, and it reaches the cave on approval", async () => {
+    const caves = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "cave-database.json"), "utf8"));
+    const cave = caves[0];
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    const sub = await request(app).post("/api/pending-submissions").set(member)
+      .send({ type: "edit_cave", caveId: cave.id, proposedData: { hazards: { histoplasmosis: true, notes: "Heavy bat guano near the entrance" } } });
+    assert.equal(sub.status, 200);
+    assert.equal(sub.body.submission.proposedData.hazards.histoplasmosis, true);
+    const bad = await request(app).post("/api/pending-submissions").set(member)
+      .send({ type: "edit_cave", caveId: cave.id, proposedData: { hazards: { histoplasmosis: "yes" } } });
+    assert.equal(bad.status, 400);
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).patch(`/api/pending-submissions/${sub.body.submission.submissionId}`).set(wm).send({ status: "approved" });
+    const stored = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "cave-database.json"), "utf8")).find((c) => c.id === cave.id);
+    assert.equal(stored.hazards.histoplasmosis, true);
+  });
+});

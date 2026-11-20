@@ -3523,7 +3523,7 @@ function sanitizeProposedCave(raw) {
     const h = raw.hazards;
     if (!isPlainObject(h)) return bad("hazards");
     const hazards = {};
-    for (const flag of ["badAir", "unstable", "casualties"]) {
+    for (const flag of ["badAir", "unstable", "casualties", "histoplasmosis"]) {
       if (h[flag] === undefined || h[flag] === null) continue;
       if (typeof h[flag] !== "boolean") return bad("hazards");
       hazards[flag] = h[flag];

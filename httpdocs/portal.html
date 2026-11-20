@@ -1259,9 +1259,13 @@
 <input id="hazard-unstable" style="margin-right: 8px;" type="checkbox"/>
 <label for="hazard-unstable">Unstable Structure (Collapse Risk)</label>
 </div>
-<div style="display: flex; align-items: center;">
+<div style="display: flex; align-items: center; margin-bottom: 8px;">
 <input id="hazard-casualties" style="margin-right: 8px;" type="checkbox"/>
 <label for="hazard-casualties">Known Casualties / Deaths</label>
+</div>
+<div style="display: flex; align-items: center;">
+<input id="hazard-histoplasmosis" style="margin-right: 8px;" type="checkbox"/>
+<label for="hazard-histoplasmosis">Histoplasmosis (Bat/Bird Guano Fungus)</label>
 </div>
 <div class="form-group">
 <label for="hazard-notes">Hazard Notes:</label>
@@ -3142,6 +3146,7 @@
           if (cave.hazards.badAir) hazardsList.push('Bad Air');
           if (cave.hazards.unstable) hazardsList.push('Unstable Structure');
           if (cave.hazards.casualties) hazardsList.push('Known Casualties');
+          if (cave.hazards.histoplasmosis) hazardsList.push('Histoplasmosis');
           hazardsText = hazardsList.length > 0 ? hazardsList.join(', ') : 'None reported';
           if (cave.hazards.notes) hazardsText += ` (${cave.hazards.notes})`;
         }
@@ -3737,6 +3742,10 @@ function createHazardStatsCard() {
         <span class="stat-value" id="casualties-count">0</span>
       </div>
       <div class="stat-item">
+        <span class="stat-label">Histoplasmosis Risk:</span>
+        <span class="stat-value" id="histoplasmosis-count">0</span>
+      </div>
+      <div class="stat-item">
         <span class="stat-label">Total Caves with Hazards:</span>
         <span class="stat-value" id="total-hazards-count">0</span>
       </div>
@@ -3752,6 +3761,7 @@ function updateHazardStats() {
   let badAirCount = 0;
   let unstableCount = 0;
   let casualtiesCount = 0;
+  let histoplasmosisCount = 0;
   let totalHazardCount = 0;
   
   // Count caves with each type of hazard
@@ -3771,6 +3781,10 @@ function updateHazardStats() {
         casualtiesCount++;
         hasHazard = true;
       }
+      if (cave.hazards.histoplasmosis) {
+        histoplasmosisCount++;
+        hasHazard = true;
+      }
     } else if (cave.hazardousConditions) {
       const hazardText = String(cave.hazardousConditions).toLowerCase();
       
@@ -3786,6 +3800,10 @@ function updateHazardStats() {
         casualtiesCount++;
         hasHazard = true;
       }
+      if (hazardText.includes('histo')) {
+        histoplasmosisCount++;
+        hasHazard = true;
+      }
     }
     
     if (hasHazard) {
@@ -3797,6 +3815,8 @@ function updateHazardStats() {
   document.getElementById('bad-air-count').textContent = badAirCount;
   document.getElementById('unstable-count').textContent = unstableCount;
   document.getElementById('casualties-count').textContent = casualtiesCount;
+  const histoEl = document.getElementById('histoplasmosis-count');
+  if (histoEl) histoEl.textContent = histoplasmosisCount;
   document.getElementById('total-hazards-count').textContent = totalHazardCount;
 }
 
@@ -5017,7 +5037,8 @@ function loadFcsDatabaseTable() {
             `"${cave.hazards ? [
               cave.hazards.badAir ? 'Bad Air' : '',
               cave.hazards.unstable ? 'Unstable' : '',
-              cave.hazards.casualties ? 'Casualties' : ''
+              cave.hazards.casualties ? 'Casualties' : '',
+              cave.hazards.histoplasmosis ? 'Histoplasmosis' : ''
             ].filter(h => h).join(', ') : ''}"`,
             `"${(cave.hazards?.notes || '').replace(/"/g, '""')}"`,
             `"${(cave.ownerInfo || '').replace(/"/g, '""')}"`
@@ -6560,6 +6581,7 @@ function loadFcsDatabaseTable() {
         if (value.badAir) parts.push('Bad Air');
         if (value.unstable) parts.push('Unstable Structure');
         if (value.casualties) parts.push('Known Casualties');
+        if (value.histoplasmosis) parts.push('Histoplasmosis');
         if (value.notes) parts.push(`Notes: ${value.notes}`);
         return parts.join('; ');
       }
@@ -7040,6 +7062,7 @@ function loadFcsDatabaseTable() {
         document.getElementById('hazard-bad-air').checked = !!cave.hazards.badAir;
         document.getElementById('hazard-unstable').checked = !!cave.hazards.unstable;
         document.getElementById('hazard-casualties').checked = !!cave.hazards.casualties;
+        document.getElementById('hazard-histoplasmosis').checked = !!cave.hazards.histoplasmosis;
         document.getElementById('hazard-notes').value = cave.hazards.notes || '';
       } else if (cave.hazardousConditions) {
         // Using hazardousConditions string
@@ -7047,12 +7070,14 @@ function loadFcsDatabaseTable() {
         document.getElementById('hazard-bad-air').checked = hazardText.includes('air') || hazardText.includes('oxygen');
         document.getElementById('hazard-unstable').checked = hazardText.includes('unstable') || hazardText.includes('collapse');
         document.getElementById('hazard-casualties').checked = hazardText.includes('casualt') || hazardText.includes('death');
+        document.getElementById('hazard-histoplasmosis').checked = hazardText.includes('histo');
         document.getElementById('hazard-notes').value = cave.hazardNotes || '';
       } else {
         // No hazard info
         document.getElementById('hazard-bad-air').checked = false;
         document.getElementById('hazard-unstable').checked = false;
         document.getElementById('hazard-casualties').checked = false;
+        document.getElementById('hazard-histoplasmosis').checked = false;
         document.getElementById('hazard-notes').value = '';
       }
 
@@ -8023,6 +8048,7 @@ window.addEventListener('error', function(e) {
           if (cave.hazards.badAir) hazardsList.push('Bad Air');
           if (cave.hazards.unstable) hazardsList.push('Unstable Structure');
           if (cave.hazards.casualties) hazardsList.push('Known Casualties');
+          if (cave.hazards.histoplasmosis) hazardsList.push('Histoplasmosis');
           hazardsText = hazardsList.length > 0 ? hazardsList.join(', ') : 'None reported';
           if (cave.hazards.notes) hazardsText += ` (${cave.hazards.notes})`;
         }
@@ -8264,7 +8290,8 @@ window.addEventListener('error', function(e) {
     Hazardous Conditions: ${cave.hazards ? [
             cave.hazards.badAir ? 'Bad Air' : '',
             cave.hazards.unstable ? 'Unstable' : '',
-            cave.hazards.casualties ? 'Casualties' : ''
+            cave.hazards.casualties ? 'Casualties' : '',
+            cave.hazards.histoplasmosis ? 'Histoplasmosis' : ''
           ].filter(h => h).join(', ') : 'None'}
     Hazard Notes: ${cave.hazards?.notes || 'None'}
     Owner/Entity Info: ${cave.ownerInfo || 'None'}
@@ -10022,6 +10049,7 @@ window.addEventListener('error', function(e) {
         badAir: document.getElementById('hazard-bad-air').checked,
         unstable: document.getElementById('hazard-unstable').checked,
         casualties: document.getElementById('hazard-casualties').checked,
+        histoplasmosis: document.getElementById('hazard-histoplasmosis').checked,
         notes: document.getElementById('hazard-notes')?.value || ''
       },
       
