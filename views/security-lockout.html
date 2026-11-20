@@ -145,6 +145,13 @@ body { background: var(--crt-bg); color: var(--phosphor); margin: 0; overflow: h
 
 </head>
 <body>
+<!-- Only when opened just for fun from the portal's "Magic Word" link -->
+<div class="modes" id="modes" role="group" aria-label="Which lockout to show" hidden>
+  <button type="button" id="modePassword" aria-pressed="true">Wrong password</button>
+  <button type="button" id="modeAttack" aria-pressed="false">Hacking attempt</button>
+  <button type="button" id="replay">Replay</button>
+  <button type="button" id="exitPlay">Exit</button>
+</div>
 <div class="crt" id="crt" aria-live="polite">
   <div class="line dim">Florida Cave Survey :: secure node FCS-1</div>
   <div class="line dim">Karst Data System 4.2 (IRIX-compatible) &mdash; authorised members only</div>
@@ -255,12 +262,16 @@ const MAGIC_LINE = "YOU DIDN'T SAY THE MAGIC WORD!";
 // finger) or "attack" (hacking or misuse: middle finger, IP logged notice).
 // On the website the server decides; this preview has a switch.
 // Filled in by the server (see GET /security-lockout)
-const mode = "{{MODE}}" === "attack" ? "attack" : "password";
+let mode = "{{MODE}}" === "attack" ? "attack" : "password";
 const VISITOR_IP = "{{IP}}";
 const RETURN_TO = "/portal";
 // Opened just for fun from the portal's "Magic Word" link, it sits in a layer
 // over the portal; Close then removes the layer instead of leaving the page
 const EMBEDDED = (() => { try { return window.parent !== window && window.parent.location.origin === location.origin; } catch (_) { return false; } })();
+// Play mode (from the "Magic Word" link): a switch between the two versions,
+// Replay, and Exit back to the portal; Close just closes the window
+const PLAY = EMBEDDED && new URLSearchParams(location.search).get("play") === "1";
+let runId = 0;
 const out = document.getElementById("out");
 const typed = document.getElementById("typed");
 const keys = document.getElementById("keys");
@@ -380,33 +391,72 @@ function closeLockout() {
   stopSound();
   clearInterval(floodTimer); floodTimer = null;
   print("");
-  if (EMBEDDED) { window.parent.postMessage("fcs-lockout-close", location.origin); return; }
+  if (PLAY) { print("(Press Replay to run it again, or Exit to go back.)", "dim"); return; }
+  if (EMBEDDED) { exitToPortal(); return; }
   print("Returning to the login page...", "dim");
   setTimeout(() => { window.location.href = RETURN_TO; }, 400);
+}
+function exitToPortal() {
+  if (EMBEDDED) { window.parent.postMessage("fcs-lockout-close", location.origin); return; }
+  window.location.href = RETURN_TO;
 }
 document.getElementById("closeBtn").addEventListener("click", closeLockout);
 document.getElementById("tbClose").addEventListener("click", closeLockout);
 document.getElementById("muteBtn").addEventListener("click", () => setMuted(!muted));
 document.getElementById("tbMute").addEventListener("click", () => setMuted(!muted));
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !backdrop.hidden) closeLockout(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!backdrop.hidden) closeLockout();
+  else if (PLAY) exitToPortal();
+});
 
-// Plays by itself: types a command, which is denied, then the window opens
-(async function autoplay() {
+// Plays by itself: types a command, which is denied, then the window opens.
+// (Replay or a switch of version starts a new run; an older one stops.)
+async function autoplay() {
+  const myRun = ++runId;
+  const stale = () => myRun !== runId;
   busy = true;
   const command = mode === "attack" ? "access main security grid" : "access main program";
   await wait(600);
-  for (const ch of command) { typed.textContent += ch; await wait(55 + Math.random() * 60); }
+  for (const ch of command) { if (stale()) return; typed.textContent += ch; await wait(55 + Math.random() * 60); }
   await wait(350);
+  if (stale()) return;
   typed.textContent = "";
   print("> " + command);
   promptLine.hidden = true;
   await wait(350);
+  if (stale()) return;
   print("access: PERMISSION DENIED....", "deny");
   await wait(1000);
+  if (stale()) return;
   print("and....", "deny");
   await wait(700);
+  if (stale()) return;
   openLockout();
-})();
+}
+function restart() {
+  backdrop.hidden = true;
+  stopSound();
+  clearInterval(floodTimer); floodTimer = null;
+  out.innerHTML = "";
+  typed.textContent = "";
+  promptLine.hidden = false;
+  autoplay();
+}
+function setMode(m) {
+  mode = m;
+  document.getElementById("modePassword").setAttribute("aria-pressed", String(m === "password"));
+  document.getElementById("modeAttack").setAttribute("aria-pressed", String(m === "attack"));
+  restart();
+}
+if (PLAY) {
+  document.getElementById("modes").hidden = false;
+  document.getElementById("modePassword").addEventListener("click", () => setMode("password"));
+  document.getElementById("modeAttack").addEventListener("click", () => setMode("attack"));
+  document.getElementById("replay").addEventListener("click", restart);
+  document.getElementById("exitPlay").addEventListener("click", exitToPortal);
+}
+autoplay();
 
 // Browsers only allow sound after a click or key press on the page
 function wakeSound() {

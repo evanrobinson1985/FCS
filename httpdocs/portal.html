@@ -13182,8 +13182,9 @@ function getCSRFToken() {
     })();
 
     // Magic Word: shows the lockout screen in a full-page layer over the
-    // portal (leaving the page would mean logging in again). The screen
-    // sends "fcs-lockout-close" when its Close button is pressed.
+    // portal (leaving the page would mean logging in again), with a switch
+    // between the wrong-password and hacking-attempt versions and Replay.
+    // The screen sends "fcs-lockout-close" when its Exit button is pressed.
     (function () {
       var link = document.getElementById('magic-word-link');
       if (!link) return;
@@ -13198,7 +13199,7 @@ function getCSRFToken() {
         e.preventDefault();
         if (frame) return;
         frame = document.createElement('iframe');
-        frame.src = '/security-lockout';
+        frame.src = '/security-lockout?play=1';
         frame.title = 'You didn\'t say the magic word';
         frame.setAttribute('allow', 'autoplay');
         frame.setAttribute('data-theme-keep', '');
