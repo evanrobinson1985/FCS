@@ -4,6 +4,8 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Florida Cave Survey - Map Georeferencer</title>
+<!-- Dark mode, shared with the rest of the site (same saved choice) -->
+<script src="/js/theme.js?v=1"></script>
 <link rel="stylesheet" href="/js/vendor/leaflet-1.9.4/leaflet.css"/>
 <script src="/js/vendor/leaflet-1.9.4/leaflet.js"></script>
 <script src="/js/vendor/pdfjs-3.11.174/pdf.min.js"></script>
@@ -207,6 +209,7 @@
       <div class="step" data-step="3">3 · PLACE</div>
     </div>
     <div class="spacer"></div>
+    <button type="button" class="btn small ghost" data-theme-toggle aria-pressed="false">&#127769; Dark</button>
     <div class="proj-btns">
       <button class="btn small ghost" id="saveProj">💾<span class="lbl"> Save</span></button>
       <button class="btn small ghost" id="saveProjAs">💾…<span class="lbl"> Save As</span></button>

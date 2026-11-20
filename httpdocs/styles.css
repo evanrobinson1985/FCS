@@ -1451,3 +1451,25 @@ input[type="file"] {
   font-size: 0.8rem;
   margin-left: 4px;
 }
+
+
+/* ---- Dark mode (js/theme.js recolours everything else) ---- */
+html[data-theme="dark"] {
+  --background-color: #11161b;
+  --text-color: #e2e8ee;
+  color-scheme: dark;
+}
+html[data-theme="dark"] body { background-color: #11161b; color: #e2e8ee; }
+html[data-theme="dark"] a:not([class*="btn"]):not(.donate-btn) { color: #8fc1ec; }
+/* Deeper green and orange so white button text stays easy to read */
+html[data-theme="dark"] .btn-success, html[data-theme="dark"] a.btn-success { background-color: #2e7d32 !important; color: #fff !important; }
+html[data-theme="dark"] .btn-warning { background-color: #b85c00 !important; color: #fff !important; }
+html[data-theme="dark"] .status-badge.status-pending { background-color: #b85c00 !important; color: #fff !important; }
+html[data-theme="dark"] .status-badge.status-approved { background-color: #2e7d32 !important; color: #fff !important; }
+/* The orange Hazardous Conditions box on Edit Cave Data */
+html[data-theme="dark"] .checkbox-group[style*="#df7721"] { background-color: #8a3f0c !important; }
+html[data-theme="dark"] ::placeholder { color: #7f8b96; }
+html[data-theme="dark"] .cave-data-table tr:hover td,
+html[data-theme="dark"] .user-table tr:hover td { background-color: #26313b !important; }
+html[data-theme="dark"] .leaflet-container { background: #1d2328; }
+.theme-toggle-btn { cursor: pointer; font-family: inherit; margin-right: 8px; }

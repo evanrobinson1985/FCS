@@ -19,7 +19,9 @@
 <!-- External CSS Libraries -->
 <link href="/js/vendor/leaflet-1.9.4/leaflet.css" rel="stylesheet"/>
 <link rel="stylesheet" href="/js/vendor/leaflet-compass-1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=11">
+ <link rel="stylesheet" href="styles.css?v=12">
+<!-- Dark mode: in <head> so a dark-mode visitor never sees a white flash -->
+<script src="js/theme.js?v=1"></script>
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -183,6 +185,7 @@
      a new tab. A plain link (not a form) so no payment data ever touches
      this site, and so the page's CSP form-action rule doesn't apply. -->
 <div class="donate-container">
+<button type="button" class="donate-btn theme-toggle-btn" data-theme-toggle aria-pressed="false">&#127769; Dark</button>
 <a class="donate-btn" href="https://www.paypal.com/donate/?business=Floridacavesurvey%40gmail.com&amp;item_name=Donation+to+the+Florida+Cave+Survey&amp;currency_code=USD" target="_blank" rel="noopener noreferrer" title="Donate to the Florida Cave Survey with PayPal (opens in a new tab)">&#10084; Donate</a>
 </div>
 </div>
@@ -4240,6 +4243,7 @@ function dedupeCavesByBaseId(caves) {
 
 // Update the statistics page with real data
 function updateStatistics() {
+  applyChartTheme();
   // Several cards below call `new Chart(...)` directly - if this runs
   // before the Chart.js <script> tag (added at DOMContentLoaded) has
   // actually finished loading over the network, that throws a
@@ -4842,6 +4846,19 @@ function createEntryStatusChart(commercial, government, private, other) {
 // handler above); updateStatistics() itself waits for Chart.js to be
 // ready (see the guard at its top) instead of the tab depending on load
 // timing.
+// Chart text and grid lines follow dark mode (the charts are canvases, so
+// theme.js can't recolour them); redraw the Statistics tab on a switch.
+function applyChartTheme() {
+  if (typeof Chart === 'undefined') return;
+  const dark = window.FCSTheme && FCSTheme.get() === 'dark';
+  Chart.defaults.color = dark ? '#d5dde5' : '#666';
+  Chart.defaults.borderColor = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)';
+}
+if (window.FCSTheme) FCSTheme.onChange(() => {
+  applyChartTheme();
+  const stats = document.getElementById('statistics');
+  if (stats && stats.classList.contains('active') && typeof updateStatistics === 'function') updateStatistics();
+});
 document.addEventListener('DOMContentLoaded', function() {
   const chartScript = document.createElement('script');
   chartScript.src = '/js/vendor/chartjs-3.7.1/chart.min.js';
