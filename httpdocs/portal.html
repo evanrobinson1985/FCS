@@ -1268,6 +1268,10 @@
 <div class="form-group">
 <label>Coordinates (Decimal Degrees):</label>
 <div class="coordinates-selector bg-white rounded-lg shadow-md p-4">
+<div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+<button type="button" class="btn-success" id="pick-location-btn" onclick="pickCaveLocationFromMap()">&#128205; Select location on Interactive Map</button>
+<small style="color: #555;">Opens the map zoomed to the county chosen above. Click the cave's spot and you'll come straight back here with the coordinates filled in.</small>
+</div>
 <div class="checkbox-group">
 <div class="checkbox-item">
 <label for="edit-latitude">Latitude (°):</label>
@@ -9442,6 +9446,95 @@ window.addEventListener('error', function(e) {
   });
 
   // Update the initiateMove function to use the server API
+  // ---- "Select location on Interactive Map" (Edit Cave Data tab) ----------
+  // Opens the map zoomed to the county picked on the form, lets the user
+  // click the cave's spot, then returns to the form with the latitude and
+  // longitude filled in. The form keeps everything else already typed.
+  let countyBoundsCache = null;
+  async function loadCountyBounds() {
+    if (countyBoundsCache) return countyBoundsCache;
+    try {
+      const response = await fetch('/api/county-bounds');
+      countyBoundsCache = response.ok ? (await response.json()).counties || {} : {};
+    } catch (e) {
+      countyBoundsCache = {};
+    }
+    return countyBoundsCache;
+  }
+
+  async function pickCaveLocationFromMap() {
+    const countySelect = document.getElementById('edit-county');
+    const countyCode = countySelect ? countySelect.value : '';
+    const countyName = countySelect && countySelect.selectedIndex > 0 ? countySelect.options[countySelect.selectedIndex].text : '';
+    const bounds = (await loadCountyBounds())[countyCode];
+
+    document.querySelector('.tab[data-tab="map-tab"]').click();
+    // wait for the map to be ready (it's created the first time the tab opens)
+    for (let i = 0; i < 100 && !(typeof map !== 'undefined' && map && map.getContainer); i++) await new Promise(r => setTimeout(r, 100));
+    if (!(typeof map !== 'undefined' && map)) { alert('The map could not be opened. Please type the coordinates instead.'); return; }
+    await new Promise(r => setTimeout(r, 300));
+    map.invalidateSize();
+    if (bounds) map.fitBounds([[bounds.south, bounds.west], [bounds.north, bounds.east]], { padding: [20, 20] });
+    else map.fitBounds([[24.4, -87.7], [31.1, -79.9]]); // all of Florida
+
+    // instructions bar over the map
+    const container = map.getContainer();
+    let bar = document.getElementById('pick-location-bar');
+    if (bar) bar.remove();
+    bar = document.createElement('div');
+    bar.id = 'pick-location-bar';
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = 'position: absolute; z-index: 1000; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 20px); ' +
+      'background: #1f4f7a; color: #fff; padding: 8px 12px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.35); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px;';
+    const text = document.createElement('span');
+    text.textContent = bounds ? `Click the new cave's location in ${countyName} County.` : 'Click the new cave\'s location on the map. (Pick a county on the form to zoom straight to it.)';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background: #fff; color: #1f4f7a; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer;';
+    bar.append(text, cancel);
+    container.appendChild(bar);
+    L.DomEvent.disableClickPropagation(bar);
+    container.style.cursor = 'crosshair';
+    // the map sits below the tab's controls: bring it into view
+    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const goBack = () => document.querySelector('.tab[data-tab="edit-cave-tab"]').click();
+    const finish = () => {
+      map.off('click', onPick);
+      document.removeEventListener('keydown', onKey);
+      container.style.cursor = '';
+      bar.remove();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { finish(); goBack(); } };
+    const onPick = (e) => {
+      const lat = Number(e.latlng.lat.toFixed(6));
+      const lng = Number(e.latlng.lng.toFixed(6));
+      finish();
+      goBack();
+      setTimeout(() => {
+        const latInput = document.getElementById('edit-latitude');
+        const lngInput = document.getElementById('edit-longitude');
+        latInput.value = lat;
+        lngInput.value = lng;
+        [latInput, lngInput].forEach(el => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.style.transition = 'background-color 1.5s';
+          el.style.backgroundColor = '#d6f5d6';
+          setTimeout(() => { el.style.backgroundColor = ''; }, 1500);
+        });
+        latInput.closest('.coordinates-selector').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (bounds && (lat < bounds.south || lat > bounds.north || lng < bounds.west || lng > bounds.east)) {
+          alert(`Note: that spot looks like it's outside ${countyName} County. Check the county or the location.`);
+        }
+      }, 250);
+    };
+    cancel.addEventListener('click', () => { finish(); goBack(); });
+    document.addEventListener('keydown', onKey);
+    map.on('click', onPick);
+  }
+
   function initiateMove(caveId) {
     moveTargetCaveId = caveId;
 

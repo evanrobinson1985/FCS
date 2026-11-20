@@ -1,0 +1,474 @@
+{
+ "source": "US Census Bureau county boundaries (cartographic, 1:10m), via the us-atlas 3.0.1 package. Bounding boxes only.",
+ "counties": {
+  "AL": {
+   "name": "Alachua",
+   "south": 29.421,
+   "west": -82.6599,
+   "north": 29.9407,
+   "east": -82.0533
+  },
+  "BA": {
+   "name": "Bay",
+   "south": 29.9244,
+   "west": -85.9944,
+   "north": 30.5678,
+   "east": -85.3842
+  },
+  "BF": {
+   "name": "Bradford",
+   "south": 29.7182,
+   "west": -82.4195,
+   "north": 30.1435,
+   "east": -82.0462
+  },
+  "BK": {
+   "name": "Baker",
+   "south": 30.1366,
+   "west": -82.4589,
+   "north": 30.5842,
+   "east": -82.0498
+  },
+  "BR": {
+   "name": "Broward",
+   "south": 25.9573,
+   "west": -80.8796,
+   "north": 26.355,
+   "east": -80.0756
+  },
+  "BV": {
+   "name": "Brevard",
+   "south": 27.8223,
+   "west": -80.9873,
+   "north": 28.7913,
+   "east": -80.4453
+  },
+  "CA": {
+   "name": "Calhoun",
+   "south": 30.2002,
+   "west": -85.3914,
+   "north": 30.6082,
+   "east": -84.932
+  },
+  "CH": {
+   "name": "Charlotte",
+   "south": 26.7691,
+   "west": -82.3764,
+   "north": 27.0354,
+   "east": -81.5616
+  },
+  "CI": {
+   "name": "Citrus",
+   "south": 28.6659,
+   "west": -82.7604,
+   "north": 29.0473,
+   "east": -82.1682
+  },
+  "CL": {
+   "name": "Clay",
+   "south": 29.7191,
+   "west": -82.0498,
+   "north": 30.1907,
+   "east": -81.5796
+  },
+  "CO": {
+   "name": "Collier",
+   "south": 25.8035,
+   "west": -81.8452,
+   "north": 26.5174,
+   "east": -80.8725
+  },
+  "CU": {
+   "name": "Columbia",
+   "south": 29.8299,
+   "west": -82.7999,
+   "north": 30.5979,
+   "east": -82.4553
+  },
+  "DA": {
+   "name": "Dade",
+   "south": 25.1472,
+   "west": -80.8725,
+   "north": 25.9796,
+   "east": -80.1187
+  },
+  "DE": {
+   "name": "Desoto",
+   "south": 27.032,
+   "west": -82.0569,
+   "north": 27.3404,
+   "east": -81.5616
+  },
+  "DI": {
+   "name": "Dixie",
+   "south": 29.2887,
+   "west": -83.4137,
+   "north": 29.8239,
+   "east": -82.922
+  },
+  "DU": {
+   "name": "Duval",
+   "south": 30.104,
+   "west": -82.0498,
+   "north": 30.585,
+   "east": -81.3786
+  },
+  "ES": {
+   "name": "Escambia",
+   "south": 30.2801,
+   "west": -87.6347,
+   "north": 30.9991,
+   "east": -86.9204
+  },
+  "FL": {
+   "name": "Flagler",
+   "south": 29.2612,
+   "west": -81.5221,
+   "north": 29.671,
+   "east": -81.1022
+  },
+  "FR": {
+   "name": "Franklin",
+   "south": 29.5868,
+   "west": -85.2263,
+   "north": 30.0137,
+   "east": -84.3397
+  },
+  "GC": {
+   "name": "Gilchrist",
+   "south": 29.5627,
+   "west": -82.9722,
+   "north": 29.9321,
+   "east": -82.6563
+  },
+  "GG": {
+   "name": "Gadsden",
+   "south": 30.3883,
+   "west": -84.932,
+   "north": 30.7113,
+   "east": -84.2823
+  },
+  "GL": {
+   "name": "Glades",
+   "south": 26.7691,
+   "west": -81.5652,
+   "north": 27.2106,
+   "east": -80.8725
+  },
+  "GU": {
+   "name": "Gulf",
+   "south": 29.6598,
+   "west": -85.4165,
+   "north": 30.201,
+   "east": -85.0181
+  },
+  "HA": {
+   "name": "Hamilton",
+   "south": 30.317,
+   "west": -83.2737,
+   "north": 30.6323,
+   "east": -82.6456
+  },
+  "HB": {
+   "name": "Hillsborough",
+   "south": 27.6453,
+   "west": -82.6528,
+   "north": 28.1736,
+   "east": -82.0533
+  },
+  "HI": {
+   "name": "Highlands",
+   "south": 27.0328,
+   "west": -81.5652,
+   "north": 27.647,
+   "east": -80.9443
+  },
+  "HL": {
+   "name": "Holmes",
+   "south": 30.7027,
+   "west": -86.0375,
+   "north": 30.9965,
+   "east": -85.4991
+  },
+  "HN": {
+   "name": "Hendry",
+   "south": 26.2528,
+   "west": -81.5652,
+   "north": 26.9589,
+   "east": -80.8796
+  },
+  "HO": {
+   "name": "Hernando",
+   "south": 28.4331,
+   "west": -82.6779,
+   "north": 28.6951,
+   "east": -82.0533
+  },
+  "HR": {
+   "name": "Hardee",
+   "south": 27.3386,
+   "west": -82.0569,
+   "north": 27.647,
+   "east": -81.5616
+  },
+  "IR": {
+   "name": "Indian River",
+   "south": 27.5577,
+   "west": -80.8832,
+   "north": 27.8609,
+   "east": -80.3197
+  },
+  "JK": {
+   "name": "Jackson",
+   "south": 30.5644,
+   "west": -85.5996,
+   "north": 31.0008,
+   "east": -84.8638
+  },
+  "JF": {
+   "name": "Jefferson",
+   "south": 30.0842,
+   "west": -84.0777,
+   "north": 30.6718,
+   "east": -83.6039
+  },
+  "LF": {
+   "name": "Lafayette",
+   "south": 29.8222,
+   "west": -83.3706,
+   "north": 30.2603,
+   "east": -82.8789
+  },
+  "LB": {
+   "name": "Liberty",
+   "south": 29.9717,
+   "west": -85.1545,
+   "north": 30.6065,
+   "east": -84.5443
+  },
+  "LE": {
+   "name": "Lee",
+   "south": 26.3164,
+   "west": -82.2723,
+   "north": 26.7897,
+   "east": -81.5616
+  },
+  "LL": {
+   "name": "Leon",
+   "south": 30.274,
+   "west": -84.7166,
+   "north": 30.6855,
+   "east": -83.9772
+  },
+  "LK": {
+   "name": "Lake",
+   "south": 28.3455,
+   "west": -81.9564,
+   "north": 29.2767,
+   "east": -81.3534
+  },
+  "LV": {
+   "name": "Levy",
+   "south": 28.9932,
+   "west": -83.166,
+   "north": 29.5911,
+   "east": -82.4015
+  },
+  "MD": {
+   "name": "Madison",
+   "south": 30.2603,
+   "west": -83.8193,
+   "north": 30.6512,
+   "east": -83.1696
+  },
+  "MI": {
+   "name": "Miami-Dade",
+   "south": 25.1472,
+   "west": -80.8725,
+   "north": 25.9796,
+   "east": -80.1187
+  },
+  "MN": {
+   "name": "Manatee",
+   "south": 27.2081,
+   "west": -82.7425,
+   "north": 27.6462,
+   "east": -82.0533
+  },
+  "MO": {
+   "name": "Monroe",
+   "south": 24.5149,
+   "west": -82.9363,
+   "north": 25.8052,
+   "east": -80.2515
+  },
+  "MR": {
+   "name": "Marion",
+   "south": 28.9597,
+   "west": -82.5343,
+   "north": 29.5206,
+   "east": -81.637
+  },
+  "MT": {
+   "name": "Martin",
+   "south": 26.9564,
+   "west": -80.8868,
+   "north": 27.2639,
+   "east": -80.0792
+  },
+  "NA": {
+   "name": "Nassau",
+   "south": 30.2732,
+   "west": -82.0498,
+   "north": 30.8273,
+   "east": -81.4288
+  },
+  "OK": {
+   "name": "Okaloosa",
+   "south": 30.3788,
+   "west": -86.7984,
+   "north": 30.9974,
+   "east": -86.3892
+  },
+  "OR": {
+   "name": "Orange",
+   "south": 28.3472,
+   "west": -81.6585,
+   "north": 28.7862,
+   "east": -80.8617
+  },
+  "OS": {
+   "name": "Osceola",
+   "south": 27.6419,
+   "west": -81.6585,
+   "north": 28.3472,
+   "east": -80.8617
+  },
+  "PA": {
+   "name": "Pasco",
+   "south": 28.1711,
+   "west": -82.8609,
+   "north": 28.4786,
+   "east": -82.0533
+  },
+  "PB": {
+   "name": "Palm Beach",
+   "south": 26.3207,
+   "west": -80.8868,
+   "north": 26.971,
+   "east": -80.0326
+  },
+  "PN": {
+   "name": "Pinellas",
+   "south": 27.6127,
+   "west": -82.8609,
+   "north": 28.1736,
+   "east": -82.5882
+  },
+  "PO": {
+   "name": "Polk",
+   "south": 27.6436,
+   "west": -82.1072,
+   "north": 28.3618,
+   "east": -81.1417
+  },
+  "PU": {
+   "name": "Putnam",
+   "south": 29.3248,
+   "west": -82.0569,
+   "north": 29.8402,
+   "east": -81.4324
+  },
+  "SA": {
+   "name": "Sarasota",
+   "south": 26.9452,
+   "west": -82.642,
+   "north": 27.3893,
+   "east": -82.0569
+  },
+  "SF": {
+   "name": "Suwannee",
+   "south": 29.8866,
+   "west": -83.2486,
+   "north": 30.4381,
+   "east": -82.7604
+  },
+  "SJ": {
+   "name": "St. Johns",
+   "south": 29.622,
+   "west": -81.6908,
+   "north": 30.2526,
+   "east": -81.2135
+  },
+  "SL": {
+   "name": "St Lucie",
+   "south": 27.2063,
+   "west": -80.6786,
+   "north": 27.5586,
+   "east": -80.1977
+  },
+  "SM": {
+   "name": "Seminole",
+   "south": 28.61,
+   "west": -81.4611,
+   "north": 28.8789,
+   "east": -80.9873
+  },
+  "SR": {
+   "name": "Santa Rosa",
+   "south": 30.3342,
+   "west": -87.3153,
+   "north": 30.9991,
+   "east": -86.784
+  },
+  "SU": {
+   "name": "Sumter",
+   "south": 28.3085,
+   "west": -82.3118,
+   "north": 28.9605,
+   "east": -81.9528
+  },
+  "TY": {
+   "name": "Taylor",
+   "south": 29.6658,
+   "west": -83.9916,
+   "north": 30.3041,
+   "east": -83.3204
+  },
+  "UN": {
+   "name": "Union",
+   "south": 29.9227,
+   "west": -82.5774,
+   "north": 30.1435,
+   "east": -82.1431
+  },
+  "VO": {
+   "name": "Volusia",
+   "south": 28.6126,
+   "west": -81.6801,
+   "north": 29.427,
+   "east": -80.7325
+  },
+  "WA": {
+   "name": "Walton",
+   "south": 30.2689,
+   "west": -86.3964,
+   "north": 30.9939,
+   "east": -85.8436
+  },
+  "WU": {
+   "name": "Wakulla",
+   "south": 29.9605,
+   "west": -84.7381,
+   "north": 30.3033,
+   "east": -84.0741
+  },
+  "WS": {
+   "name": "Washington",
+   "south": 30.3892,
+   "west": -85.9944,
+   "north": 30.8307,
+   "east": -85.4309
+  }
+ }
+}

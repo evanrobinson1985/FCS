@@ -3306,6 +3306,15 @@ loadStatesConfig();
 // happens before anyone has a login token at all. This is no more exposed
 // than before this feature existed, when Florida's county list sat in
 // plain, unauthenticated static HTML.
+// Bounding boxes of Florida's 67 counties (US Census shapes, see the file),
+// for "Pick location on the Interactive Map" on the Edit Cave Data tab.
+// Public reference data, like /api/states.
+const COUNTY_BOUNDS_FILE = path.join(__dirname, "config", "florida-county-bounds.json");
+app.get("/api/county-bounds", (req, res) => {
+  res.set("Cache-Control", "public, max-age=86400");
+  res.sendFile(COUNTY_BOUNDS_FILE);
+});
+
 app.get("/api/states", (req, res) => {
   res.json(statesConfig);
 });
