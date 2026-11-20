@@ -1,0 +1,19 @@
+[
+  {
+    "id": "webmaster-sample",
+    "username": "sample-webmaster",
+    "email": "webmaster@example.com",
+    "passwordHash": "$2b$12$rVw4JYf8XsRci2mzO7ZWW.nTT/HIsEnj7gjROnG8lHDogooXM107K",
+    "fullName": "Sample Webmaster",
+    "nssNumber": "",
+    "role": "webmaster",
+    "status": "active",
+    "created": "2026-01-01T00:00:00.000Z",
+    "lastLogin": null,
+    "loginAttempts": 0,
+    "lastFailedLogin": null,
+    "isEmailVerified": true,
+    "twoFactorEnabled": false,
+    "loginIPs": []
+  }
+]
