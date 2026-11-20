@@ -6536,6 +6536,29 @@ function loadFcsDatabaseTable() {
     // before/after diff for an "edit_cave" one (currentCaveData is filled in
     // server-side by GET /api/pending-submissions / /api/approved-submissions).
     // Every value is escaped: all of it comes from a member's request.
+    function proposesNewLocation(submission) {
+      const p = submission && submission.proposedData;
+      return !!(submission && submission.type === 'edit_cave' && p &&
+        ['lat', 'lng', 'latitude', 'longitude'].some(k => p[k] !== undefined && p[k] !== null && p[k] !== ''));
+    }
+
+    // Shown on a pending request that would move a cave whose location
+    // has already been changed before (server: cave.locationHistory)
+    function repeatMoveWarningHtml(submission) {
+      const moves = submission.priorLocationChanges;
+      if (submission.status !== 'pending' || !proposesNewLocation(submission) || !Array.isArray(moves) || !moves.length) return '';
+      const fmt = (c) => c ? `${Number(c.lat).toFixed(6)}, ${Number(c.lng).toFixed(6)}` : '(none)';
+      const rows = moves.slice(-5).reverse().map(m => `
+        <li>${escapeStatsHtml(new Date(m.at).toLocaleDateString())}: ${escapeStatsHtml(fmt(m.from))} &rarr; ${escapeStatsHtml(fmt(m.to))}
+          <span style="color: #6b4b00;">(${escapeStatsHtml(m.via || 'changed')}; asked by ${escapeStatsHtml(m.requestedBy || 'unknown')}, approved by ${escapeStatsHtml(m.approvedBy || 'unknown')})</span></li>`).join('');
+      return `
+        <div class="repeat-move-warning" role="alert" style="margin: 8px 0; padding: 10px 12px; border: 1px solid #e0a100; border-left: 5px solid #d68910; background: #fff7e0; border-radius: 4px; color: #4a3b12;">
+          <strong>&#9888; This cave has already been moved ${moves.length} time${moves.length === 1 ? '' : 's'}.</strong>
+          Approving this request will move it again. Check with the people below before approving.
+          <ul style="margin: 6px 0 0 18px; padding: 0;">${rows}</ul>
+        </div>`;
+    }
+
     function summarizeProposedSubmissionChanges(submission) {
       const proposed = (submission.proposedData && typeof submission.proposedData === 'object') ? submission.proposedData : {};
 
@@ -6574,7 +6597,8 @@ function loadFcsDatabaseTable() {
       card.className = 'submission-card';
       card.setAttribute('data-submission-id', submission.submissionId);
 
-      const typeLabel = submission.type === 'new_cave' ? 'New Cave Proposal' : 'Cave Edit Proposal';
+      const typeLabel = submission.type === 'new_cave' ? 'New Cave Proposal' : (submission.isMove ? 'Cave Move Request' : 'Cave Edit Proposal');
+      const repeatMoveWarning = repeatMoveWarningHtml(submission);
       const caveLabel = submission.caveName || submission.proposedData?.name || submission.caveId;
 
       // Approve/Reject actually write to the cave database (PATCH
@@ -6597,6 +6621,7 @@ function loadFcsDatabaseTable() {
           ${submission.rejectedBy ? `<p><strong>Rejected by:</strong> ${escapeStatsHtml(submission.rejectedBy)} on ${formatDate(submission.rejectedDate)}</p>` : ''}
           ${submission.rejectionReason ? `<p><strong>Reason:</strong> ${escapeStatsHtml(submission.rejectionReason)}</p>` : ''}
         </div>
+        ${repeatMoveWarning}
         <div class="submission-content">
           ${summarizeProposedSubmissionChanges(submission)}
         </div>
@@ -6610,7 +6635,7 @@ function loadFcsDatabaseTable() {
 
       if (submission.status === 'pending' && canReview) {
         card.querySelector('.approve-btn').addEventListener('click', () => {
-          approveSubmission(submission.submissionId);
+          approveSubmission(submission.submissionId, submission);
         });
         card.querySelector('.reject-btn').addEventListener('click', () => {
           rejectSubmission(submission.submissionId);
@@ -6623,7 +6648,15 @@ function loadFcsDatabaseTable() {
     // Approve a submission - the server applies proposedData to the live
     // cave database (PATCH /api/pending-submissions/:id), so this just
     // triggers that, then refreshes everything that reads cave data.
-    async function approveSubmission(submissionId) {
+    async function approveSubmission(submissionId, submission) {
+      // A cave that has already been moved: make sure the reviewer saw it
+      const moves = proposesNewLocation(submission) ? submission.priorLocationChanges : null;
+      if (moves && moves.length) {
+        const last = moves[moves.length - 1];
+        if (!confirm(`Heads up: cave ${submission.caveId} has already been moved ${moves.length} time${moves.length === 1 ? '' : 's'} ` +
+          `(most recently on ${new Date(last.at).toLocaleDateString()}, asked by ${last.requestedBy}, approved by ${last.approvedBy}).\n\n` +
+          `Approving this will move it again. Continue?`)) return;
+      }
       if (!confirm('Approve this submission? This will update the live cave database.')) return;
 
       try {
@@ -9401,6 +9434,28 @@ window.addEventListener('error', function(e) {
         alert("Cave not found.");
         map.off('click', onMapClick);
         moveTargetCaveId = null;
+        return;
+      }
+
+      // Members don't move caves directly: the new spot goes to a webmaster
+      // as a move request (a cave edit proposal with just the coordinates)
+      const role = sessionStorage.getItem('role');
+      if (role !== 'admin' && role !== 'webmaster') {
+        map.off('click', onMapClick);
+        moveTargetCaveId = null;
+        if (!confirm(`Ask a webmaster to move ${cave.id}${cave.name ? ' (' + cave.name + ')' : ''} to:\nLatitude: ${lat}\nLongitude: ${lng}?`)) return;
+        try {
+          const response = await fetch('/api/pending-submissions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'edit_cave', caveId: cave.id, caveName: cave.name || '', isMove: true, proposedData: { latitude: lat, longitude: lng } })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.error || 'The request could not be sent');
+          alert(`Your request to move ${cave.id} has been sent to a webmaster for approval. The cave stays where it is until then.`);
+        } catch (err) {
+          alert('Could not send the move request: ' + err.message);
+        }
         return;
       }
 

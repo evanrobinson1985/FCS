@@ -3487,7 +3487,44 @@ function sanitizeProposedCave(raw) {
 // does. Returns the array of caves (mutated in place for new_cave) so the
 // caller can persist it; throws with a { status, message } shape on
 // validation failure so the route can turn it into the right HTTP response.
-function applyApprovedSubmission(submission, caves) {
+// ---- Cave location history ----------------------------------------------
+// Every change to a cave's coordinates is recorded on the cave itself
+// (locationHistory, newest last), so when someone later asks to move it
+// again the reviewer can see it was already moved, by whom and from where.
+function caveCoords(cave) {
+  const lat = Number(cave && (cave.latitude ?? cave.lat));
+  const lng = Number(cave && (cave.longitude ?? cave.lng));
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+function recordLocationChange(cave, before, details) {
+  const after = caveCoords(cave);
+  if (!after || (before && before.lat === after.lat && before.lng === after.lng)) return;
+  cave.locationHistory = [
+    ...(Array.isArray(cave.locationHistory) ? cave.locationHistory : []),
+    { at: new Date().toISOString(), from: before, to: after, ...details },
+  ].slice(-20);
+}
+
+// Emails webmasters when someone asks to move a cave whose location has
+// already been changed, so it's looked at closely before approving
+function notifyRepeatMove(submission, cave, history, req) {
+  const fmt = (c) => (c ? `${c.lat}, ${c.lng}` : "(none)");
+  const lines = history.slice(-5).map((h) =>
+    `- ${h.at.slice(0, 10)}: ${fmt(h.from)} -> ${fmt(h.to)} (${h.via}; asked by ${h.requestedBy}, approved by ${h.approvedBy})`
+  );
+  const now = caveCoords(cave);
+  const proposed = { lat: submission.proposedData.lat ?? (now && now.lat), lng: submission.proposedData.lng ?? (now && now.lng) };
+  sendAdminNotification(
+    getNotificationRecipients(["webmaster"]),
+    `Florida Cave Survey - Cave ${cave.id} asked to be moved again`,
+    `${submission.submittedBy} has asked to move cave ${cave.id} (${cave.name || "unnamed"}), whose location has already been changed:\n\n` +
+      lines.join("\n") +
+      `\n\nNow: ${fmt(now)}\nRequested: ${fmt(proposed)}\n\n` +
+      `Please check it before approving: ${siteOrigin(req)}/portal (Pending Submissions).`
+  ).catch((err) => console.error("Failed to send repeat-move notice:", err));
+}
+
+function applyApprovedSubmission(submission, caves, approvedBy) {
   // Cleaned again here, not only when it was submitted, so a proposal that
   // was already waiting in the queue before this check existed can't be
   // applied with fields the reviewer wasn't shown.
@@ -3534,6 +3571,7 @@ function applyApprovedSubmission(submission, caves) {
     if (caveIndex === -1) {
       throw { status: 404, message: `Cave with ID ${submission.caveId} no longer exists.` };
     }
+    const before = caveCoords(caves[caveIndex]);
     const merged = { ...caves[caveIndex], ...proposed, ...stamp, id: caves[caveIndex].id };
     if (merged.lat !== undefined) {
       merged.latitude = merged.lat;
@@ -3545,6 +3583,12 @@ function applyApprovedSubmission(submission, caves) {
     } else if (merged.longitude !== undefined) {
       merged.lng = merged.longitude;
     }
+    recordLocationChange(merged, before, {
+      requestedBy: submission.submittedBy || "unknown",
+      approvedBy: approvedBy || "unknown",
+      via: submission.isMove ? "move request" : "edit request",
+      submissionId: submission.submissionId,
+    });
     caves[caveIndex] = merged;
   } else {
     throw { status: 400, message: `Unknown submission type: ${submission.type}` };
@@ -3574,6 +3618,11 @@ app.post(
           .json({ error: `Cave with ID ${updatedCave.id} not found.` });
       }
 
+      // The location history is the server's own record: never taken from
+      // (or wiped by) the edit form
+      const before = caveCoords(caves[caveIndex]);
+      updatedCave.locationHistory = caves[caveIndex].locationHistory;
+      if (!updatedCave.locationHistory) delete updatedCave.locationHistory;
       caves[caveIndex] = updatedCave;
 
       // Normalize coordinates for the updated cave
@@ -3589,6 +3638,7 @@ app.post(
         caves[caveIndex].lng = caves[caveIndex].longitude;
       }
 
+      recordLocationChange(caves[caveIndex], before, { requestedBy: req.user.username, approvedBy: req.user.username, via: "edited directly" });
       console.log(`Updated cave ${updatedCave.id}`);
       writeCaveDatabase(caves, res, { message: "Cave updated successfully." });
     }
@@ -3678,10 +3728,12 @@ app.post(
       return res.status(404).json({ error: `Cave with ID ${id} not found.` });
     }
 
+    const before = caveCoords(cave);
     cave.latitude = latitude;
     cave.longitude = longitude;
     cave.lat = latitude;
     cave.lng = longitude;
+    recordLocationChange(cave, before, { requestedBy: req.user.username, approvedBy: req.user.username, via: "moved directly" });
 
     console.log(`Updated location for cave ${id}`);
     writeCaveDatabase(caves, res, {
@@ -3753,6 +3805,11 @@ app.get("/api/pending-submissions", authenticateToken, (req, res) => {
               console.log(
                 `Added original coordinates for ${submission.caveId}`
               );
+            }
+
+            // Earlier location changes, for the "already moved" warning
+            if (Array.isArray(caveData.locationHistory) && caveData.locationHistory.length) {
+              submission.priorLocationChanges = caveData.locationHistory;
             }
 
             // For edit submissions, add current cave data for comparison
@@ -3891,6 +3948,11 @@ app.get("/api/approved-submissions", authenticateToken, (req, res) => {
                 lat: caveData.latitude || caveData.lat,
                 lng: caveData.longitude || caveData.lng,
               };
+            }
+
+            // Earlier location changes, for the "already moved" warning
+            if (Array.isArray(caveData.locationHistory) && caveData.locationHistory.length) {
+              submission.priorLocationChanges = caveData.locationHistory;
             }
 
             // For edit submissions, add current cave data for comparison
@@ -4062,6 +4124,10 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, subm
     submittedAt: new Date().toISOString(),
     status: "pending",
   };
+  // Sent with "Click to Move" on the map rather than the edit form
+  if (type === "edit_cave" && req.body.isMove === true) submission.isMove = true;
+  const proposesNewLocation = type === "edit_cave" && (proposedData.lat !== undefined || proposedData.lng !== undefined);
+  const earlierMoves = proposesNewLocation && targetCave && Array.isArray(targetCave.locationHistory) ? targetCave.locationHistory : [];
 
   console.log(
     "Received submission:",
@@ -4097,6 +4163,7 @@ app.post("/api/pending-submissions", authenticateToken, requireNotReadOnly, subm
           return res.status(500).json({ error: "Could not save submission." });
         }
         console.log("Submission saved successfully");
+        if (earlierMoves.length) notifyRepeatMove(submission, targetCave, earlierMoves, req);
         notifyNewSubmission(submission, req).then(() => {
           res.json({ message: "Submission received.", submission });
         });
@@ -4150,7 +4217,7 @@ app.patch(
     if (status === "approved") {
       const caves = loadCaveDatabaseFromDisk();
       try {
-        applyApprovedSubmission(submission, caves);
+        applyApprovedSubmission(submission, caves, req.user.username);
       } catch (err) {
         if (err && err.status) {
           return res.status(err.status).json({ error: err.message });

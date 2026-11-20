@@ -4468,3 +4468,76 @@ describe("deleting a cave (webmaster, Cave Database tab)", () => {
     assert.equal((await request(app).get("/api/snapshots").set(wm)).status, 200);
   });
 });
+
+describe("moving a cave that has already been moved", () => {
+  test("a member's move goes for approval, is recorded, and a second request warns webmasters", async () => {
+    await seedUser({ username: "mover1", password: "Mover1Pass123!", role: "member" });
+    await seedUser({ username: "mover2", password: "Mover2Pass123!", role: "member" });
+    const caves = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "cave-database.json"), "utf8"));
+    const cave = caves.find((c) => Number.isFinite(Number(c.latitude ?? c.lat)));
+    const m1 = { Authorization: `Bearer ${await login("mover1", "Mover1Pass123!")}` };
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+
+    // members can't move a cave directly
+    assert.equal((await request(app).post("/api/update-cave-location").set(m1).send({ id: cave.id, latitude: 29.1, longitude: -82.1 })).status, 403);
+
+    // first move: requested, then approved
+    const first = await request(app).post("/api/pending-submissions").set(m1)
+      .send({ type: "edit_cave", caveId: cave.id, caveName: cave.name, isMove: true, proposedData: { latitude: 29.123456, longitude: -82.654321 } });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.submission.isMove, true);
+    const approved = await request(app).patch(`/api/pending-submissions/${first.body.submission.submissionId}`).set(wm).send({ status: "approved" });
+    assert.equal(approved.status, 200);
+    const stored = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "cave-database.json"), "utf8")).find((c) => c.id === cave.id);
+    assert.equal(stored.latitude, 29.123456);
+    assert.equal(stored.locationHistory.length, 1);
+    assert.equal(stored.locationHistory[0].requestedBy, "mover1");
+    assert.equal(stored.locationHistory[0].approvedBy, "webmaster1");
+    assert.equal(stored.locationHistory[0].via, "move request");
+
+    // second move by someone else: webmasters are emailed, and the request carries the history
+    const m2 = { Authorization: `Bearer ${await login("mover2", "Mover2Pass123!")}` };
+    const originalLog = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.join(" ")); originalLog(...args); };
+    let second;
+    try {
+      second = await request(app).post("/api/pending-submissions").set(m2)
+        .send({ type: "edit_cave", caveId: cave.id, caveName: cave.name, isMove: true, proposedData: { latitude: 29.5, longitude: -82.5 } });
+    } finally {
+      console.log = originalLog;
+    }
+    assert.equal(second.status, 200);
+    assert.ok(lines.some((l) => /asked to be moved again/.test(l) && /mover1/.test(l) && /webmaster1@example\.com/.test(l)));
+    const pending = (await request(app).get("/api/pending-submissions").set(wm)).body
+      .find((s) => s.submissionId === second.body.submission.submissionId);
+    assert.equal(pending.priorLocationChanges.length, 1);
+    assert.equal(pending.priorLocationChanges[0].requestedBy, "mover1");
+
+    // an ordinary edit that doesn't touch the location doesn't email
+    const linesB = [];
+    console.log = (...args) => { linesB.push(args.join(" ")); originalLog(...args); };
+    try {
+      await request(app).post("/api/pending-submissions").set(m2).send({ type: "edit_cave", caveId: cave.id, proposedData: { notes: "Gate is locked now" } });
+    } finally {
+      console.log = originalLog;
+    }
+    assert.ok(!linesB.some((l) => /asked to be moved again/.test(l)));
+  });
+
+  test("direct moves and edits are recorded too, and the edit form can't wipe the history", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const file = path.join(process.env.DATA_DIR, "cave-database.json");
+    const cave = JSON.parse(fs.readFileSync(file, "utf8")).find((c) => !c.locationHistory && Number.isFinite(Number(c.latitude ?? c.lat)));
+    assert.equal((await request(app).post("/api/update-cave-location").set(wm).send({ id: cave.id, latitude: 28.5, longitude: -81.5 })).status, 200);
+    let stored = JSON.parse(fs.readFileSync(file, "utf8")).find((c) => c.id === cave.id);
+    assert.equal(stored.locationHistory[0].via, "moved directly");
+
+    const { locationHistory, ...formCopy } = stored; // the edit form sends the cave without its history
+    formCopy.notes = "edited";
+    const res = await request(app).post("/api/save-cave-database").set(wm).send({ action: "updateSingle", cave: formCopy });
+    assert.equal(res.status, 200);
+    stored = JSON.parse(fs.readFileSync(file, "utf8")).find((c) => c.id === cave.id);
+    assert.equal(stored.locationHistory.length, 1, "kept, not wiped");
+  });
+});
