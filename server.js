@@ -3608,6 +3608,24 @@ function applyApprovedSubmission(submission, caves, approvedBy) {
 // Save route with enhanced functionality to handle single cave updates and
 // new cave creation. Restricted to admin/webmaster - this writes the
 // authoritative cave database.
+// The next free ID for a county, and whether a chosen number is free
+// (Edit Cave Data's New Cave form)
+app.get("/api/caves/id-check", authenticateToken, requireRole("admin", "webmaster"), (req, res) => {
+  const county = String(req.query.county || "").toUpperCase();
+  const fl = statesConfig.find((st) => st.code === DEFAULT_STATE_CODE);
+  if (!fl || !fl.counties.some((c) => c.code === county)) return res.status(400).json({ error: "Unknown county." });
+  const caves = loadCaveDatabaseFromDisk();
+  const prefix = `${getCaveIdPrefix(DEFAULT_STATE_CODE)}${county}`;
+  const nextId = generateNextCaveId(DEFAULT_STATE_CODE, county, caves);
+  const result = { prefix, nextId };
+  if (req.query.id) {
+    const check = checkRequestedCaveId(req.query.id, DEFAULT_STATE_CODE, county, caves);
+    Object.assign(result, check.error ? { available: false, error: check.error, usedBy: check.usedBy || null } : { available: true, id: check.id });
+  }
+  res.set("Cache-Control", "no-store");
+  res.json(result);
+});
+
 app.post(
   "/api/save-cave-database",
   authenticateToken,
@@ -3666,7 +3684,16 @@ app.post(
           .json({ error: "County code is required for new cave." });
       }
 
-      const uniqueId = generateNextCaveId(stateCode, countyCode, caves);
+      // A webmaster's chosen ID is used if it's free; otherwise (and for
+      // admins) the next number in the county is assigned
+      let uniqueId;
+      if (requestData.requestedId && req.user.role === "webmaster") {
+        const check = checkRequestedCaveId(requestData.requestedId, stateCode, countyCode, caves);
+        if (check.error) return res.status(409).json({ error: check.error, usedBy: check.usedBy || null });
+        uniqueId = check.id;
+      } else {
+        uniqueId = generateNextCaveId(stateCode, countyCode, caves);
+      }
       newCave.id = uniqueId; // Override any client-provided ID
       newCave.state = stateCode;
       newCave.county = countyCode;
@@ -7500,6 +7527,27 @@ function generateNextCaveId(stateCode, countyCode, existingCaves) {
   const nextNumber = maxNumber + 1;
   const paddedNumber = nextNumber.toString().padStart(3, "0");
   return `${prefix}${countyCode}${paddedNumber}`;
+}
+
+// A webmaster may choose a new cave's number. The ID must be this county's
+// prefix (e.g. "FCI" for Citrus) followed by digits, and no other cave may
+// already have it (compared ignoring case and leading zeros, so FCI7 and
+// FCI007 count as the same cave number).
+function caveIdNumberKey(id) {
+  const m = /^([A-Za-z]+)0*(\d+)$/.exec(String(id || ""));
+  return m ? `${m[1].toUpperCase()}${m[2]}` : String(id || "").toUpperCase();
+}
+function checkRequestedCaveId(requestedId, stateCode, countyCode, caves) {
+  const prefix = `${getCaveIdPrefix(stateCode)}${countyCode}`.toUpperCase();
+  const id = String(requestedId || "").trim().toUpperCase();
+  const m = new RegExp(`^${prefix}(\\d{1,6})$`).exec(id);
+  if (!m) return { error: `The ID must be ${prefix} followed by a number, like ${prefix}007.` };
+  if (Number(m[1]) === 0) return { error: "The cave number can't be zero." };
+  const normalized = `${prefix}${m[1].length < 3 ? m[1].padStart(3, "0") : m[1]}`;
+  const key = caveIdNumberKey(normalized);
+  const clash = caves.find((c) => c && c.id && caveIdNumberKey(c.id) === key);
+  if (clash) return { error: `${normalized} is already used by ${clash.name || "another cave"} (${clash.id}).`, usedBy: { id: clash.id, name: clash.name || "" } };
+  return { id: normalized };
 }
 
 // ---- Catch-all JSON error handling ------------------------------------------

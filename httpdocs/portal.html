@@ -1232,7 +1232,8 @@
 <div class="form-column">
 <div class="form-group">
 <label for="edit-cave-id">Cave ID:</label>
-<input id="edit-cave-id" readonly="" type="text"/>
+<input id="edit-cave-id" readonly="" type="text" autocomplete="off" spellcheck="false"/>
+<small id="edit-cave-id-status" style="display: block; margin-top: 4px;" aria-live="polite"></small>
 </div>
 <div class="form-group">
 <label for="edit-cave-name">Cave Name:</label>
@@ -9688,14 +9689,84 @@ window.addEventListener('error', function(e) {
         // Only generate ID if we're in "new cave" mode
         if (document.getElementById('edit-cave-form').classList.contains('new-cave-mode')) {
           const countyCode = this.value;
-          if (countyCode) {
-            const newCaveId = generateNewCaveId('FL', countyCode);
-            document.getElementById('edit-cave-id').value = newCaveId;
-          }
+          if (countyCode) suggestNewCaveId(countyCode);
         }
       });
     }
   });
+
+  // ---- New cave IDs -------------------------------------------------------
+  // Picking a county fills in the next free ID for it (e.g. FCI003). A
+  // webmaster can type a different number after the county's prefix; it's
+  // checked against every existing cave as they type, and again by the
+  // server when saved. Admins get the next number; members' proposals get
+  // theirs when a webmaster approves them.
+  let newCaveIdPrefix = '';
+  let newCaveIdCheckTimer = null;
+  function currentRoleName() {
+    return sessionStorage.getItem('role') || localStorage.getItem('role') || '';
+  }
+  function setIdStatus(text, color) {
+    const el = document.getElementById('edit-cave-id-status');
+    if (el) { el.textContent = text; el.style.color = color || '#555'; }
+  }
+  async function suggestNewCaveId(countyCode) {
+    const idInput = document.getElementById('edit-cave-id');
+    const role = currentRoleName();
+    if (role !== 'admin' && role !== 'webmaster') {
+      idInput.value = generateNewCaveId('FL', countyCode).replace(/TEMP$/, '');
+      setIdStatus('The cave number is assigned when a webmaster approves your proposal.');
+      return;
+    }
+    try {
+      const response = await fetch(`/api/caves/id-check?county=${encodeURIComponent(countyCode)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not get the next ID');
+      newCaveIdPrefix = data.prefix;
+      idInput.value = data.nextId;
+      if (role === 'webmaster') {
+        idInput.readOnly = false;
+        setIdStatus(`Next free ID for this county. To use a different one, type a new number after ${data.prefix}.`, '#2e7d32');
+      } else {
+        setIdStatus('Next free ID for this county.', '#2e7d32');
+      }
+    } catch (err) {
+      idInput.value = generateNewCaveId('FL', countyCode);
+      setIdStatus('The ID will be assigned when the cave is saved.');
+    }
+  }
+  // Keeps the county prefix in place while a webmaster types the number
+  function onNewCaveIdInput() {
+    const form = document.getElementById('edit-cave-form');
+    const idInput = document.getElementById('edit-cave-id');
+    if (!form.classList.contains('new-cave-mode') || !newCaveIdPrefix || idInput.readOnly) return;
+    const digits = idInput.value.toUpperCase().replace(newCaveIdPrefix, '').replace(/\D/g, '').slice(0, 6);
+    idInput.value = newCaveIdPrefix + digits;
+    clearTimeout(newCaveIdCheckTimer);
+    if (!digits) { setIdStatus(`Type the cave number after ${newCaveIdPrefix}.`, '#b45309'); return; }
+    setIdStatus('Checking...');
+    newCaveIdCheckTimer = setTimeout(async () => {
+      const county = document.getElementById('edit-county').value;
+      try {
+        const response = await fetch(`/api/caves/id-check?county=${encodeURIComponent(county)}&id=${encodeURIComponent(idInput.value)}`);
+        const data = await response.json();
+        if (data.available) setIdStatus(`✓ ${data.id} is available.`, '#2e7d32');
+        else setIdStatus(`✗ ${data.error}`, '#b3261e');
+      } catch (err) {
+        setIdStatus('Could not check the ID right now; it will be checked again when you save.', '#b45309');
+      }
+    }, 350);
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const idInput = document.getElementById('edit-cave-id');
+    if (idInput) idInput.addEventListener('input', onNewCaveIdInput);
+  });
+  function leaveNewCaveIdMode() {
+    const idInput = document.getElementById('edit-cave-id');
+    if (idInput) idInput.readOnly = true;
+    newCaveIdPrefix = '';
+    setIdStatus('');
+  }
 
   // Initialize the form for a new cave
   function initNewCaveForm() {
@@ -9706,7 +9777,9 @@ window.addEventListener('error', function(e) {
     document.getElementById('edit-cave-form').classList.add('new-cave-mode');
     
     // Clear all field values
+    leaveNewCaveIdMode();
     document.getElementById('edit-cave-id').value = '';
+    setIdStatus('Pick a county to get this cave\'s ID.');
     document.getElementById('edit-cave-name').value = '';
     populateCountySelect(document.getElementById('edit-county'), 'FL');
     document.getElementById('edit-type').value = 'land';
@@ -9970,6 +10043,9 @@ window.addEventListener('error', function(e) {
       saveBtn.disabled = true;
     }
 
+    // Undoes the local update below if the server doesn't save it
+    let undoLocalUpdate = () => {};
+
     // Handle existing cave updates BEFORE server call
     if (!isNewCave) {
       // Update existing cave
@@ -9983,6 +10059,14 @@ window.addEventListener('error', function(e) {
           }
         }
         caveDataStore[caveIndex] = updatedCave;
+        undoLocalUpdate = () => {
+          const i = caveDataStore.findIndex(c => c === updatedCave);
+          if (i !== -1) caveDataStore[i] = originalCave;
+          if (window.caveDatabase) {
+            const j = window.caveDatabase.findIndex(c => c === updatedCave);
+            if (j !== -1) window.caveDatabase[j] = originalCave;
+          }
+        };
       } else {
         alert("Cave not found in database.");
         return;
@@ -10005,12 +10089,17 @@ window.addEventListener('error', function(e) {
       },
       body: JSON.stringify({
         cave: updatedCave,
-        action: isNewCave ? 'createNew' : 'updateSingle'
+        action: isNewCave ? 'createNew' : 'updateSingle',
+        // A webmaster's chosen ID (the server checks it's free)
+        ...(isNewCave && currentRoleName() === 'webmaster' && newCaveIdPrefix ? { requestedId: caveId } : {})
       })
     })
-    .then(response => {
+    .then(async response => {
       if (!response.ok) {
-        throw new Error('Server save failed');
+        const body = await response.json().catch(() => ({}));
+        const err = new Error(body.error || 'Server save failed');
+        err.userMessage = body.error;
+        throw err;
       }
       return response.json();
     })
@@ -10044,6 +10133,7 @@ window.addEventListener('error', function(e) {
       
       // Remove new cave mode class
       document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
+      leaveNewCaveIdMode();
 
       // The save to the server already fully succeeded at this point -
       // say so unconditionally. Everything below (refreshing the dropdown/
@@ -10079,35 +10169,14 @@ window.addEventListener('error', function(e) {
         saveBtn.disabled = false;
       }
       
-      // Server save failed, let user know
-      alert("⚠️ Could not save changes to server. Changes are applied locally only.");
-      
-      // For new caves that failed server save, still add locally but warn user
-      if (isNewCave) {
-        // Generate a temporary ID for local use
-        const tempPrefix = ((window.statesConfigCache || []).find(s => s.code === stateCode) || {}).caveIdPrefix || stateCode || 'F';
-        const tempId = `${tempPrefix}${countyCode}TEMP${Date.now()}`;
-        updatedCave.id = tempId;
-        document.getElementById('edit-cave-id').value = tempId;
-        
-        // Add to local stores
-        caveDataStore.push(updatedCave);
-        if (window.caveDatabase) {
-          window.caveDatabase.push(updatedCave);
-        }
-        
-        console.log(`⚠️ Added new cave locally with temporary ID: ${tempId}`);
-      }
-      
-      // Update UI with local changes
-      populateEditCaveDropdown();
-      if (map && cavesLayer) loadCavesToMap();
-      if (document.getElementById('statistics').classList.contains('active')) updateStatistics();
-      if (document.getElementById('cave-database').classList.contains('active')) loadFcsDatabaseTable();
-      
-      // Ask if user wants to download the database as a backup
-      if (confirm("Would you like to download the updated cave database for backup?")) {
-        downloadUpdatedCaveDataWithProperFormat(caveDataStore);
+      // Nothing was saved: say why, keep everything on the form so it can be
+      // fixed and saved again, and don't show changes the server doesn't have
+      undoLocalUpdate();
+      alert(error.userMessage
+        ? `⚠️ Not saved: ${error.userMessage}`
+        : "⚠️ Could not save to the server. Nothing was changed - your entries are still on the form, so please try again.");
+      if (isNewCave && /already used|must be|can't be zero/i.test(error.userMessage || '')) {
+        document.getElementById('edit-cave-id').focus();
       }
     });
   }
@@ -10117,6 +10186,7 @@ window.addEventListener('error', function(e) {
   document.getElementById('edit-cave-select').addEventListener('change', function() {
     // Remove new cave mode if active
     document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
+    leaveNewCaveIdMode();
     
     // Reset the save button text
     const saveBtn = document.querySelector('#edit-actions-container button[type="submit"]');

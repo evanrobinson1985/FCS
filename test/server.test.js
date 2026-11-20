@@ -4541,3 +4541,49 @@ describe("moving a cave that has already been moved", () => {
     assert.equal(stored.locationHistory.length, 1, "kept, not wiped");
   });
 });
+
+describe("choosing a new cave's ID", () => {
+  const caveFile = () => path.join(process.env.DATA_DIR, "cave-database.json");
+  const newCave = (extra) => ({ name: "Chosen ID Cave", state: "FL", county: "CI", latitude: 28.9, longitude: -82.4, ...extra });
+
+  test("suggests the next free number, and checks a chosen one", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const nums = JSON.parse(fs.readFileSync(caveFile(), "utf8")).filter((c) => /^FCI\d+$/.test(c.id)).map((c) => Number(c.id.slice(3)));
+    const next = `FCI${String(Math.max(0, ...nums) + 1).padStart(3, "0")}`;
+    const res = await request(app).get("/api/caves/id-check?county=CI").set(wm);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.prefix, "FCI");
+    assert.equal(res.body.nextId, next);
+    if (nums.length) {
+      const taken = await request(app).get(`/api/caves/id-check?county=CI&id=FCI${nums[0]}`).set(wm);
+      assert.equal(taken.body.available, false, "FCI1 and FCI001 are the same cave number");
+    }
+    const free = await request(app).get("/api/caves/id-check?county=CI&id=FCI777").set(wm);
+    assert.equal(free.body.available, true);
+    assert.equal((await request(app).get("/api/caves/id-check?county=CI&id=FAL777").set(wm)).body.available, false, "wrong county prefix");
+    const member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    assert.equal((await request(app).get("/api/caves/id-check?county=CI").set(member)).status, 403);
+  });
+
+  test("a webmaster's free ID is used; a taken one is refused; admins always get the next number", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const made = await request(app).post("/api/save-cave-database").set(wm).send({ action: "createNew", requestedId: "FCI777", cave: newCave() });
+    assert.equal(made.status, 200);
+    assert.equal(made.body.caveId, "FCI777");
+    assert.ok(JSON.parse(fs.readFileSync(caveFile(), "utf8")).some((c) => c.id === "FCI777"));
+
+    const dup = await request(app).post("/api/save-cave-database").set(wm).send({ action: "createNew", requestedId: "FCI0777", cave: newCave({ name: "Second" }) });
+    assert.equal(dup.status, 409);
+    assert.match(dup.body.error, /already used by Chosen ID Cave/);
+    const bad = await request(app).post("/api/save-cave-database").set(wm).send({ action: "createNew", requestedId: "FAL5", cave: newCave() });
+    assert.equal(bad.status, 409);
+    const padded = await request(app).post("/api/save-cave-database").set(wm).send({ action: "createNew", requestedId: "FCI42", cave: newCave({ name: "Padded" }) });
+    assert.equal(padded.body.caveId, "FCI042");
+
+    await seedUser({ username: "idadmin", password: "IdAdminPass123!", role: "admin" });
+    const admin = { Authorization: `Bearer ${await login("idadmin", "IdAdminPass123!")}` };
+    const auto = await request(app).post("/api/save-cave-database").set(admin).send({ action: "createNew", requestedId: "FCI900", cave: newCave({ name: "Admin cave" }) });
+    assert.equal(auto.status, 200);
+    assert.equal(auto.body.caveId, "FCI778", "admins get the next number after the highest");
+  });
+});
