@@ -353,6 +353,10 @@
       try { localStorage.setItem(DUES_SECTION_COLLAPSED_KEY, details.open ? 'false' : 'true'); } catch (_) { /* ignore */ }
     });
     details.appendChild(el('summary', null, 'Membership Dues'));
+    const exportRow = el('div'); exportRow.style.cssText = 'display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px;';
+    exportRow.appendChild(exportButton());
+    exportRow.appendChild(el('span', 'dues-sub', 'Spreadsheet of who has paid, when they are due again, and who is not paid up.'));
+    root.appendChild(exportRow);
     root.appendChild(details);
 
     let s;
@@ -419,6 +423,65 @@
     });
   });
 
+  // ---------- Export: who's paid, when they're due, who isn't ----------
+  // Downloads a CSV (opens in Excel / Google Sheets) of every member's dues:
+  // paid-up members first with the date they're due again, then those due
+  // soon, then everyone who isn't paid up (expired, or no payment recorded).
+  const EXPORT_GROUPS = [
+    ['paid', 'Paid'],
+    ['due-soon', 'Paid - due soon'],
+    ['expired', 'Not paid - expired'],
+    ['none', 'Not paid - no payment recorded'],
+    ['exempt', 'Exempt'],
+  ];
+  function csvCell(v) {
+    let s = v == null ? '' : String(v);
+    // a cell starting with = + - @ would run as a formula in a spreadsheet
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  async function exportDuesCsv(button) {
+    const original = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Preparing…'; }
+    try {
+      const { members = [] } = await api('GET', '/api/dues/members');
+      const header = ['Dues status', 'Username', 'First name', 'Last name', 'Email', 'Account', 'Last payment date', 'Last payment amount',
+        'Due again on', 'Days until due'];
+      const rows = [];
+      for (const [state, label] of EXPORT_GROUPS) {
+        members.filter(m => (m.dues ? m.dues.state : 'none') === state)
+          .sort((a, b) => String(a.dues && a.dues.expires || '').localeCompare(String(b.dues && b.dues.expires || '')) || a.username.localeCompare(b.username))
+          .forEach(m => {
+            const d = m.dues || {};
+            const last = (d.payments || [])[0] || null;
+            const daysText = d.daysLeft == null ? '' : d.daysLeft < 0 ? `Overdue by ${plural(-d.daysLeft, 'day')}` : d.daysLeft === 0 ? 'Due today' : String(d.daysLeft);
+            rows.push([label, m.username, m.firstName, m.lastName, m.email, STATUS_LABEL[m.status] || m.status,
+              last ? last.paidOn : '', last && last.amount != null ? Number(last.amount).toFixed(2) : '',
+              state === 'exempt' ? '' : (d.expires || ''), state === 'exempt' ? '' : daysText]);
+          });
+      }
+      const csv = '\ufeff' + [header, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `fcs-dues-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+      if (button) button.textContent = `Exported ${plural(members.length, 'member')}`;
+      setTimeout(() => { if (button) { button.textContent = original; button.disabled = false; } }, 2500);
+    } catch (err) {
+      alert('Could not export the dues list: ' + err.message);
+      if (button) { button.textContent = original; button.disabled = false; }
+    }
+  }
+  function exportButton() {
+    const b = el('button', 'btn-success', '⬇ Export Dues List');
+    b.type = 'button';
+    b.title = 'Download a spreadsheet of who has paid, when they are due again, and who is not paid up';
+    b.addEventListener('click', () => exportDuesCsv(b));
+    return b;
+  }
+
   // ---------- Treasurer view of Account Management ----------
   const STATUS_LABEL = { active: 'Active', pending: 'Pending approval', inactive: 'Inactive' };
   let tvState = { q: '', filter: 'all', members: [] };
@@ -460,6 +523,9 @@
     root.appendChild(el('p', 'tv-summary',
       `${plural(all.length, 'member')}: ${count('paid')} paid, ${count('due-soon')} due soon, ${count('expired')} expired, ` +
       `${count('none')} with no payment recorded, ${all.filter(m => m.status === 'pending').length} waiting for approval.`));
+    const exportWrap = el('div'); exportWrap.style.margin = '6px 0 10px';
+    exportWrap.appendChild(exportButton());
+    root.appendChild(exportWrap);
 
     // The Treasurer can change the dues price
     const price = el('div', 'tv-price');
@@ -626,5 +692,5 @@
     box.disabled = false;
   });
 
-  window.Membership = { afterLogin, hide, duesCellHtml, nameCellHtml, renderSettings, showTreasurerView, showWebmasterView };
+  window.Membership = { afterLogin, hide, duesCellHtml, nameCellHtml, renderSettings, showTreasurerView, showWebmasterView, exportDuesCsv };
 })();
