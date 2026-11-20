@@ -5705,7 +5705,7 @@ function loadFcsDatabaseTable() {
       let activeTabIsHidden = false;
 
       // Cave Profile has no tab of its own: hiding it hides the ways in
-      // (Profile buttons, cave-name links, Full Profile in map popups) from
+      // (Full Profile buttons in the Cave Database and map popups, cave-name links) from
       // everyone but webmasters
       const profileHidden = hiddenSet.has('cave-profile') && sessionStorage.getItem('role') !== 'webmaster';
       document.body.classList.toggle('cave-profile-hidden', profileHidden);
@@ -8554,7 +8554,7 @@ window.addEventListener('error', function(e) {
         const actionsTd = document.createElement("td");
         const profileBtn = document.createElement('button');
         profileBtn.className = 'btn-success cp-entry';
-        profileBtn.textContent = 'Profile';
+        profileBtn.textContent = 'Full Profile';
         profileBtn.title = 'Everything about this cave on one page';
         profileBtn.onclick = () => openCaveProfile(cave.id);
         actionsTd.appendChild(profileBtn);
