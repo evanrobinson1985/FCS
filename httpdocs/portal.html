@@ -3276,7 +3276,7 @@
 
             <div class="popup-actions">
               <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
-              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId})">Edit Cave</button>
+              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId}, { fromMap: true })">Edit Cave</button>
               <button onclick="initiateMove(${jsId})">Click to Move</button>
               <button onclick="closePopup()">Close</button>
             </div>
@@ -7307,7 +7307,7 @@ window.addEventListener('error', function(e) {
     }, true);
 
 
-    function editCaveFromMap(caveId) {
+    function editCaveFromMap(caveId, { fromMap = false } = {}) {
       console.log(`Opening edit form for cave ${caveId}`);
       
       // Find the cave data
@@ -7317,6 +7317,11 @@ window.addEventListener('error', function(e) {
         return;
       }
       
+      // Remember where the map was, to come back to it after saving
+      window.__editReturnToMap = (fromMap && typeof map !== 'undefined' && map)
+        ? { caveId, center: map.getCenter(), zoom: map.getZoom() }
+        : null;
+
       // Switch to the edit cave tab
       document.querySelector('[data-tab="edit-cave-tab"]').click();
       
@@ -7329,7 +7334,9 @@ window.addEventListener('error', function(e) {
           
           // Trigger the change event to populate the form
           const changeEvent = new Event('change');
+          window.__editOpeningFromMap = true;
           editCaveSelect.dispatchEvent(changeEvent);
+          window.__editOpeningFromMap = false;
           
           // Make sure the form is visible
           const form = document.getElementById('edit-cave-form');
@@ -7347,6 +7354,24 @@ window.addEventListener('error', function(e) {
     // call this with no arguments - it was missing entirely (the buttons
     // threw a ReferenceError on click), so this just supplies the data those
     // buttons expect from the current in-memory database.
+    // After an edit that was opened from a cave's marker ("Edit"), go back
+    // to the map where it was. Does nothing for edits started on the tab.
+    function returnToMapAfterEdit() {
+      const back = window.__editReturnToMap;
+      window.__editReturnToMap = null;
+      if (!back) return;
+      document.querySelector('.tab[data-tab="map-tab"]').click();
+      // the map redraws its markers (and re-fits its view) after a save, so
+      // put the view back once that has settled
+      const restore = (tries) => {
+        if (typeof map === 'undefined' || !map) { if (tries < 30) setTimeout(() => restore(tries + 1), 100); return; }
+        map.invalidateSize();
+        map.setView(back.center, back.zoom, { animate: false });
+        if (tries < 2) setTimeout(() => restore(tries + 1), 500);
+      };
+      setTimeout(() => restore(0), 300);
+    }
+
     function downloadUpdatedCaveData() {
       downloadUpdatedCaveDataWithProperFormat(window.caveDataStore || window.caveDatabase || []);
     }
@@ -7403,6 +7428,7 @@ window.addEventListener('error', function(e) {
       if (document.getElementById('edit-cave-form').classList.contains('active')) {
         document.getElementById('edit-cave-form').classList.remove('active');
       }
+      returnToMapAfterEdit();
     });
 
     function initializeHeatmap() {
@@ -8131,7 +8157,7 @@ window.addEventListener('error', function(e) {
 
             <div class="popup-actions">
               <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
-              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId})">Edit Cave</button>
+              <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId}, { fromMap: true })">Edit Cave</button>
               <button onclick="initiateMove(${jsId})">Click to Move</button>
               <button onclick="closePopup()">Close</button>
             </div>
@@ -9787,6 +9813,7 @@ window.addEventListener('error', function(e) {
 
   // Initialize the form for a new cave
   function initNewCaveForm() {
+    window.__editReturnToMap = null;
     // Reset the form
     document.getElementById('edit-cave-form').reset();
     
@@ -9864,6 +9891,7 @@ window.addEventListener('error', function(e) {
         alert(isNewCave
           ? "✅ Your new cave proposal has been submitted for webmaster review."
           : "✅ Your proposed changes have been submitted for webmaster review.");
+        if (!isNewCave) setTimeout(returnToMapAfterEdit, 0);
         document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
       })
       .catch(error => {
@@ -10161,6 +10189,7 @@ window.addEventListener('error', function(e) {
       // false and only make someone re-save (or worse, assume they lost
       // an edit) that already went through.
       alert(isNewCave ? `✅ New cave created successfully with ID: ${data.caveId || updatedCave.id}` : "✅ Cave updated successfully.");
+      setTimeout(returnToMapAfterEdit, 0);
 
       try {
         // Update dropdowns and views
@@ -10168,11 +10197,9 @@ window.addEventListener('error', function(e) {
         if (map && cavesLayer) loadCavesToMap();
         if (document.getElementById('statistics').classList.contains('active')) updateStatistics();
         if (document.getElementById('cave-database').classList.contains('active')) loadFcsDatabaseTable();
-
-        // Ask user if they want to download updated database
-        if (confirm("Would you like to download a copy of the updated cave database?")) {
-          downloadUpdatedCaveDataWithProperFormat(caveDataStore);
-        }
+        // (No "download the database?" prompt after saving: the site backs
+        // itself up, and the form's Download Updated Database button is
+        // still there for anyone who wants a copy.)
       } catch (refreshErr) {
         console.error("Cave saved successfully, but refreshing the page afterward failed:", refreshErr);
       }
@@ -10201,6 +10228,7 @@ window.addEventListener('error', function(e) {
   // Enhance the existing select change handler
   const originalDropdownHandler = document.getElementById('edit-cave-select').onchange;
   document.getElementById('edit-cave-select').addEventListener('change', function() {
+    if (!window.__editOpeningFromMap) window.__editReturnToMap = null;
     // Remove new cave mode if active
     document.getElementById('edit-cave-form').classList.remove('new-cave-mode');
     leaveNewCaveIdMode();
