@@ -13165,6 +13165,11 @@ function getCSRFToken() {
     <!-- A small, visible-but-tucked-away link to the Cave Jump game -->
     <div style="margin-top: 6px;">
       <a href="/cave-jump" title="Take a break: play Cave Jump" style="color: #888; text-decoration: none; font-size: 11px;">&#129415; Cave Jump</a>
+      <span aria-hidden="true" style="color: #bbb; margin: 0 6px;">&middot;</span>
+      <!-- Just for fun: the "you didn't say the magic word" lockout screen
+           (the wrong-password version), opened over the page so nobody is
+           logged out by visiting it; Close goes back to where they were -->
+      <a href="/security-lockout" id="magic-word-link" title="Just for fun: see the access-denied screen" style="color: #888; text-decoration: none; font-size: 11px;">&#129430; Magic Word</a>
     </div>
   </footer>
   <script>
@@ -13174,6 +13179,37 @@ function getCSRFToken() {
     (function () {
       var f = document.getElementById('site-footer');
       if (f) document.body.appendChild(f);
+    })();
+
+    // Magic Word: shows the lockout screen in a full-page layer over the
+    // portal (leaving the page would mean logging in again). The screen
+    // sends "fcs-lockout-close" when its Close button is pressed.
+    (function () {
+      var link = document.getElementById('magic-word-link');
+      if (!link) return;
+      var frame = null;
+      function closeMagicWord() {
+        if (!frame) return;
+        frame.remove(); frame = null;
+        document.documentElement.style.overflow = '';
+        link.focus();
+      }
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (frame) return;
+        frame = document.createElement('iframe');
+        frame.src = '/security-lockout';
+        frame.title = 'You didn\'t say the magic word';
+        frame.setAttribute('allow', 'autoplay');
+        frame.setAttribute('data-theme-keep', '');
+        frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483000;background:#020802;';
+        frame.addEventListener('load', function () { try { frame.focus(); } catch (err) { /* ignore */ } });
+        document.documentElement.style.overflow = 'hidden';
+        document.body.appendChild(frame);
+      });
+      window.addEventListener('message', function (e) {
+        if (frame && e.source === frame.contentWindow && e.origin === location.origin && e.data === 'fcs-lockout-close') closeMagicWord();
+      });
     })();
   </script>
 </body>

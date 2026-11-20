@@ -258,6 +258,9 @@ const MAGIC_LINE = "YOU DIDN'T SAY THE MAGIC WORD!";
 const mode = "{{MODE}}" === "attack" ? "attack" : "password";
 const VISITOR_IP = "{{IP}}";
 const RETURN_TO = "/portal";
+// Opened just for fun from the portal's "Magic Word" link, it sits in a layer
+// over the portal; Close then removes the layer instead of leaving the page
+const EMBEDDED = (() => { try { return window.parent !== window && window.parent.location.origin === location.origin; } catch (_) { return false; } })();
 const out = document.getElementById("out");
 const typed = document.getElementById("typed");
 const keys = document.getElementById("keys");
@@ -377,6 +380,7 @@ function closeLockout() {
   stopSound();
   clearInterval(floodTimer); floodTimer = null;
   print("");
+  if (EMBEDDED) { window.parent.postMessage("fcs-lockout-close", location.origin); return; }
   print("Returning to the login page...", "dim");
   setTimeout(() => { window.location.href = RETURN_TO; }, 400);
 }
