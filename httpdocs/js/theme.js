@@ -9,9 +9,9 @@
  * Content added later (popups, tables, dialogs) is handled as it appears.
  * Switching back puts every original colour back.
  *
- * The choice is saved per browser ("fcs-theme": "dark" or "light"); with
- * no choice it follows the device's own dark/light setting. Load this
- * script in <head> so the page doesn't flash white first.
+ * Light mode until someone switches to dark; their choice is saved per
+ * browser ("fcs-theme": "dark" or "light") and used on every visit. Load
+ * this script in <head> so a dark-mode visitor doesn't see a white flash.
  *
  * Left alone: images, video, canvases (the 3D view, charts - see
  * FCSTheme.onChange), map tiles, colour pickers, and anything inside an
@@ -21,13 +21,12 @@
   'use strict';
   const KEY = 'fcs-theme';
   const root = document.documentElement;
-  const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
   function savedChoice() {
     try { const v = localStorage.getItem(KEY); return v === 'dark' || v === 'light' ? v : null; } catch (e) { return null; }
   }
   function wanted() {
-    return savedChoice() || (media && media.matches ? 'dark' : 'light');
+    return savedChoice() || 'light';
   }
 
   // ---- colour helpers ----
@@ -243,5 +242,4 @@
     document.querySelectorAll('[data-theme-toggle]').forEach((btn) => btn.addEventListener('click', () => window.FCSTheme.toggle()));
     apply(wanted());
   });
-  if (media && media.addEventListener) media.addEventListener('change', () => { if (!savedChoice()) apply(wanted()); });
 })();
