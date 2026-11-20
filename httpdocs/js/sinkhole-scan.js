@@ -820,7 +820,7 @@
       fbox.appendChild(el('div', 'font-size:12px;margin-top:6px;font-weight:600;', 'Hide ones that look man-made:'));
       const toggle = (key, text, tip) => {
         const lab = el('label', 'display:flex;align-items:flex-start;gap:6px;font-size:12px;margin-top:3px;cursor:pointer;');
-        const box = document.createElement('input'); box.type = 'checkbox'; box.checked = !!filter[key]; box.style.marginTop = '2px';
+        const box = document.createElement('input'); box.type = 'checkbox'; box.checked = !!filter[key]; box.style.cssText = 'margin:2px 0 0;flex:none;';
         box.addEventListener('change', () => { filter[key] = box.checked; applyFilter(); });
         const t = el('span', null, text); t.title = tip;
         lab.appendChild(box); lab.appendChild(t); fbox.appendChild(lab);
