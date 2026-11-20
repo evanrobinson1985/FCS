@@ -619,7 +619,7 @@ function restrictAccount(username, reason, req) {
       { at: user.restrictedAt, action: "Account Restricted", details: `Automatically, ${howLong}: ${reason}`, ip: req.ip },
     ].slice(-50);
     saveUsers(users);
-    endActiveSession(username);
+    endActiveSession(username, "signed out: account restricted");
     console.warn(`Account ${username} automatically restricted ${howLong}: ${reason}`);
     sendAdminNotification(
       getNotificationRecipients(["webmaster"]),
@@ -2268,12 +2268,85 @@ const activeSessions = new Map(); // username -> { role, lastSeen }
 const recentLogins = []; // [{ seq, username, fullName, role, at }], oldest first, capped
 let loginEventSeq = 0;
 
-function touchActiveSession(username, role) {
+// ---- Session history (Security Logs: how long each login lasted) ---------
+// A session starts at login and runs while the account keeps using the
+// site; it ends at logout, after SESSION_IDLE_MS without any request, or
+// when the same account logs in again. Kept in data/session-log.json.
+const SESSION_LOG_FILE = path.join(DATA_DIR, "session-log.json");
+const SESSION_IDLE_MS = 30 * 60 * 1000;
+const MAX_SESSION_LOG = 3000;
+let sessionLog = (() => {
+  try {
+    if (fs.existsSync(SESSION_LOG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSION_LOG_FILE, "utf8"));
+      if (Array.isArray(data)) {
+        // Sessions still open when the server last stopped ended at their last activity
+        data.forEach((s) => { if (!s.end) { s.end = s.lastSeen; s.endReason = s.endReason || "server restarted"; } });
+        return data;
+      }
+    }
+  } catch (err) {
+    console.error("Error loading the session log:", err);
+  }
+  return [];
+})();
+const openSessions = new Map(); // username -> its entry in sessionLog
+let sessionLogSaveTimer = null;
+function saveSessionLogSoon() {
+  if (sessionLogSaveTimer) return;
+  sessionLogSaveTimer = setTimeout(() => {
+    sessionLogSaveTimer = null;
+    try {
+      writeFileAtomicSync(SESSION_LOG_FILE, JSON.stringify(sessionLog));
+    } catch (err) {
+      console.error("Failed to save the session log:", err);
+    }
+  }, 5000);
+  if (sessionLogSaveTimer.unref) sessionLogSaveTimer.unref();
+}
+function closeSession(username, reason, at) {
+  const s = openSessions.get(username);
+  if (!s) return;
+  openSessions.delete(username);
+  s.end = new Date(at || Date.now()).toISOString();
+  s.endReason = reason;
+  saveSessionLogSoon();
+}
+function openSession(username, role, ip, continued) {
+  const now = new Date().toISOString();
+  const s = { username, role, ip: ip || "unknown", start: now, lastSeen: now, ...(continued ? { continued: true } : {}) };
+  sessionLog.push(s);
+  if (sessionLog.length > MAX_SESSION_LOG) sessionLog.splice(0, sessionLog.length - MAX_SESSION_LOG);
+  openSessions.set(username, s);
+  saveSessionLogSoon();
+  return s;
+}
+// Closes sessions that have gone quiet, at the time of their last activity
+function closeIdleSessions() {
+  const cutoff = Date.now() - SESSION_IDLE_MS;
+  for (const [username, s] of openSessions) {
+    if (new Date(s.lastSeen).getTime() < cutoff) closeSession(username, "inactive for 30 minutes", s.lastSeen);
+  }
+}
+if (process.env.NODE_ENV !== "test") setInterval(closeIdleSessions, 60 * 1000).unref();
+app.locals.sessionHistory = { openSessions, closeIdleSessions, log: () => sessionLog };
+
+function touchActiveSession(username, role, ip) {
   activeSessions.set(username, { role, lastSeen: Date.now() });
+  let s = openSessions.get(username);
+  if (s && Date.now() - new Date(s.lastSeen).getTime() > SESSION_IDLE_MS) {
+    closeSession(username, "inactive for 30 minutes", s.lastSeen);
+    s = null;
+  }
+  // Still logged in from before a restart or a quiet spell: a new session
+  if (!s) s = openSession(username, role, ip, true);
+  s.lastSeen = new Date().toISOString();
+  saveSessionLogSoon();
 }
 
-function endActiveSession(username) {
+function endActiveSession(username, reason = "logged out") {
   activeSessions.delete(username);
+  closeSession(username, reason);
 }
 
 // A real login (not just any authenticated request) - also records the
@@ -2283,7 +2356,10 @@ function endActiveSession(username) {
 // display name.
 function recordLogin(user) {
   ipOwners.at = 0; // a new login address: refresh who has used which address (Security Alerts)
-  touchActiveSession(user.username, user.role);
+  closeSession(user.username, "logged in again");
+  const ip = Array.isArray(user.loginIPs) && user.loginIPs.length ? user.loginIPs[user.loginIPs.length - 1] : "unknown";
+  openSession(user.username, user.role, ip, false);
+  touchActiveSession(user.username, user.role, ip);
   loginEventSeq++;
   recentLogins.push({ seq: loginEventSeq, username: user.username, fullName: user.fullName || user.username, role: user.role, at: Date.now() });
   if (recentLogins.length > MAX_RECENT_LOGINS) recentLogins.shift();
@@ -2383,7 +2459,7 @@ function authenticateToken(req, res, next) {
       return res.status(403).json({ error: restrictedMessage(liveUser), restricted: true });
     }
     req.user = { ...decoded, role: liveUser.role };
-    touchActiveSession(liveUser.username, liveUser.role);
+    touchActiveSession(liveUser.username, liveUser.role, req.ip);
     // Dues access switch (Account Management, off by default): a member
     // whose recorded membership has expired can only reach the few routes
     // needed to see their status, pay, and get back in. Never applies to
@@ -6773,8 +6849,35 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
     const users = loadUsers();
     const logs = [];
     
+    // How long each login lasted (newest sessions; open ones are "online now")
+    const durationText = (ms) => {
+      const mins = Math.max(0, Math.round(ms / 60000));
+      if (mins < 1) return "under a minute";
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return h ? `${h}h ${m}m` : `${m}m`;
+    };
+    const withSessions = new Set();
+    sessionLog.slice(-1000).forEach((s) => {
+      withSessions.add(s.username);
+      const open = !s.end;
+      const endMs = new Date(open ? s.lastSeen : s.end).getTime();
+      const length = durationText(endMs - new Date(s.start).getTime());
+      logs.push({
+        timestamp: s.start,
+        action: open ? "Session (online now)" : "Session",
+        username: s.username,
+        ipAddress: s.ip || "unknown",
+        details: open
+          ? `Online for ${length} so far${s.continued ? " (continued from an earlier login)" : ""}`
+          : `Active for ${length} - ${s.endReason || "ended"}` +
+            (s.continued ? " (continued from an earlier login)" : ""),
+        durationMinutes: Math.round((endMs - new Date(s.start).getTime()) / 60000),
+      });
+    });
+
     users.forEach(user => {
-      if (user.lastLogin) {
+      // Logins from before session history existed
+      if (user.lastLogin && !withSessions.has(user.username)) {
         logs.push({
           timestamp: user.lastLogin,
           action: "Login",

@@ -4587,3 +4587,43 @@ describe("choosing a new cave's ID", () => {
     assert.equal(auto.body.caveId, "FCI778", "admins get the next number after the highest");
   });
 });
+
+describe("security log: how long each session lasted", () => {
+  const logsFor = async (username) => {
+    const wm = await login("webmaster1", WEBMASTER_PASSWORD);
+    return (await request(app).get("/api/security-logs").set("Authorization", `Bearer ${wm}`)).body.filter((l) => l.username === username);
+  };
+
+  test("a login opens a session; logging out closes it with its length", async () => {
+    await seedUser({ username: "sessiontimer", password: "SessionTimer123!", role: "member" });
+    const token = await login("sessiontimer", "SessionTimer123!");
+    await request(app).get("/api/cave-database").set("Authorization", `Bearer ${token}`);
+    let mine = await logsFor("sessiontimer");
+    assert.ok(mine.some((l) => l.action === "Session (online now)" && /Online for/.test(l.details)));
+
+    // pretend the session started 75 minutes ago
+    const open = app.locals.sessionHistory.openSessions.get("sessiontimer");
+    open.start = new Date(Date.now() - 75 * 60000).toISOString();
+    await request(app).post("/api/logout").set("Authorization", `Bearer ${token}`);
+    mine = await logsFor("sessiontimer");
+    const ended = mine.find((l) => l.action === "Session");
+    assert.ok(ended, "a finished session is listed");
+    assert.match(ended.details, /Active for 1h 15m/);
+    assert.match(ended.details, /logged out/);
+    assert.ok(!mine.some((l) => l.action === "Login"), "sessions replace the old single 'Login' line");
+  });
+
+  test("logging in again or going quiet for 30 minutes ends a session", async () => {
+    await seedUser({ username: "sessionquiet", password: "SessionQuiet123!", role: "member" });
+    await login("sessionquiet", "SessionQuiet123!");
+    await login("sessionquiet", "SessionQuiet123!");
+    let mine = await logsFor("sessionquiet");
+    assert.ok(mine.some((l) => l.action === "Session" && /logged in again/.test(l.details)));
+
+    const open = app.locals.sessionHistory.openSessions.get("sessionquiet");
+    open.lastSeen = new Date(Date.now() - 31 * 60000).toISOString();
+    app.locals.sessionHistory.closeIdleSessions();
+    mine = await logsFor("sessionquiet");
+    assert.ok(mine.some((l) => /inactive for 30 minutes/.test(l.details)));
+  });
+});
