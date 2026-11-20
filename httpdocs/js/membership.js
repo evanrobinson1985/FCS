@@ -380,7 +380,9 @@
     const enf = el('input'); enf.type = 'checkbox'; enf.checked = !!s.duesEnforcement; enf.style.cssText = 'width:18px;height:18px;margin-top:2px;';
     const enfText = el('span');
     enfText.appendChild(el('strong', null, 'Block members whose membership has expired'));
-    enfText.appendChild(el('div', 'dues-sub', 'Off by default. When on, an expired member can still log in but only sees a "pay your dues" page. Never affects admins, webmasters, or members with no payment recorded.'));
+    enfText.appendChild(el('div', 'dues-sub', 'Off by default. When on, an expired member can still log in but only sees a "pay your dues" page. ' +
+      'Only members with a payment recorded are tracked: each member is checked from the first payment you record for them, ' +
+      'and members with no payment recorded are never blocked. Never affects admins or webmasters.'));
     enfWrap.appendChild(enf); enfWrap.appendChild(enfText);
     details.appendChild(enfWrap);
 
@@ -388,8 +390,21 @@
     const note = el('span', 'dues-sub'); note.style.marginLeft = '10px';
     details.appendChild(save); details.appendChild(note);
     save.addEventListener('click', async () => {
-      if (enf.checked && !s.duesEnforcement &&
-          !confirm('Turn on blocking? Members whose recorded membership has expired will only see a "pay your dues" page until a payment is recorded.')) return;
+      if (enf.checked && !s.duesEnforcement) {
+        // Say exactly who this would block today, so an old payment date
+        // entered by mistake can't lock someone out unnoticed
+        let wouldBlock = [];
+        try {
+          const { members = [] } = await api('GET', '/api/dues/members');
+          wouldBlock = members.filter(m => m.dues && m.dues.state === 'expired' && m.status === 'active');
+        } catch (_) { /* still ask below */ }
+        const list = wouldBlock.length
+          ? `It will block ${plural(wouldBlock.length, 'member')} right now:\n` +
+            wouldBlock.slice(0, 15).map(m => `  • ${m.username} (expired ${fmtDate(m.dues.expires)})`).join('\n') +
+            (wouldBlock.length > 15 ? `\n  …and ${wouldBlock.length - 15} more` : '')
+          : 'Nobody is expired right now, so nobody will be blocked today.';
+        if (!confirm(`Turn on blocking?\n\n${list}\n\nMembers with no payment recorded are never blocked. Expired members only see a "pay your dues" page until a payment is recorded.`)) return;
+      }
       save.disabled = true; note.textContent = 'Saving…';
       try {
         const r = await api('POST', '/api/dues/settings', { duesAmount: parseFloat(amount.value), duesReminderDays: parseInt(days.value, 10), duesEnforcement: enf.checked });
