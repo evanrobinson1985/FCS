@@ -4307,13 +4307,16 @@ describe("the access-denied lockout screen", () => {
   test("serves the wrong-password and attack versions with the visitor's address", async () => {
     const pw = await request(app).get("/security-lockout").set("X-Forwarded-For", "198.51.100.90");
     assert.equal(pw.status, 200);
-    assert.match(pw.text, /const mode = "password" === "attack"/);
+    assert.match(pw.text, /(?:const|let) mode = "password" === "attack"/);
     assert.match(pw.text, /const VISITOR_IP = "198\.51\.100\.90"/);
     assert.equal(pw.headers["cache-control"], "no-store");
     const attack = await request(app).get("/security-lockout?mode=attack").set("X-Forwarded-For", "198.51.100.90");
-    assert.match(attack.text, /const mode = "attack" === "attack"/);
+    assert.match(attack.text, /(?:const|let) mode = "attack" === "attack"/);
     const odd = await request(app).get("/security-lockout?mode=<script>");
-    assert.match(odd.text, /const mode = "password"/, "only the two known modes");
+    assert.match(odd.text, /(?:const|let) mode = "password"/, "only the two known modes");
+    // opened for fun from the portal's Magic Word link: the visitor's own real address
+    const play = await request(app).get("/security-lockout?play=1").set("X-Forwarded-For", "198.51.100.91");
+    assert.match(play.text, /const VISITOR_IP = "198\.51\.100\.91"/);
   });
 
   test("the magic-word voice line is served to visitors who aren't logged in", async () => {
@@ -4329,7 +4332,7 @@ describe("the access-denied lockout screen", () => {
     const res = await request(app).get("/portal?id=1%27%20UNION%20SELECT%20passwordHash%20FROM%20users--")
       .set("Accept", "text/html,application/xhtml+xml").set("X-Forwarded-For", "203.0.113.200");
     assert.equal(res.status, 403);
-    assert.match(res.text, /const mode = "attack"/);
+    assert.match(res.text, /(?:const|let) mode = "attack"/);
     assert.match(res.text, /203\.0\.113\.200/);
     await new Promise((r) => setTimeout(r, 20));
     const wm = await login("webmaster1", WEBMASTER_PASSWORD);
