@@ -5286,13 +5286,37 @@ function loadFcsDatabaseTable() {
     // sanitized from the server (see bannerMessageToHtml() in server.js),
     // with plain URLs turned into real <a> links and everything else
     // stripped, so it's safe to drop in via innerHTML here.
+    // A logged-in user can close the banner; it stays closed until they next
+    // log in (completeLogin() clears this), or until the message changes.
+    const DISMISSED_BANNER_KEY = 'dismissedBanner';
+    function isLoggedIn() {
+      try { return !!sessionStorage.getItem('sessionToken'); } catch (e) { return false; }
+    }
     function renderSiteBanner(status) {
       const bannerEl = document.getElementById('site-banner');
       if (!bannerEl) return;
-      if (status && status.bannerEnabled && status.bannerHtml) {
-        bannerEl.style.cssText = 'padding: 8px 16px; text-align: center; font-size: 0.9em; display: block; ' +
+      let dismissed = null;
+      try { dismissed = sessionStorage.getItem(DISMISSED_BANNER_KEY); } catch (e) { dismissed = null; }
+      const closedForThisLogin = isLoggedIn() && status && dismissed === status.bannerHtml;
+      if (status && status.bannerEnabled && status.bannerHtml && !closedForThisLogin) {
+        bannerEl.style.cssText = 'position: relative; padding: 8px 40px 8px 16px; text-align: center; font-size: 0.9em; display: block; ' +
           (BANNER_COLOR_STYLES[status.bannerColor] || BANNER_COLOR_STYLES.yellow);
         bannerEl.innerHTML = status.bannerHtml;
+        if (isLoggedIn()) {
+          const close = document.createElement('button');
+          close.type = 'button';
+          close.textContent = '\u00d7';
+          close.setAttribute('aria-label', 'Close this notice until you next log in');
+          close.title = 'Close until you next log in';
+          close.style.cssText = 'position: absolute; top: 50%; right: 8px; transform: translateY(-50%); width: 28px; height: 28px; padding: 0; ' +
+            'border: none; border-radius: 50%; background: rgba(0,0,0,0.08); color: inherit; font-size: 18px; line-height: 28px; cursor: pointer;';
+          close.addEventListener('click', () => {
+            try { sessionStorage.setItem(DISMISSED_BANNER_KEY, status.bannerHtml); } catch (e) { /* storage blocked: just hide it */ }
+            bannerEl.style.display = 'none';
+            bannerEl.innerHTML = '';
+          });
+          bannerEl.appendChild(close);
+        }
       } else {
         bannerEl.style.display = 'none';
         bannerEl.innerHTML = '';
@@ -8709,6 +8733,9 @@ window.addEventListener('error', function(e) {
     document.title = `Florida Cave Survey - ${roleName} Portal`;
     document.getElementById('main-header-title').textContent = `Florida Cave Survey - ${roleName} Portal`;
     document.getElementById('dashboard-heading').textContent = `${roleName} Dashboard`;
+
+    // A notice closed during an earlier login shows again now
+    try { sessionStorage.removeItem('dismissedBanner'); } catch (e) { /* storage blocked */ }
 
     // Store user information
     localStorage.setItem('username', result.username);
