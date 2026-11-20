@@ -19,7 +19,7 @@
 <!-- External CSS Libraries -->
 <link href="/js/vendor/leaflet-1.9.4/leaflet.css" rel="stylesheet"/>
 <link rel="stylesheet" href="/js/vendor/leaflet-compass-1.5.6/src/leaflet-compass.css">
- <link rel="stylesheet" href="styles.css?v=12">
+ <link rel="stylesheet" href="styles.css?v=13">
 <!-- Dark mode: in <head> so a dark-mode visitor never sees a white flash -->
 <script src="js/theme.js?v=2"></script>
 <script>
@@ -630,7 +630,7 @@
 
     <div class="control-section">
       <h4>Tab Visibility</h4>
-      <p style="margin-bottom: 10px;">Hide a tab from the dashboard - for everyone, every role - while a feature in it is broken or still being worked on. Checked means visible; unchecked means hidden. Account Management and Website Management can't be hidden here, so there's always a way back in.</p>
+      <p style="margin-bottom: 10px;">Hide a tab from members and admins while a feature in it is broken or still being worked on. Webmasters always keep every tab, marked "hidden", so you can keep working on it. Checked means visible to everyone; unchecked means webmasters only. Account Management and Website Management can't be hidden.</p>
       <div id="tab-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
       <div style="margin-top: 10px;">
         <button type="button" class="btn-success" onclick="saveTabVisibility()">Save Tab Visibility</button>
@@ -930,7 +930,9 @@
 <div class="cave-maps-admin" style="margin-top: 20px;" data-map-tool="cave-map-upload">
   <h4>Upload Cave Maps</h4>
   <input type="file" id="cave-map-upload" accept=".tif,.tiff,.shp,.dbf,.shx,.prj" multiple>
+  <input type="text" id="cave-map-upload-cave" placeholder="Cave ID (optional), e.g. FCI004" style="width: 220px; padding: 6px;" autocomplete="off">
   <button onclick="uploadCaveMaps()">Upload Maps</button>
+  <small style="display: block; color: #555; margin-top: 4px;">Give the cave's ID to link these files to it, so they show on its Cave Profile.</small>
 </div>
 
 <div class="cave-maps-admin" style="margin-top: 20px;" data-map-tool="georeferencer">
@@ -1215,6 +1217,9 @@
 </div>
 </div>
 
+<!-- Cave Profile: everything about one cave (js/cave-profile.js). Opened from
+     a cave in the Cave Database table or a map marker's popup, not a tab. -->
+<div class="tab-content" id="cave-profile" aria-label="Cave profile"></div>
 <div class="tab-content" id="edit-cave-tab">
 <h3>Edit Cave Data</h3>
 
@@ -1648,6 +1653,8 @@
 <script src="js/site-updates.js?v=9"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
 <script src="js/membership.js?v=9"></script>
+<!-- Cave Profile page -->
+<script src="js/cave-profile.js?v=1"></script>
 <!-- "Who's online" notice for webmaster/admin/Treasurer -->
 <script src="js/active-sessions.js?v=1"></script>
 
@@ -3280,6 +3287,7 @@
             </div>
 
             <div class="popup-actions">
+              <button class="btn-success cp-entry" onclick="openCaveProfile(${jsId})">Full Profile</button>
               <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
               <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId}, { fromMap: true })">Edit Cave</button>
               <button onclick="initiateMove(${jsId})">Click to Move</button>
@@ -5537,6 +5545,7 @@ function loadFcsDatabaseTable() {
       { id: 'edit-cave-tab', label: 'Edit Cave Data' },
       { id: 'cave-maps-section', label: 'Cave Maps' },
       { id: 'narrative-tab', label: 'Narrative' },
+      { id: 'cave-profile', label: 'Cave Profile (opened from a cave, not a tab)' },
     ];
 
     function renderTabVisibilityList(hiddenTabs) {
@@ -5695,11 +5704,39 @@ function loadFcsDatabaseTable() {
       const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
       let activeTabIsHidden = false;
 
+      // Cave Profile has no tab of its own: hiding it hides the ways in
+      // (Profile buttons, cave-name links, Full Profile in map popups) from
+      // everyone but webmasters
+      const profileHidden = hiddenSet.has('cave-profile') && sessionStorage.getItem('role') !== 'webmaster';
+      document.body.classList.toggle('cave-profile-hidden', profileHidden);
+      window.__caveProfileHidden = profileHidden;
+      if (profileHidden && document.getElementById('cave-profile') && document.getElementById('cave-profile').classList.contains('active')) {
+        const back = document.querySelector('.tab[data-tab="cave-database"]');
+        if (back) back.click();
+      }
+
+      // Webmasters always keep every tab (so they can work on a hidden one);
+      // a hidden tab just carries a "hidden" marker for them
+      const isWebmaster = sessionStorage.getItem('role') === 'webmaster';
       document.querySelectorAll('.tab[data-tab]').forEach(tabEl => {
         const tabId = tabEl.getAttribute('data-tab');
         if (!HIDEABLE_TAB_DEFS.some(def => def.id === tabId)) return; // not a hideable tab (e.g. account/website management)
-        const hide = hiddenSet.has(tabId) || (tabId === 'pending-submissions' && currentRole === 'member');
+        const hiddenByWebmaster = hiddenSet.has(tabId);
+        const hide = (hiddenByWebmaster && !isWebmaster) || (tabId === 'pending-submissions' && currentRole === 'member');
         tabEl.style.display = hide ? 'none' : '';
+        let marker = tabEl.querySelector('.tab-hidden-marker');
+        if (hiddenByWebmaster && isWebmaster) {
+          if (!marker) {
+            marker = document.createElement('span');
+            marker.className = 'tab-hidden-marker';
+            marker.textContent = 'hidden';
+            marker.title = 'Hidden from members and admins (Website Management > Tab Visibility)';
+            marker.style.cssText = 'margin-left: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; background: #fdf0dc; color: #9a5b00; vertical-align: middle;';
+            tabEl.appendChild(marker);
+          }
+        } else if (marker) {
+          marker.remove();
+        }
         if (hide && tabEl.classList.contains('active')) activeTabIsHidden = true;
       });
 
@@ -8182,6 +8219,7 @@ window.addEventListener('error', function(e) {
             </div>
 
             <div class="popup-actions">
+              <button class="btn-success cp-entry" onclick="openCaveProfile(${jsId})">Full Profile</button>
               <button class="btn-view-map" onclick="viewCaveNarrative(${jsId})">View Narrative</button>
               <button class="edit-cave-btn" onclick="editCaveFromMap(${jsId}, { fromMap: true })">Edit Cave</button>
               <button onclick="initiateMove(${jsId})">Click to Move</button>
@@ -8495,14 +8533,32 @@ window.addEventListener('error', function(e) {
           cave.ownerEntityInfo || '',
         ];
         
-        cells.forEach(value => {
+        cells.forEach((value, i) => {
           const td = document.createElement("td");
-          td.textContent = value;
+          if (i === 6 && value) {
+            // the cave's name opens its Cave Profile
+            const a = document.createElement('a');
+            a.href = '#';
+            a.className = 'cp-name-link';
+            a.textContent = value;
+            a.title = 'Open the full Cave Profile';
+            a.addEventListener('click', (e) => { e.preventDefault(); openCaveProfile(cave.id); });
+            td.appendChild(a);
+          } else {
+            td.textContent = value;
+          }
           row.appendChild(td);
         });
         
         // Add action buttons
         const actionsTd = document.createElement("td");
+        const profileBtn = document.createElement('button');
+        profileBtn.className = 'btn-success cp-entry';
+        profileBtn.textContent = 'Profile';
+        profileBtn.title = 'Everything about this cave on one page';
+        profileBtn.onclick = () => openCaveProfile(cave.id);
+        actionsTd.appendChild(profileBtn);
+        actionsTd.appendChild(document.createTextNode(' '));
         const viewBtn = document.createElement('button');
         viewBtn.className = 'btn-view-map view-on-map-btn';
         viewBtn.textContent = 'View on Map';
@@ -10630,6 +10686,8 @@ window.addEventListener('error', function(e) {
     }
 
     const formData = new FormData();
+    const linkCave = (document.getElementById('cave-map-upload-cave') || {}).value;
+    if (linkCave && linkCave.trim()) formData.append('caveId', linkCave.trim());
     Array.from(input.files).forEach(file => formData.append('mapFiles', file));
 
     try {

@@ -1473,3 +1473,7 @@ html[data-theme="dark"] .cave-data-table tr:hover td,
 html[data-theme="dark"] .user-table tr:hover td { background-color: #26313b !important; }
 html[data-theme="dark"] .leaflet-container { background: #1d2328; }
 .theme-toggle-btn { cursor: pointer; font-family: inherit; margin-right: 8px; }
+
+/* Cave Profile hidden in Website Management (not for webmasters) */
+body.cave-profile-hidden .cp-entry { display: none !important; }
+body.cave-profile-hidden a.cp-name-link { pointer-events: none; color: inherit; text-decoration: none; }

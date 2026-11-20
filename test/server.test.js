@@ -4646,3 +4646,76 @@ describe("histoplasmosis hazard", () => {
     assert.equal(stored.hazards.histoplasmosis, true);
   });
 });
+
+describe("Cave Profile", () => {
+  const caveFile = () => path.join(process.env.DATA_DIR, "cave-database.json");
+  let cave, wm, member;
+  before(async () => {
+    cave = JSON.parse(fs.readFileSync(caveFile(), "utf8")).find((c) => c.name && c.name.replace(/\b(cave|sink|spring)\b/gi, "").replace(/[^a-z]/gi, "").length >= 5);
+    wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    member = { Authorization: `Bearer ${await login("member1", MEMBER_PASSWORD)}` };
+    fs.mkdirSync(process.env.NARRATIVE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.NARRATIVE_DIR, `${cave.id}.json`), JSON.stringify([
+      { user: "member1", html: "<p>Trip report <script>alert(1)</script>with a gate</p>", timestamp: "2026-11-01T10:00:00Z", images: [{ url: "/cave-pictures/123-abc.jpg", caption: "Gate" }] },
+    ]));
+    // a map whose name mentions the cave, and one that doesn't
+    const geo = path.join(process.env.CAVE_MAPS_DIR, "geotiff");
+    fs.mkdirSync(geo, { recursive: true });
+    fs.writeFileSync(path.join(geo, `${cave.name.replace(/\s+/g, "_")}_old.tif`), "x");
+    fs.writeFileSync(path.join(geo, "Unrelated_Place.tif"), "x");
+  });
+
+  test("gathers the record, narratives and possible maps; submissions only for admins and webmasters", async () => {
+    const res = await request(app).get(`/api/caves/${cave.id}/profile`).set(member);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.cave.id, cave.id);
+    assert.equal(res.body.narratives.length, 1);
+    assert.doesNotMatch(res.body.narratives[0].html, /<script/, "narrative HTML is cleaned");
+    assert.equal(res.body.narratives[0].images[0].url, "/cave-pictures/123-abc.jpg");
+    assert.equal(res.body.submissions, null, "members don't see the submission activity");
+    assert.equal(res.body.canManageLinks, false);
+    const possible = res.body.maps.find((m) => m.link === "possible");
+    assert.ok(possible, "a file named after the cave is a possible match");
+    assert.ok(!res.body.maps.some((m) => /Unrelated_Place/.test(m.filename)));
+
+    const asWm = await request(app).get(`/api/caves/${cave.id}/profile`).set(wm);
+    assert.ok(Array.isArray(asWm.body.submissions));
+    assert.equal(asWm.body.canManageLinks, true);
+    assert.equal((await request(app).get("/api/caves/NOPE999/profile").set(member)).status, 404);
+    assert.equal((await request(app).get(`/api/caves/${cave.id}/profile`)).status, 401);
+  });
+
+  test("webmasters confirm or dismiss possible matches; members can't", async () => {
+    const before = (await request(app).get(`/api/caves/${cave.id}/profile`).set(wm)).body.maps.find((m) => m.link === "possible");
+    assert.equal((await request(app).post("/api/map-links").set(member).send({ key: before.key, caveId: cave.id, action: "link" })).status, 403);
+    assert.equal((await request(app).post("/api/map-links").set(wm).send({ key: "geotiff:nope.tif", caveId: cave.id, action: "link" })).status, 404);
+    assert.equal((await request(app).post("/api/map-links").set(wm).send({ key: before.key, caveId: cave.id, action: "link" })).status, 200);
+    let maps = (await request(app).get(`/api/caves/${cave.id}/profile`).set(wm)).body.maps;
+    assert.equal(maps.find((m) => m.key === before.key).link, "linked");
+    await request(app).post("/api/map-links").set(wm).send({ key: before.key, caveId: cave.id, action: "unlink" });
+    await request(app).post("/api/map-links").set(wm).send({ key: before.key, caveId: cave.id, action: "dismiss" });
+    maps = (await request(app).get(`/api/caves/${cave.id}/profile`).set(wm)).body.maps;
+    assert.ok(!maps.some((m) => m.key === before.key), "dismissed for this cave");
+  });
+
+  test("hiding Cave Profile in Website Management keeps it for webmasters only", async () => {
+    await request(app).post("/api/site-config").set(wm).send({ hiddenTabs: ["cave-profile"] });
+    try {
+      assert.equal((await request(app).get(`/api/caves/${cave.id}/profile`).set(member)).status, 403);
+      assert.equal((await request(app).get(`/api/caves/${cave.id}/profile`).set(wm)).status, 200);
+    } finally {
+      await request(app).post("/api/site-config").set(wm).send({ hiddenTabs: [] });
+    }
+    assert.equal((await request(app).get(`/api/caves/${cave.id}/profile`).set(member)).status, 200);
+  });
+
+  test("an upload can name its cave, which links the files", async () => {
+    const res = await request(app).post("/api/cave-maps/upload").set(wm)
+      .field("caveId", cave.id.toLowerCase())
+      .attach("mapFiles", Buffer.from("x"), { filename: "survey_plot.tif", contentType: "image/tiff" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.linkedTo, cave.id);
+    const maps = (await request(app).get(`/api/caves/${cave.id}/profile`).set(member)).body.maps;
+    assert.equal(maps.find((m) => m.filename === "survey_plot.tif").link, "linked");
+  });
+});

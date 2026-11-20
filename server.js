@@ -912,9 +912,10 @@ const DEFAULT_SITE_CONFIG = {
   autoRestrictMinutes: 0,
   // Tab IDs (data-tab values in portal.html's tab bar) currently hidden
   // site-wide - for taking a broken or in-progress feature out of
-  // circulation without a deploy. Applies to every role equally,
-  // including admin/webmaster; see HIDEABLE_TABS below for why Account
-  // Management and Website Management can never be in this list.
+  // circulation without a deploy. Hidden from members and admins only:
+  // webmasters always keep every tab (marked "hidden"), so they can keep
+  // working on it. See HIDEABLE_TABS below for why Account Management and
+  // Website Management can never be in this list.
   hiddenTabs: [],
   // Interactive Map tools hidden from everyone but webmasters (see HIDEABLE_MAP_TOOLS) - unlike
   // hiddenTabs, webmasters always keep them, so they can still use and manage them.
@@ -945,6 +946,10 @@ const HIDEABLE_TABS = [
   "edit-cave-tab",
   "cave-maps-section",
   "narrative-tab",
+  // Not a tab in the bar: the Cave Profile page. Hidden from everyone but
+  // webmasters (who keep it, to work on it), and its data route refuses
+  // other roles while it's hidden.
+  "cave-profile",
 ];
 
 function loadSiteConfig() {
@@ -4776,9 +4781,23 @@ app.post(
         return res.status(400).json({ error: "No files uploaded" });
       }
       console.log(`Uploaded ${req.files.length} cave map file(s)`);
+      // Optional: the cave these files are for (shown on its Cave Profile)
+      const linkTo = typeof req.body.caveId === "string" ? req.body.caveId.trim().toUpperCase() : "";
+      let linked = null;
+      if (linkTo && isSafeRecordId(linkTo) && caveDatabase.some((c) => c.id === linkTo)) {
+        const data = loadMapLinks();
+        for (const f of req.files) {
+          const ext = path.extname(f.filename).toLowerCase();
+          const key = ext === ".tif" || ext === ".tiff" ? `geotiff:${f.filename}` : `shapefile:${f.filename.slice(0, -ext.length)}`;
+          data.links[key] = linkTo;
+        }
+        saveMapLinks(data);
+        linked = linkTo;
+      }
       res.json({
-        message: `Uploaded ${req.files.length} file(s) successfully.`,
+        message: `Uploaded ${req.files.length} file(s) successfully.${linked ? ` Linked to cave ${linked}.` : ""}`,
         files: req.files.map((f) => f.filename),
+        linkedTo: linked,
       });
     });
   }
@@ -5863,6 +5882,165 @@ app.get("/download-narrative-image/:filename", authenticateToken, (req, res) => 
   }
 });
 
+// ---- Cave Profile: everything about one cave in one place ------------------
+// The record, its narratives and photos, its maps and GIS files, its
+// location history and (for admins/webmasters) its submissions. The tabs
+// that own each kind of data stay as they are; this only gathers them.
+//
+// Map files were only ever connected to a cave by their file name, so
+// links are stored here explicitly (set when uploading, or confirmed from
+// a cave's profile); files whose name mentions the cave are offered as
+// "possible matches" until a webmaster/admin confirms or dismisses them.
+const MAP_LINKS_FILE = path.join(DATA_DIR, "map-links.json");
+function loadMapLinks() {
+  try {
+    if (fs.existsSync(MAP_LINKS_FILE)) {
+      const d = JSON.parse(fs.readFileSync(MAP_LINKS_FILE, "utf8"));
+      return { links: isPlainObject(d.links) ? d.links : {}, dismissed: isPlainObject(d.dismissed) ? d.dismissed : {} };
+    }
+  } catch (err) {
+    console.error("Error loading map links:", err);
+  }
+  return { links: {}, dismissed: {} };
+}
+function saveMapLinks(data) {
+  backupDataFile(MAP_LINKS_FILE);
+  writeFileAtomicSync(MAP_LINKS_FILE, JSON.stringify(data, null, 2));
+}
+
+// Every cave map file on the site, one entry per map (a shapefile's
+// components count as one), keyed "<kind>:<file or base name>"
+function listAllMapFiles() {
+  const out = [];
+  const stat = (p) => { try { return fs.statSync(p); } catch { return null; } };
+  if (fs.existsSync(geotiffDir)) {
+    for (const f of fs.readdirSync(geotiffDir)) {
+      if (!/\.(tif|tiff)$/i.test(f)) continue;
+      const st = stat(path.join(geotiffDir, f));
+      out.push({ key: `geotiff:${f}`, kind: "geotiff", filename: f, name: f.replace(/\.(tif|tiff)$/i, ""), url: `/cave-maps/geotiff/${f}`, overlayId: `geotiff_${f}`, size: st ? st.size : 0 });
+    }
+  }
+  if (fs.existsSync(shapefilesDir)) {
+    const files = fs.readdirSync(shapefilesDir);
+    const bases = new Map();
+    for (const f of files) {
+      const ext = path.extname(f).toLowerCase();
+      const base = f.slice(0, -ext.length);
+      if (ext === ".zip") bases.set(base, f);
+      else if (ext === ".shp" && !bases.has(base) && files.includes(`${base}.shx`) && files.includes(`${base}.dbf`)) bases.set(base, f);
+    }
+    for (const [base, f] of bases) {
+      const st = stat(path.join(shapefilesDir, f));
+      out.push({ key: `shapefile:${base}`, kind: "shapefile", filename: f, name: base, url: `/cave-maps/shapefiles/${f}`, overlayId: `shapefile_${base}`, size: st ? st.size : 0 });
+    }
+  }
+  if (fs.existsSync(caveMapsCollectionDir)) {
+    for (const f of fs.readdirSync(caveMapsCollectionDir)) {
+      if (!/\.(jpe?g|png|gif|bmp|tiff?|pdf)$/i.test(f)) continue;
+      const st = stat(path.join(caveMapsCollectionDir, f));
+      out.push({ key: `scan:${f}`, kind: "scan", filename: f, name: f.replace(/\.[^/.]+$/, ""), url: `/cave-maps/cavemaps/${f}`, size: st ? st.size : 0 });
+    }
+  }
+  return out;
+}
+
+// Does a file name mention this cave (its ID, or its name)? IDs match with
+// or without leading zeros ("FCI004", "fci4"); names need 5+ letters once
+// words like "cave" and "sink" are left out, so short names can't misfire.
+function caveIdTokens(text) {
+  const out = new Set();
+  for (const m of String(text || "").matchAll(/([A-Za-z]+)[\s_-]?0*(\d+)/g)) out.add(`${m[1].toLowerCase()}${m[2]}`);
+  return out;
+}
+function mapNameMentionsCave(fileName, cave) {
+  const idToken = [...caveIdTokens(cave.id)][0];
+  if (idToken && caveIdTokens(fileName).has(idToken)) return true;
+  const squash = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const caveName = squash(String(cave.name || "").replace(/\b(cave|cavern|caverns|sink|sinkhole|spring|springs|the)\b/gi, ""));
+  return caveName.length >= 5 && squash(fileName).includes(caveName);
+}
+
+function mapsForCave(cave) {
+  const { links, dismissed } = loadMapLinks();
+  return listAllMapFiles()
+    .map((m) => {
+      if (links[m.key] === cave.id) return { ...m, link: "linked" };
+      if (links[m.key]) return null; // linked to another cave
+      if ((dismissed[m.key] || []).includes(cave.id)) return null;
+      return mapNameMentionsCave(m.filename, cave) ? { ...m, link: "possible" } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.link === b.link ? a.name.localeCompare(b.name) : a.link === "linked" ? -1 : 1));
+}
+
+app.get("/api/caves/:id/profile", authenticateToken, (req, res) => {
+  if ((siteConfig.hiddenTabs || []).includes("cave-profile") && req.user.role !== "webmaster") {
+    return res.status(403).json({ error: "Cave profiles are temporarily unavailable." });
+  }
+  const id = String(req.params.id || "");
+  if (!isSafeRecordId(id)) return res.status(400).json({ error: "Invalid cave id." });
+  const cave = caveDatabase.find((c) => c.id === id);
+  if (!cave) return res.status(404).json({ error: `No cave with ID ${id}.` });
+  const manager = req.user.role === "admin" || req.user.role === "webmaster";
+
+  const narratives = readNarrativeFile(path.join(NARRATIVE_DIR, `${id}.json`))
+    .filter((n) => n && !n.isDeleted)
+    .map((n) => ({
+      user: n.user || "",
+      timestamp: n.timestamp || null,
+      lastModified: n.lastModified || null,
+      html: typeof n.html === "string" ? sanitizeHtml(n.html, NARRATIVE_SANITIZE_OPTIONS) : "",
+      images: Array.isArray(n.images) ? n.images.filter((im) => im && typeof im.url === "string" && narrativeImageFilename(im.url))
+        .map((im) => ({ url: `/cave-pictures/${narrativeImageFilename(im.url)}`, caption: String(im.caption || im.alt || "").slice(0, 300) })) : [],
+    }))
+    .sort((a, b) => String(b.lastModified || b.timestamp || "").localeCompare(String(a.lastModified || a.timestamp || "")));
+
+  let submissions = null;
+  if (manager) {
+    let all = [];
+    try { all = JSON.parse(fs.readFileSync(submissionsFile, "utf8")); } catch { all = []; }
+    submissions = all
+      .filter((sub) => sub && (sub.caveId === id || sub.assignedCaveId === id))
+      .map((sub) => ({
+        submissionId: sub.submissionId, type: sub.type, isMove: !!sub.isMove, status: sub.status || "pending",
+        submittedBy: sub.submittedBy || "", submittedAt: sub.submittedAt || null,
+        approvedBy: sub.approvedBy || null, approvedDate: sub.approvedDate || null,
+        rejectedBy: sub.rejectedBy || null, rejectedDate: sub.rejectedDate || null,
+        changed: sub.proposedData && typeof sub.proposedData === "object" ? Object.keys(sub.proposedData).filter((k) => !["lat", "lng"].includes(k)).slice(0, 12) : [],
+      }))
+      .sort((a, b) => String(b.submittedAt || "").localeCompare(String(a.submittedAt || "")));
+  }
+
+  res.set("Cache-Control", "no-store");
+  res.json({
+    cave,
+    narratives,
+    maps: mapsForCave(cave),
+    submissions,
+    canManageLinks: manager,
+    largeFilesDisabled: !!siteConfig.disableLargeFiles,
+  });
+});
+
+// Link a map file to a cave, unlink it, or dismiss a "possible match"
+app.post("/api/map-links", authenticateToken, requireRole("admin", "webmaster"), express.json(), (req, res) => {
+  const { key, caveId, action } = req.body || {};
+  if (!["link", "unlink", "dismiss"].includes(action)) return res.status(400).json({ error: "action must be link, unlink or dismiss." });
+  if (typeof key !== "string" || !listAllMapFiles().some((m) => m.key === key)) return res.status(404).json({ error: "No such map file." });
+  if (action !== "unlink" && (!isSafeRecordId(caveId) || !caveDatabase.some((c) => c.id === caveId))) return res.status(400).json({ error: "Unknown cave." });
+  const data = loadMapLinks();
+  if (action === "link") {
+    data.links[key] = caveId;
+    if (data.dismissed[key]) data.dismissed[key] = data.dismissed[key].filter((c) => c !== caveId);
+  } else if (action === "unlink") {
+    delete data.links[key];
+  } else {
+    data.dismissed[key] = [...new Set([...(data.dismissed[key] || []), caveId])];
+  }
+  saveMapLinks(data);
+  res.json({ success: true });
+});
+
 // Initialize global storage for database schemas
 global.sqliteSchemas = {};
 
@@ -6619,6 +6797,7 @@ const snapshots = createSnapshotStore({
     siteUpdatesVisibility: SITE_UPDATES_VISIBILITY_FILE,
     retiredUsernames: RETIRED_USERNAMES_FILE,
     imageOwners: IMAGE_OWNERS_FILE,
+    mapLinks: MAP_LINKS_FILE,
   },
   narrativeDir: NARRATIVE_DIR,
   writeFileAtomicSync,
