@@ -1,0 +1,245 @@
+<!-- The inside of the Website Management tab. Not part of portal.html: the
+     server sends it only to a signed-in webmaster (GET
+     /api/panels/website-management in server.js). -->
+  <h3>Website Management</h3>
+  <p>Site-wide controls: take the site down for maintenance, or post a notice banner for everyone to see.</p>
+
+  <div class="account-management-controls">
+    <!-- Detected attacks, grouped by the address they came from (server.js "Attack detection") -->
+    <div class="control-section" id="security-alerts-section">
+      <h4>Security Alerts <span id="security-alerts-new" class="sa-new" hidden></span></h4>
+      <p style="margin: 0 0 10px; color: #555;">Attacks the site detected: injection attempts, attack tools, probing for hidden files, forged logins and password guessing. Each is listed by the attacker's IP address, with whether it came from a member account or looks like a random attack. Webmasters are also emailed (at most once per address every 6 hours).</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+        <button type="button" class="btn-success" onclick="loadSecurityAlerts()">Refresh</button>
+        <button type="button" onclick="markSecurityAlertsReviewed()">Mark all as reviewed</button>
+        <button type="button" class="btn-danger" onclick="clearSecurityAlerts()">Clear log</button>
+        <span id="security-alerts-status" style="align-self: center; color: #555;"></span>
+      </div>
+      <div id="security-alerts-list"></div>
+    </div>
+
+    <div class="control-section">
+      <h4>Maintenance Mode</h4>
+      <p style="margin-bottom: 10px;">
+        While maintenance mode is on, visitors see an "under construction" page and every other account is
+        locked out. You (and any admin) can still use the site as usual by going to
+        <strong><span id="portal-url-display">/portal</span></strong> directly instead of the normal site
+        address - bookmark it now, since the normal login form won't be reachable while this is on.
+        <button type="button" class="btn-success" onclick="copyPortalUrl()" style="margin-left: 8px; padding: 2px 8px; font-size: 0.85em;">Copy link</button>
+      </p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="maintenance-mode-toggle" style="width: 18px; height: 18px;">
+        <strong>Site is currently down for maintenance</strong>
+      </label>
+      <label for="maintenance-message-input" style="display: block; margin-bottom: 5px;">Message shown on the maintenance page (optional - a default message is used if left blank):</label>
+      <textarea id="maintenance-message-input" rows="3" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. We're performing scheduled maintenance and expect to be back online by 10 PM EST."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveMaintenanceSettings()">Save Maintenance Settings</button>
+        <span id="maintenance-save-status" style="margin-left: 10px;"></span>
+      </div>
+
+      <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+      <h4 style="margin-bottom: 5px;">Schedule a Maintenance Window (optional)</h4>
+      <p style="margin-bottom: 10px;">Set a start and end time and maintenance mode turns itself on and back off automatically - you don't need to be online at either moment. This works independently of the toggle above; leave both blank to cancel a scheduled window.</p>
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px;">
+        <label>Starts: <input type="datetime-local" id="maintenance-schedule-start" style="padding: 6px;"></label>
+        <label>Ends: <input type="datetime-local" id="maintenance-schedule-end" style="padding: 6px;"></label>
+      </div>
+      <div>
+        <button type="button" class="btn-success" onclick="saveScheduledMaintenance()">Save Schedule</button>
+        <button type="button" class="btn-warning" onclick="clearScheduledMaintenance()">Clear Schedule</button>
+        <span id="maintenance-schedule-status" style="margin-left: 10px;"></span>
+      </div>
+      <p id="maintenance-schedule-current" style="margin-top: 8px; font-size: 0.9em; color: #666;"></p>
+    </div>
+
+    <div class="control-section">
+      <h4>Notification Banner</h4>
+      <p style="margin-bottom: 10px;">Shows a thin bar at the very top of every page, for everyone, logged in or not. Web addresses (like https://example.com, www.caves.org or fcs.caves.org/portal) and email addresses (like someone@caves.org) you type automatically become clickable links - no HTML needed.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="banner-enabled-toggle" style="width: 18px; height: 18px;">
+        <strong>Show notification banner</strong>
+      </label>
+      <label style="display: block; margin-bottom: 5px;">Banner color:</label>
+      <div style="margin-bottom: 10px;">
+        <label style="margin-right: 15px;"><input type="radio" name="banner-color" value="yellow" checked> Yellow (general notice)</label>
+        <label><input type="radio" name="banner-color" value="red"> Red (urgent)</label>
+      </div>
+      <label for="banner-message-input" style="display: block; margin-bottom: 5px;">Banner message:</label>
+      <textarea id="banner-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Scheduled maintenance this Friday 10 PM - 12 AM EST. Details: https://example.com/notice" maxlength="500"></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveBannerSettings()">Save Banner Settings</button>
+        <span id="banner-save-status" style="margin-left: 10px;"></span>
+      </div>
+      <div style="margin-top: 15px;">
+        <strong>Preview:</strong>
+        <div id="banner-preview" style="margin-top: 5px;"></div>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Read-Only Mode</h4>
+      <p style="margin-bottom: 10px;">A lighter option than full maintenance mode: the site stays fully browsable (map, database, statistics all work normally), but members can't submit new cave proposals or add/edit narratives. Admin and webmaster can still write as usual. Use this during a data migration or other change where you want eyes off writes without taking the whole site down.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="readonly-mode-toggle" style="width: 18px; height: 18px;">
+        <strong>Site is currently read-only</strong>
+      </label>
+      <label for="readonly-message-input" style="display: block; margin-bottom: 5px;">Message shown to a member who tries to submit something (optional):</label>
+      <textarea id="readonly-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. New submissions are paused during a data migration - back soon."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveReadOnlySettings()">Save Read-Only Settings</button>
+        <span id="readonly-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Large File Uploads/Downloads</h4>
+      <p style="margin-bottom: 10px;">Blocks uploading AND viewing/downloading narrative photos and cave map files (GeoTIFFs, shapefiles) site-wide, for every role including admin and webmaster - use this while the server isn't set up to handle large files yet. Submitting and editing cave data, and narratives themselves, keep working normally.</p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+        <input type="checkbox" id="large-files-disabled-toggle" style="width: 18px; height: 18px;">
+        <strong>Large file uploads/downloads are currently disabled</strong>
+      </label>
+      <label for="large-files-message-input" style="display: block; margin-bottom: 5px;">Message shown where an upload/download is blocked (optional):</label>
+      <textarea id="large-files-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Photo and map uploads are temporarily disabled while we set up additional storage."></textarea>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveLargeFilesSettings()">Save Large File Settings</button>
+        <span id="large-files-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Tab Visibility</h4>
+      <p style="margin-bottom: 10px;">Hide a tab from members and admins while a feature in it is broken or still being worked on. Webmasters always keep every tab, marked "hidden", so you can keep working on it. Checked means visible to everyone; unchecked means webmasters only. Account Management and Website Management can't be hidden.</p>
+      <div id="tab-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveTabVisibility()">Save Tab Visibility</button>
+        <span id="tab-visibility-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Interactive Map Tools</h4>
+      <p style="margin-bottom: 10px;">Hide these parts of the Interactive Map tab from everyone except webmasters (members and admins). Webmasters always see them, marked as hidden. Checked means visible to everyone; unchecked means webmasters only.</p>
+      <div id="map-tool-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-success" onclick="saveMapToolVisibility()">Save Map Tool Visibility</button>
+        <span id="map-tool-visibility-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Cave Jump Scoreboard</h4>
+      <p style="margin-bottom: 10px;">Clears every score from the Cave Jump Top 10 so everyone starts fresh. A backup of the old scores is kept on the server.</p>
+      <button type="button" class="btn-danger" onclick="resetCaveJumpScoreboard()">Reset Scoreboard</button>
+      <span id="cave-jump-reset-status" style="margin-left: 10px;"></span>
+    </div>
+
+    <div class="control-section">
+      <h4>Login Security</h4>
+      <p style="margin-bottom: 10px;">After this many failed attempts in a row, an account is temporarily locked out (in addition to the site's own IP-based rate limiting). Applies immediately to the next login attempt.</p>
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px;">
+        <label>Failed attempts before lockout:<br>
+          <input type="number" id="login-lockout-threshold-input" min="3" max="20" step="1" style="padding: 6px; width: 80px;">
+        </label>
+        <label>Lockout duration (minutes):<br>
+          <input type="number" id="login-lockout-minutes-input" min="1" max="1440" step="1" style="padding: 6px; width: 80px;">
+        </label>
+      </div>
+      <div style="margin: 14px 0 10px; padding-top: 12px; border-top: 1px solid #e3e3e3;">
+        <label style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
+          <input type="checkbox" id="auto-restrict-enabled-input"> Automatically restrict accounts that act maliciously
+        </label>
+        <p style="margin: 6px 0 10px; color: #555;">A logged-in account is signed out and blocked if, within 10 minutes, it keeps trying features its role can't use, probes for pages that don't exist, sends hacking-style input, floods the site with requests, or keeps entering the wrong current password. Webmasters are emailed, and can lift it early in Account Management. Webmaster accounts are never restricted.</p>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <span>How long the restriction lasts:</span>
+          <label style="display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="auto-restrict-length" id="auto-restrict-indefinite-input" value="indefinite"> Until a webmaster lifts it
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <input type="radio" name="auto-restrict-length" id="auto-restrict-timed-input" value="timed"> For
+            <input type="number" id="auto-restrict-minutes-input" min="5" max="10080" step="1" style="padding: 6px; width: 90px;"> minutes
+          </label>
+        </div>
+      </div>
+      <div>
+        <button type="button" class="btn-success" onclick="saveLoginLockoutSettings()">Save Login Security Settings</button>
+        <span id="login-lockout-save-status" style="margin-left: 10px;"></span>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Backups &amp; Recovery</h4>
+      <style>
+        #backup-section .bk-status { padding: 8px 12px; border-radius: 6px; background: #eef6ee; color: #1f5d27; margin-bottom: 10px; }
+        #backup-section .bk-status.warn { background: #fdf0dc; color: #7a4a00; }
+        #backup-section table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+        #backup-section th, #backup-section td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; white-space: nowrap; }
+        #backup-section th { background: #f4f6f8; }
+        #backup-section td.num, #backup-section th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        #backup-section .bk-restore { margin-top: 10px; padding: 12px; border: 2px solid #b3261e; border-radius: 6px; background: #fff8f7; }
+        #backup-section .bk-restore table td, #backup-section .bk-restore table th { white-space: normal; }
+        #backup-section .bk-row-actions button { padding: 3px 9px; margin-right: 4px; }
+        #backup-section .bk-lower { color: #b3261e; font-weight: 600; }
+      </style>
+      <div id="backup-section">
+        <p style="margin: 0 0 10px; color: #555;">The site's data (accounts, caves, submissions, narratives and settings) is backed up automatically every day and kept for weeks, so it can be put back in one step if anything is damaged or maliciously changed. Restoring needs your password, saves the current data first (so a restore can itself be undone), and signs everyone out. Photos and cave map files aren't included; Plesk's own backups cover those.</p>
+        <div id="backup-status" class="bk-status">Loading backups...</div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+          <button type="button" class="btn-success" onclick="createBackupNow()">Back Up Now</button>
+          <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Full Backup</button>
+          <span id="backup-action-status" style="align-self: center; color: #555;"></span>
+        </div>
+        <p style="margin: 0 0 10px; font-size: 0.9em; color: #555;">Keep a downloaded copy somewhere off the server now and then (your computer or cloud storage): it can rebuild the site even if the server's own backups are lost.</p>
+        <div style="overflow-x: auto;"><table>
+          <thead><tr><th>When</th><th>Type</th><th>By</th><th class="num">Accounts</th><th class="num">Caves</th><th class="num">Narratives</th><th class="num">Submissions</th><th class="num">Size</th><th></th></tr></thead>
+          <tbody id="backup-list"></tbody>
+        </table></div>
+        <div id="backup-restore-panel" class="bk-restore" hidden></div>
+        <details style="margin-top: 12px;">
+          <summary style="cursor: pointer; font-weight: 600;">Restore from a downloaded backup file</summary>
+          <p style="margin: 8px 0; color: #555;">Use this if the server's own backups are missing too. Pick a file saved with "Download Full Backup" (or an older "Download Backup Now" file).</p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <input type="file" id="backup-upload-file" accept=".json,.gz,application/json,application/gzip">
+            <input type="password" id="backup-upload-password" placeholder="Your password" autocomplete="current-password" style="padding: 6px;">
+            <button type="button" class="btn-danger" onclick="restoreBackupFromFile()">Restore This File</button>
+          </div>
+          <div id="backup-upload-status" style="margin-top: 6px;"></div>
+        </details>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Usage Snapshot</h4>
+      <p style="margin-bottom: 10px;">A current snapshot of accounts, not a historical trend - this app doesn't keep a login history beyond each account's most recent login. Select a number to see which accounts it counts.</p>
+      <style>
+        #usage-snapshot-grid .us-pick { cursor: pointer; border: 0; background: none; font: inherit; color: inherit; padding: 2px 6px; border-radius: 6px; }
+        #usage-snapshot-grid .stats-card.us-card { cursor: pointer; transition: box-shadow .15s, outline-color .15s; outline: 2px solid transparent; }
+        #usage-snapshot-grid .stats-card.us-card:hover, #usage-snapshot-grid .stats-card.us-card:focus-visible { box-shadow: 0 2px 10px rgba(42, 93, 132, .25); }
+        #usage-snapshot-grid .stats-card.us-selected, #usage-snapshot-grid .us-pick.us-selected { outline: 2px solid #2a5d84; }
+        #usage-snapshot-grid .us-pick:hover, #usage-snapshot-grid .us-pick:focus-visible { background: #e8f0f7; }
+        #usage-snapshot-detail { margin-top: 12px; }
+        #usage-snapshot-detail table { width: 100%; border-collapse: collapse; }
+        #usage-snapshot-detail th, #usage-snapshot-detail td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; }
+        #usage-snapshot-detail th { background: #f4f6f8; font-weight: 600; }
+      </style>
+      <div id="usage-snapshot-grid" class="stats-grid">
+        <!-- Populated by loadUsageSnapshot() -->
+      </div>
+      <div id="usage-snapshot-detail" hidden></div>
+    </div>
+
+    <div class="control-section">
+      <h4>Storage Path Diagnostics</h4>
+      <p style="margin-bottom: 10px;">Shows exactly where the running server is reading/writing its data on disk right now - useful if something uploaded through Plesk's File Manager (narratives, cave maps, etc.) isn't showing up on the site, since that usually means a mismatch between where files were placed and where this app is actually looking. Shows folder paths and file names only, never file contents.</p>
+      <button type="button" class="btn-success" onclick="loadStoragePathDiagnostics()">Check Storage Paths</button>
+      <pre id="storage-path-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
+    </div>
+
+    <div class="control-section">
+      <h4>Email Diagnostics</h4>
+      <p style="margin-bottom: 10px;">"Forgot password" never reveals whether sending actually succeeded (so it can't be used to find out which emails are registered), so there's no way to tell from that form alone whether email is broken. Use this instead: "Check Configuration" reports what's set and tests the SMTP connection without sending anything; "Send Test Email" also sends a real email to your own account's address and reports the exact result.</p>
+      <button type="button" class="btn-success" onclick="checkEmailConfig()">Check Configuration</button>
+      <button type="button" class="btn-primary" onclick="sendTestEmail()">Send Test Email</button>
+      <pre id="email-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
+    </div>
+  </div>

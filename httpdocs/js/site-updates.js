@@ -24,7 +24,7 @@
                              // new update shows up without needing a reload
 
   const token = () => sessionStorage.getItem('sessionToken');
-  const role = () => localStorage.getItem('role') || sessionStorage.getItem('role');
+  const role = () => FCSRole.get();
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;

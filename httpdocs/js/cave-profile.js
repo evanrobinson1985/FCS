@@ -19,7 +19,7 @@
 
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const auth = (url) => (typeof window.withAuthToken === 'function' ? window.withAuthToken(url) : url);
-  const role = () => sessionStorage.getItem('role') || localStorage.getItem('role') || '';
+  const role = () => FCSRole.get();
   const fmtDate = (iso) => {
     if (!iso) return '';
     const d = new Date(iso);

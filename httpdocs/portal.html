@@ -22,6 +22,7 @@
  <link rel="stylesheet" href="styles.css?v=13">
 <!-- Dark mode: in <head> so a dark-mode visitor never sees a white flash -->
 <script src="js/theme.js?v=2"></script>
+<script src="js/role.js?v=1"></script>
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -404,102 +405,8 @@
 
 <!-- Account Management Tab Content -->
 <div class="tab-content" id="account-management">
-  <h3>Account Management</h3>
-  <p id="account-management-intro">Manage user accounts, permissions, and security settings.</p>
-  <!-- The Treasurer's dues-only view, filled by js/membership.js -->
-  <div id="treasurer-view" style="display: none;"></div>
-  
-  <div class="account-management-controls">
-    <div class="control-section">
-      <h4>Create New Account</h4>
-      <p style="margin-bottom: 10px;">
-        Creates a normal member account immediately (active, no pending approval needed) - unlike the public
-        "Create New Account" link on the login page, which always starts pending until a webmaster approves it.
-        Change its role from the table below once it's created.
-      </p>
-      <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
-        <label>Username<br>
-          <input type="text" id="new-user-username" style="padding: 6px; width: 160px;">
-        </label>
-        <label>Email<br>
-          <input type="email" id="new-user-email" style="padding: 6px; width: 200px;">
-        </label>
-        <label>First Name<br>
-          <input type="text" id="new-user-firstname" maxlength="50" style="padding: 6px; width: 140px;">
-        </label>
-        <label>Last Name<br>
-          <input type="text" id="new-user-lastname" maxlength="50" style="padding: 6px; width: 140px;">
-        </label>
-        <label>Password<br>
-          <input type="text" id="new-user-password" style="padding: 6px; width: 160px;">
-        </label>
-        <button type="button" class="btn-success" onclick="createUserAccount()">Create Account</button>
-      </div>
-      <p id="create-user-status" style="margin-top: 8px;"></p>
-    </div>
-
-    <!-- Membership Dues settings (webmasters), filled by js/membership.js -->
-    <div class="control-section" id="dues-settings-section"></div>
-
-    <!-- New sign-ups waiting for a webmaster, kept apart from the member list -->
-    <div class="control-section" id="pending-approvals-section">
-      <h4>Awaiting Approval <span id="pending-approvals-count" style="display: inline-block; min-width: 1.6em; padding: 1px 8px; margin-left: 6px; border-radius: 999px; background: #fdf0dc; color: #9a5b00; font-size: 0.85em; text-align: center;">0</span></h4>
-      <p style="margin: 0 0 10px; color: #555;">People who signed up and confirmed their email address. Approve to let them log in, or reject to delete the sign-up.</p>
-      <p id="pending-approvals-empty" style="margin: 0; color: #777; font-style: italic;">No accounts are waiting for approval.</p>
-      <div class="user-list-container" id="pending-approvals-list" hidden>
-        <table class="user-table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Signed up</th>
-              <th>Sign-up IP</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="pending-approvals-table"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Members</h4>
-      <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
-        <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" autocomplete="off" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
-        <button type="button" class="btn-success" onclick="searchUserAccounts()">Search</button>
-        <button type="button" class="btn-warning" onclick="clearUserAccountSearch()">Clear</button>
-      </div>
-      <div class="user-list-container">
-        <table class="user-table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>Dues</th>
-              <th>2FA</th>
-              <th>Last Login</th>
-              <th>Login IPs</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="user-list-table">
-            <!-- Users will be populated here -->
-          </tbody>
-        </table>
-      </div>
-    </div>
-    
-    <div class="control-section">
-      <h4>Security Logs</h4>
-      <div id="security-logs" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;">
-        <!-- Security logs will be populated here -->
-      </div>
-    </div>
-  </div>
+  <!-- Filled in after login, only for a webmaster or the Treasurer: the server
+       sends it (views/panels/account-management.html) - see loadPanels(). -->
 </div>
 
 <!-- Website Management Tab Content -->
@@ -522,248 +429,8 @@
   .sa-event code { background: #f4f5f7; padding: 0 4px; border-radius: 3px; }
 </style>
 <div class="tab-content" id="website-management">
-  <h3>Website Management</h3>
-  <p>Site-wide controls: take the site down for maintenance, or post a notice banner for everyone to see.</p>
-
-  <div class="account-management-controls">
-    <!-- Detected attacks, grouped by the address they came from (server.js "Attack detection") -->
-    <div class="control-section" id="security-alerts-section">
-      <h4>Security Alerts <span id="security-alerts-new" class="sa-new" hidden></span></h4>
-      <p style="margin: 0 0 10px; color: #555;">Attacks the site detected: injection attempts, attack tools, probing for hidden files, forged logins and password guessing. Each is listed by the attacker's IP address, with whether it came from a member account or looks like a random attack. Webmasters are also emailed (at most once per address every 6 hours).</p>
-      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
-        <button type="button" class="btn-success" onclick="loadSecurityAlerts()">Refresh</button>
-        <button type="button" onclick="markSecurityAlertsReviewed()">Mark all as reviewed</button>
-        <button type="button" class="btn-danger" onclick="clearSecurityAlerts()">Clear log</button>
-        <span id="security-alerts-status" style="align-self: center; color: #555;"></span>
-      </div>
-      <div id="security-alerts-list"></div>
-    </div>
-
-    <div class="control-section">
-      <h4>Maintenance Mode</h4>
-      <p style="margin-bottom: 10px;">
-        While maintenance mode is on, visitors see an "under construction" page and every other account is
-        locked out. You (and any admin) can still use the site as usual by going to
-        <strong><span id="portal-url-display">/portal</span></strong> directly instead of the normal site
-        address - bookmark it now, since the normal login form won't be reachable while this is on.
-        <button type="button" class="btn-success" onclick="copyPortalUrl()" style="margin-left: 8px; padding: 2px 8px; font-size: 0.85em;">Copy link</button>
-      </p>
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input type="checkbox" id="maintenance-mode-toggle" style="width: 18px; height: 18px;">
-        <strong>Site is currently down for maintenance</strong>
-      </label>
-      <label for="maintenance-message-input" style="display: block; margin-bottom: 5px;">Message shown on the maintenance page (optional - a default message is used if left blank):</label>
-      <textarea id="maintenance-message-input" rows="3" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. We're performing scheduled maintenance and expect to be back online by 10 PM EST."></textarea>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveMaintenanceSettings()">Save Maintenance Settings</button>
-        <span id="maintenance-save-status" style="margin-left: 10px;"></span>
-      </div>
-
-      <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
-      <h4 style="margin-bottom: 5px;">Schedule a Maintenance Window (optional)</h4>
-      <p style="margin-bottom: 10px;">Set a start and end time and maintenance mode turns itself on and back off automatically - you don't need to be online at either moment. This works independently of the toggle above; leave both blank to cancel a scheduled window.</p>
-      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px;">
-        <label>Starts: <input type="datetime-local" id="maintenance-schedule-start" style="padding: 6px;"></label>
-        <label>Ends: <input type="datetime-local" id="maintenance-schedule-end" style="padding: 6px;"></label>
-      </div>
-      <div>
-        <button type="button" class="btn-success" onclick="saveScheduledMaintenance()">Save Schedule</button>
-        <button type="button" class="btn-warning" onclick="clearScheduledMaintenance()">Clear Schedule</button>
-        <span id="maintenance-schedule-status" style="margin-left: 10px;"></span>
-      </div>
-      <p id="maintenance-schedule-current" style="margin-top: 8px; font-size: 0.9em; color: #666;"></p>
-    </div>
-
-    <div class="control-section">
-      <h4>Notification Banner</h4>
-      <p style="margin-bottom: 10px;">Shows a thin bar at the very top of every page, for everyone, logged in or not. Web addresses (like https://example.com, www.caves.org or fcs.caves.org/portal) and email addresses (like someone@caves.org) you type automatically become clickable links - no HTML needed.</p>
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input type="checkbox" id="banner-enabled-toggle" style="width: 18px; height: 18px;">
-        <strong>Show notification banner</strong>
-      </label>
-      <label style="display: block; margin-bottom: 5px;">Banner color:</label>
-      <div style="margin-bottom: 10px;">
-        <label style="margin-right: 15px;"><input type="radio" name="banner-color" value="yellow" checked> Yellow (general notice)</label>
-        <label><input type="radio" name="banner-color" value="red"> Red (urgent)</label>
-      </div>
-      <label for="banner-message-input" style="display: block; margin-bottom: 5px;">Banner message:</label>
-      <textarea id="banner-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Scheduled maintenance this Friday 10 PM - 12 AM EST. Details: https://example.com/notice" maxlength="500"></textarea>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveBannerSettings()">Save Banner Settings</button>
-        <span id="banner-save-status" style="margin-left: 10px;"></span>
-      </div>
-      <div style="margin-top: 15px;">
-        <strong>Preview:</strong>
-        <div id="banner-preview" style="margin-top: 5px;"></div>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Read-Only Mode</h4>
-      <p style="margin-bottom: 10px;">A lighter option than full maintenance mode: the site stays fully browsable (map, database, statistics all work normally), but members can't submit new cave proposals or add/edit narratives. Admin and webmaster can still write as usual. Use this during a data migration or other change where you want eyes off writes without taking the whole site down.</p>
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input type="checkbox" id="readonly-mode-toggle" style="width: 18px; height: 18px;">
-        <strong>Site is currently read-only</strong>
-      </label>
-      <label for="readonly-message-input" style="display: block; margin-bottom: 5px;">Message shown to a member who tries to submit something (optional):</label>
-      <textarea id="readonly-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. New submissions are paused during a data migration - back soon."></textarea>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveReadOnlySettings()">Save Read-Only Settings</button>
-        <span id="readonly-save-status" style="margin-left: 10px;"></span>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Large File Uploads/Downloads</h4>
-      <p style="margin-bottom: 10px;">Blocks uploading AND viewing/downloading narrative photos and cave map files (GeoTIFFs, shapefiles) site-wide, for every role including admin and webmaster - use this while the server isn't set up to handle large files yet. Submitting and editing cave data, and narratives themselves, keep working normally.</p>
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input type="checkbox" id="large-files-disabled-toggle" style="width: 18px; height: 18px;">
-        <strong>Large file uploads/downloads are currently disabled</strong>
-      </label>
-      <label for="large-files-message-input" style="display: block; margin-bottom: 5px;">Message shown where an upload/download is blocked (optional):</label>
-      <textarea id="large-files-message-input" rows="2" style="width: 100%; max-width: 600px; padding: 8px;" placeholder="e.g. Photo and map uploads are temporarily disabled while we set up additional storage."></textarea>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveLargeFilesSettings()">Save Large File Settings</button>
-        <span id="large-files-save-status" style="margin-left: 10px;"></span>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Tab Visibility</h4>
-      <p style="margin-bottom: 10px;">Hide a tab from members and admins while a feature in it is broken or still being worked on. Webmasters always keep every tab, marked "hidden", so you can keep working on it. Checked means visible to everyone; unchecked means webmasters only. Account Management and Website Management can't be hidden.</p>
-      <div id="tab-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveTabVisibility()">Save Tab Visibility</button>
-        <span id="tab-visibility-save-status" style="margin-left: 10px;"></span>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Interactive Map Tools</h4>
-      <p style="margin-bottom: 10px;">Hide these parts of the Interactive Map tab from everyone except webmasters (members and admins). Webmasters always see them, marked as hidden. Checked means visible to everyone; unchecked means webmasters only.</p>
-      <div id="map-tool-visibility-list" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
-      <div style="margin-top: 10px;">
-        <button type="button" class="btn-success" onclick="saveMapToolVisibility()">Save Map Tool Visibility</button>
-        <span id="map-tool-visibility-save-status" style="margin-left: 10px;"></span>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Cave Jump Scoreboard</h4>
-      <p style="margin-bottom: 10px;">Clears every score from the Cave Jump Top 10 so everyone starts fresh. A backup of the old scores is kept on the server.</p>
-      <button type="button" class="btn-danger" onclick="resetCaveJumpScoreboard()">Reset Scoreboard</button>
-      <span id="cave-jump-reset-status" style="margin-left: 10px;"></span>
-    </div>
-
-    <div class="control-section">
-      <h4>Login Security</h4>
-      <p style="margin-bottom: 10px;">After this many failed attempts in a row, an account is temporarily locked out (in addition to the site's own IP-based rate limiting). Applies immediately to the next login attempt.</p>
-      <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px;">
-        <label>Failed attempts before lockout:<br>
-          <input type="number" id="login-lockout-threshold-input" min="3" max="20" step="1" style="padding: 6px; width: 80px;">
-        </label>
-        <label>Lockout duration (minutes):<br>
-          <input type="number" id="login-lockout-minutes-input" min="1" max="1440" step="1" style="padding: 6px; width: 80px;">
-        </label>
-      </div>
-      <div style="margin: 14px 0 10px; padding-top: 12px; border-top: 1px solid #e3e3e3;">
-        <label style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
-          <input type="checkbox" id="auto-restrict-enabled-input"> Automatically restrict accounts that act maliciously
-        </label>
-        <p style="margin: 6px 0 10px; color: #555;">A logged-in account is signed out and blocked if, within 10 minutes, it keeps trying features its role can't use, probes for pages that don't exist, sends hacking-style input, floods the site with requests, or keeps entering the wrong current password. Webmasters are emailed, and can lift it early in Account Management. Webmaster accounts are never restricted.</p>
-        <div style="display: flex; flex-direction: column; gap: 6px;">
-          <span>How long the restriction lasts:</span>
-          <label style="display: flex; align-items: center; gap: 8px;">
-            <input type="radio" name="auto-restrict-length" id="auto-restrict-indefinite-input" value="indefinite"> Until a webmaster lifts it
-          </label>
-          <label style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <input type="radio" name="auto-restrict-length" id="auto-restrict-timed-input" value="timed"> For
-            <input type="number" id="auto-restrict-minutes-input" min="5" max="10080" step="1" style="padding: 6px; width: 90px;"> minutes
-          </label>
-        </div>
-      </div>
-      <div>
-        <button type="button" class="btn-success" onclick="saveLoginLockoutSettings()">Save Login Security Settings</button>
-        <span id="login-lockout-save-status" style="margin-left: 10px;"></span>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Backups &amp; Recovery</h4>
-      <style>
-        #backup-section .bk-status { padding: 8px 12px; border-radius: 6px; background: #eef6ee; color: #1f5d27; margin-bottom: 10px; }
-        #backup-section .bk-status.warn { background: #fdf0dc; color: #7a4a00; }
-        #backup-section table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
-        #backup-section th, #backup-section td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; white-space: nowrap; }
-        #backup-section th { background: #f4f6f8; }
-        #backup-section td.num, #backup-section th.num { text-align: right; font-variant-numeric: tabular-nums; }
-        #backup-section .bk-restore { margin-top: 10px; padding: 12px; border: 2px solid #b3261e; border-radius: 6px; background: #fff8f7; }
-        #backup-section .bk-restore table td, #backup-section .bk-restore table th { white-space: normal; }
-        #backup-section .bk-row-actions button { padding: 3px 9px; margin-right: 4px; }
-        #backup-section .bk-lower { color: #b3261e; font-weight: 600; }
-      </style>
-      <div id="backup-section">
-        <p style="margin: 0 0 10px; color: #555;">The site's data (accounts, caves, submissions, narratives and settings) is backed up automatically every day and kept for weeks, so it can be put back in one step if anything is damaged or maliciously changed. Restoring needs your password, saves the current data first (so a restore can itself be undone), and signs everyone out. Photos and cave map files aren't included; Plesk's own backups cover those.</p>
-        <div id="backup-status" class="bk-status">Loading backups...</div>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
-          <button type="button" class="btn-success" onclick="createBackupNow()">Back Up Now</button>
-          <button type="button" class="btn-warning" onclick="downloadBackupNow()">Download Full Backup</button>
-          <span id="backup-action-status" style="align-self: center; color: #555;"></span>
-        </div>
-        <p style="margin: 0 0 10px; font-size: 0.9em; color: #555;">Keep a downloaded copy somewhere off the server now and then (your computer or cloud storage): it can rebuild the site even if the server's own backups are lost.</p>
-        <div style="overflow-x: auto;"><table>
-          <thead><tr><th>When</th><th>Type</th><th>By</th><th class="num">Accounts</th><th class="num">Caves</th><th class="num">Narratives</th><th class="num">Submissions</th><th class="num">Size</th><th></th></tr></thead>
-          <tbody id="backup-list"></tbody>
-        </table></div>
-        <div id="backup-restore-panel" class="bk-restore" hidden></div>
-        <details style="margin-top: 12px;">
-          <summary style="cursor: pointer; font-weight: 600;">Restore from a downloaded backup file</summary>
-          <p style="margin: 8px 0; color: #555;">Use this if the server's own backups are missing too. Pick a file saved with "Download Full Backup" (or an older "Download Backup Now" file).</p>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-            <input type="file" id="backup-upload-file" accept=".json,.gz,application/json,application/gzip">
-            <input type="password" id="backup-upload-password" placeholder="Your password" autocomplete="current-password" style="padding: 6px;">
-            <button type="button" class="btn-danger" onclick="restoreBackupFromFile()">Restore This File</button>
-          </div>
-          <div id="backup-upload-status" style="margin-top: 6px;"></div>
-        </details>
-      </div>
-    </div>
-
-    <div class="control-section">
-      <h4>Usage Snapshot</h4>
-      <p style="margin-bottom: 10px;">A current snapshot of accounts, not a historical trend - this app doesn't keep a login history beyond each account's most recent login. Select a number to see which accounts it counts.</p>
-      <style>
-        #usage-snapshot-grid .us-pick { cursor: pointer; border: 0; background: none; font: inherit; color: inherit; padding: 2px 6px; border-radius: 6px; }
-        #usage-snapshot-grid .stats-card.us-card { cursor: pointer; transition: box-shadow .15s, outline-color .15s; outline: 2px solid transparent; }
-        #usage-snapshot-grid .stats-card.us-card:hover, #usage-snapshot-grid .stats-card.us-card:focus-visible { box-shadow: 0 2px 10px rgba(42, 93, 132, .25); }
-        #usage-snapshot-grid .stats-card.us-selected, #usage-snapshot-grid .us-pick.us-selected { outline: 2px solid #2a5d84; }
-        #usage-snapshot-grid .us-pick:hover, #usage-snapshot-grid .us-pick:focus-visible { background: #e8f0f7; }
-        #usage-snapshot-detail { margin-top: 12px; }
-        #usage-snapshot-detail table { width: 100%; border-collapse: collapse; }
-        #usage-snapshot-detail th, #usage-snapshot-detail td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; }
-        #usage-snapshot-detail th { background: #f4f6f8; font-weight: 600; }
-      </style>
-      <div id="usage-snapshot-grid" class="stats-grid">
-        <!-- Populated by loadUsageSnapshot() -->
-      </div>
-      <div id="usage-snapshot-detail" hidden></div>
-    </div>
-
-    <div class="control-section">
-      <h4>Storage Path Diagnostics</h4>
-      <p style="margin-bottom: 10px;">Shows exactly where the running server is reading/writing its data on disk right now - useful if something uploaded through Plesk's File Manager (narratives, cave maps, etc.) isn't showing up on the site, since that usually means a mismatch between where files were placed and where this app is actually looking. Shows folder paths and file names only, never file contents.</p>
-      <button type="button" class="btn-success" onclick="loadStoragePathDiagnostics()">Check Storage Paths</button>
-      <pre id="storage-path-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
-    </div>
-
-    <div class="control-section">
-      <h4>Email Diagnostics</h4>
-      <p style="margin-bottom: 10px;">"Forgot password" never reveals whether sending actually succeeded (so it can't be used to find out which emails are registered), so there's no way to tell from that form alone whether email is broken. Use this instead: "Check Configuration" reports what's set and tests the SMTP connection without sending anything; "Send Test Email" also sends a real email to your own account's address and reports the exact result.</p>
-      <button type="button" class="btn-success" onclick="checkEmailConfig()">Check Configuration</button>
-      <button type="button" class="btn-primary" onclick="sendTestEmail()">Send Test Email</button>
-      <pre id="email-diagnostics-output" style="margin-top: 10px; padding: 12px; background: #f4f4f4; border: 1px solid #ccc; border-radius: 4px; max-height: 400px; overflow: auto; font-size: 0.85em; white-space: pre-wrap;"></pre>
-    </div>
-  </div>
+  <!-- Filled in after login, only for a webmaster: the server sends it
+       (views/panels/website-management.html) - see loadPanels(). -->
 </div>
 
 <div class="tab-content" id="narrative-tab">
@@ -1650,13 +1317,13 @@
 <!-- "Sink Scan" button on the Interactive Map: finds possible sinkholes in LiDAR elevation (needs terrain3d.js) -->
 <script src="js/sinkhole-scan.js?v=10"></script>
 <!-- "What's new" card after login + the Site Updates tab -->
-<script src="js/site-updates.js?v=9"></script>
+<script src="js/site-updates.js?v=10"></script>
 <!-- Membership dues: status line, Dues column, dues settings -->
-<script src="js/membership.js?v=9"></script>
+<script src="js/membership.js?v=10"></script>
 <!-- Cave Profile page -->
-<script src="js/cave-profile.js?v=2"></script>
+<script src="js/cave-profile.js?v=3"></script>
 <!-- "Who's online" notice for webmaster/admin/Treasurer -->
-<script src="js/active-sessions.js?v=1"></script>
+<script src="js/active-sessions.js?v=2"></script>
 
 <!-- Charting / spreadsheet export -->
 <script src="/js/vendor/chartjs-3.7.1/chart.min.js"></script>
@@ -5424,13 +5091,13 @@ function loadFcsDatabaseTable() {
     // afterward. Called from completeLogin().
     function toggleWebsiteManagementTabVisibility() {
       const tab = document.getElementById('website-management-tab');
-      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      const currentRole = FCSRole.get();
       if (tab) tab.style.display = (currentRole === 'webmaster') ? 'block' : 'none';
       // Count of new security alerts on the tab, refreshed every few minutes
       if (currentRole === 'webmaster') {
         loadSecurityAlerts({ badgeOnly: true });
         if (!window.__securityAlertTimer) window.__securityAlertTimer = setInterval(() => {
-          if ((sessionStorage.getItem('role')) === 'webmaster' && sessionStorage.getItem('sessionToken')) loadSecurityAlerts({ badgeOnly: true });
+          if (FCSRole.get() === 'webmaster' && sessionStorage.getItem('sessionToken')) loadSecurityAlerts({ badgeOnly: true });
         }, 3 * 60 * 1000);
       }
 
@@ -5663,7 +5330,7 @@ function loadFcsDatabaseTable() {
       // sessionStorage first: it belongs to this tab's own login, whereas
       // localStorage is shared by every tab and may still hold a role from a
       // different account logged in elsewhere in the same browser.
-      const isWebmaster = (sessionStorage.getItem('role') || localStorage.getItem('role')) === 'webmaster';
+      const isWebmaster = (FCSRole.get()) === 'webmaster';
       document.querySelectorAll('[data-map-tool]').forEach(section => {
         const hidden = hiddenSet.has(section.dataset.mapTool);
         section.style.display = hidden && !isWebmaster ? 'none' : '';
@@ -5701,13 +5368,13 @@ function loadFcsDatabaseTable() {
     // that), only the tab is gated.
     function applyHiddenTabs(hiddenTabs) {
       const hiddenSet = new Set(hiddenTabs || []);
-      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      const currentRole = FCSRole.get();
       let activeTabIsHidden = false;
 
       // Cave Profile has no tab of its own: hiding it hides the ways in
       // (Full Profile buttons in the Cave Database and map popups, cave-name links) from
       // everyone but webmasters
-      const profileHidden = hiddenSet.has('cave-profile') && sessionStorage.getItem('role') !== 'webmaster';
+      const profileHidden = hiddenSet.has('cave-profile') && FCSRole.get() !== 'webmaster';
       document.body.classList.toggle('cave-profile-hidden', profileHidden);
       window.__caveProfileHidden = profileHidden;
       if (profileHidden && document.getElementById('cave-profile') && document.getElementById('cave-profile').classList.contains('active')) {
@@ -5717,7 +5384,7 @@ function loadFcsDatabaseTable() {
 
       // Webmasters always keep every tab (so they can work on a hidden one);
       // a hidden tab just carries a "hidden" marker for them
-      const isWebmaster = sessionStorage.getItem('role') === 'webmaster';
+      const isWebmaster = FCSRole.get() === 'webmaster';
       document.querySelectorAll('.tab[data-tab]').forEach(tabEl => {
         const tabId = tabEl.getAttribute('data-tab');
         if (!HIDEABLE_TAB_DEFS.some(def => def.id === tabId)) return; // not a hideable tab (e.g. account/website management)
@@ -6709,7 +6376,7 @@ function loadFcsDatabaseTable() {
       // Approve/Reject actually write to the cave database (PATCH
       // /api/pending-submissions/:id is admin/webmaster-only server-side) -
       // only show the buttons to roles that can actually use them.
-      const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+      const currentRole = FCSRole.get();
       const canReview = currentRole === 'admin' || currentRole === 'webmaster';
 
       card.innerHTML = `
@@ -8577,7 +8244,7 @@ window.addEventListener('error', function(e) {
         actionsTd.appendChild(document.createTextNode(' '));
         actionsTd.appendChild(editBtn);
         // Webmasters only: delete the cave (asks twice; see deleteCaveRecord)
-        if (sessionStorage.getItem('role') === 'webmaster') {
+        if (FCSRole.get() === 'webmaster') {
           const deleteBtn = document.createElement('button');
           deleteBtn.className = 'btn-danger delete-cave-btn';
           deleteBtn.textContent = 'Delete';
@@ -8856,6 +8523,32 @@ window.addEventListener('error', function(e) {
   // Finishes a successful login (called directly for accounts without 2FA,
   // and from handleVerifyTwoFactor() once a 2FA code is confirmed) - stores
   // the session, shows the dashboard, and kicks off the initial data loads.
+  // The insides of the Account Management and Website Management tabs, from
+  // the server (GET /api/panels/:name), which sends them only to a confirmed
+  // webmaster (and Account Management's dues view to the Treasurer).
+  const PANEL_IDS = ['account-management', 'website-management'];
+  async function loadPanels(isWebmaster, isTreasurer) {
+    const want = [];
+    if (isWebmaster || isTreasurer) want.push('account-management');
+    if (isWebmaster) want.push('website-management');
+    await Promise.all(want.map(async (name) => {
+      const box = document.getElementById(name);
+      if (!box) return;
+      try {
+        const resp = await fetch('/api/panels/' + name, { headers: { Authorization: 'Bearer ' + sessionStorage.getItem('sessionToken') } });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        box.innerHTML = await resp.text();
+      } catch (err) {
+        console.error('Could not load ' + name + ':', err);
+        box.innerHTML = '<p>This page couldn\'t be loaded. Log out and back in to try again.</p>';
+      }
+    }));
+  }
+  function clearPanels() {
+    PANEL_IDS.forEach((id) => { const box = document.getElementById(id); if (box) box.innerHTML = ''; });
+    ['account-management-tab', 'website-management-tab'].forEach((id) => { const t = document.getElementById(id); if (t) t.style.display = 'none'; });
+  }
+
   function completeLogin(result) {
     console.log("Login successful for role:", result.role);
     window.pendingTwoFactorToken = null;
@@ -8870,8 +8563,10 @@ window.addEventListener('error', function(e) {
 
     // Store user information
     localStorage.setItem('username', result.username);
-    localStorage.setItem('role', result.role);
-    sessionStorage.setItem('role', result.role);
+    // The role lives in memory only (js/role.js), straight from the server's
+    // reply - not in browser storage, where it could be edited
+    FCSRole.set(result.role, result.isTreasurer);
+    try { localStorage.removeItem('role'); sessionStorage.removeItem('role'); } catch (e) { /* storage blocked */ }
     sessionStorage.setItem('sessionToken', result.token);
     if (result.assetToken) sessionStorage.setItem('assetToken', result.assetToken);
     else sessionStorage.removeItem('assetToken');
@@ -8897,17 +8592,14 @@ window.addEventListener('error', function(e) {
     // Show/hide account management tab based on role. The Treasurer (any
     // member/admin a webmaster has given that permission) gets it too, with
     // a dues-only view - see js/membership.js.
-    sessionStorage.setItem('isTreasurer', result.isTreasurer ? '1' : '0');
+    // The webmaster screens come from the server, which only sends them to
+    // an account it confirms; their tabs appear once they've arrived.
     const accountTab = document.getElementById('account-management-tab');
-    if (accountTab) {
-      if (result.role === 'webmaster' || result.isTreasurer) {
-        accountTab.style.display = 'block';
-      } else {
-        accountTab.style.display = 'none';
-      }
-    }
-
-    toggleWebsiteManagementTabVisibility();
+    if (accountTab) accountTab.style.display = 'none';
+    loadPanels(result.role === 'webmaster', !!result.isTreasurer).then(() => {
+      if (accountTab) accountTab.style.display = (FCSRole.isWebmaster() || FCSRole.isTreasurer()) ? 'block' : 'none';
+      toggleWebsiteManagementTabVisibility();
+    });
 
     // Every role lands on the Interactive Map first after logging in,
     // instead of whatever tab happened to be marked active in the static
@@ -9382,6 +9074,8 @@ window.addEventListener('error', function(e) {
         sessionStorage.removeItem('assetToken');
         sessionStorage.removeItem('twoFactorEnabled');
         sessionStorage.removeItem('isTreasurer');
+        FCSRole.clear();
+        clearPanels();
         stopSecurityLogsPolling();
         if (window.SiteUpdates) { SiteUpdates.hide(); SiteUpdates.stopPolling(); }
         if (window.Membership) Membership.hide();
@@ -9483,12 +9177,12 @@ window.addEventListener('error', function(e) {
 
         // Add this to your existing tab click handler
         if (tabContentId === 'account-management') {
-          const currentRole = sessionStorage.getItem('role');
+          const currentRole = FCSRole.get();
           if (currentRole === 'webmaster') {
             if (window.Membership) Membership.showWebmasterView();
             loadAccountManagement();
             startSecurityLogsPolling();
-          } else if (sessionStorage.getItem('isTreasurer') === '1' && window.Membership) {
+          } else if (FCSRole.isTreasurer() && window.Membership) {
             Membership.showTreasurerView();
           } else {
             alert('Access denied. Only webmasters and the Treasurer can access account management.');
@@ -9497,7 +9191,7 @@ window.addEventListener('error', function(e) {
         }
 
         if (tabContentId === 'website-management') {
-          const currentRole = sessionStorage.getItem('role');
+          const currentRole = FCSRole.get();
           if (currentRole !== 'webmaster') {
             alert('Access denied. Only webmasters can access website management.');
             return;
@@ -9686,7 +9380,7 @@ window.addEventListener('error', function(e) {
 
       // Members don't move caves directly: the new spot goes to a webmaster
       // as a move request (a cave edit proposal with just the coordinates)
-      const role = sessionStorage.getItem('role');
+      const role = FCSRole.get();
       if (role !== 'admin' && role !== 'webmaster') {
         map.off('click', onMapClick);
         moveTargetCaveId = null;
@@ -9830,7 +9524,7 @@ window.addEventListener('error', function(e) {
   let newCaveIdPrefix = '';
   let newCaveIdCheckTimer = null;
   function currentRoleName() {
-    return sessionStorage.getItem('role') || localStorage.getItem('role') || '';
+    return FCSRole.get();
   }
   function setIdStatus(text, color) {
     const el = document.getElementById('edit-cave-id-status');
@@ -10158,7 +9852,7 @@ window.addEventListener('error', function(e) {
     // edits and new-cave proposals go into the review queue instead, for a
     // webmaster to approve or reject on the Pending Submissions tab. Admins
     // and webmasters keep the existing direct-save behavior below.
-    const currentRole = localStorage.getItem('role') || sessionStorage.getItem('role');
+    const currentRole = FCSRole.get();
     if (currentRole === 'member') {
       submitCaveProposalForReview(updatedCave, isNewCave, caveId, stateCode, countyCode);
       return;

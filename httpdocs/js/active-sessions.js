@@ -26,8 +26,8 @@
 
   const token = () => sessionStorage.getItem('sessionToken');
   const myUsername = () => localStorage.getItem('username') || sessionStorage.getItem('username');
-  const role = () => localStorage.getItem('role') || sessionStorage.getItem('role');
-  const isTreasurer = () => sessionStorage.getItem('isTreasurer') === '1';
+  const role = () => FCSRole.get();
+  const isTreasurer = () => FCSRole.isTreasurer();
   const mayView = () => role() === 'webmaster' || role() === 'admin' || isTreasurer();
 
   function el(tag, cls, text) {

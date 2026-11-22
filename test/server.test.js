@@ -4731,3 +4731,57 @@ describe("Cave Profile", () => {
     assert.equal(maps.find((m) => m.filename === "survey_plot.tif").link, "linked");
   });
 });
+
+// The webmaster screens (inside Account Management and Website Management) are
+// not in portal.html; the server sends them only to an account it confirms.
+describe("webmaster screens are sent only to confirmed accounts (GET /api/panels/:name)", () => {
+  before(async () => {
+    await seedUser({ username: "panels-member", password: "PanelsMemberPass123!", role: "member" });
+    await seedUser({ username: "panels-admin", password: "PanelsAdminPass123!", role: "admin" });
+    await seedUser({ username: "panels-treasurer", password: "PanelsTreasurerPass123!", role: "member" });
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/api/users/panels-treasurer/treasurer").set(wm).send({ isTreasurer: true });
+  });
+
+  test("the page itself carries no webmaster controls", () => {
+    const page = require("fs").readFileSync(require("path").join(__dirname, "..", "httpdocs", "portal.html"), "utf8");
+    for (const id of ["new-user-username", "user-list-table", "security-logs", "backup-upload-file", "maintenance-mode-toggle", "tab-visibility-list"]) {
+      assert.ok(!page.includes(`id="${id}"`), `${id} should not be in portal.html`);
+    }
+  });
+
+  test("a webmaster gets both screens in full", async () => {
+    const wm = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const am = await request(app).get("/api/panels/account-management").set(wm);
+    assert.equal(am.status, 200);
+    assert.match(am.headers["content-type"], /text\/html/);
+    assert.equal(am.headers["cache-control"], "no-store");
+    assert.match(am.text, /id="user-list-table"/);
+    assert.match(am.text, /id="treasurer-view"/);
+    const ws = await request(app).get("/api/panels/website-management").set(wm);
+    assert.equal(ws.status, 200);
+    assert.match(ws.text, /id="maintenance-mode-toggle"/);
+  });
+
+  test("the Treasurer gets the dues view only", async () => {
+    const t = { Authorization: `Bearer ${await login("panels-treasurer", "PanelsTreasurerPass123!")}` };
+    const am = await request(app).get("/api/panels/account-management").set(t);
+    assert.equal(am.status, 200);
+    assert.match(am.text, /id="treasurer-view"/);
+    assert.doesNotMatch(am.text, /user-list-table|new-user-username|security-logs|webmaster-only/);
+    assert.equal((await request(app).get("/api/panels/website-management").set(t)).status, 403);
+  });
+
+  test("a member or admin gets neither, and an unknown name or no login gets nothing", async () => {
+    for (const [u, pw] of [["panels-member", "PanelsMemberPass123!"], ["panels-admin", "PanelsAdminPass123!"]]) {
+      const h = { Authorization: `Bearer ${await login(u, pw)}` };
+      for (const name of ["account-management", "website-management"]) {
+        const r = await request(app).get(`/api/panels/${name}`).set(h);
+        assert.equal(r.status, 403, `${u} ${name}`);
+        assert.doesNotMatch(r.text, /<div|<input/);
+      }
+      assert.equal((await request(app).get("/api/panels/../server.js").set(h)).status, 404);
+    }
+    assert.equal((await request(app).get("/api/panels/website-management")).status, 401);
+  });
+});

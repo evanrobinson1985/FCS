@@ -1784,6 +1784,37 @@ function isTreasurerAccount(user) {
   return !!user && !!user.isTreasurer && user.role !== "webmaster";
 }
 
+// The webmaster screens (the inside of the Account Management and Website
+// Management tabs) aren't part of portal.html: the page asks for them here
+// after login, and only an account the server itself confirms gets them. A
+// member who edits their role in the browser gets no webmaster controls at all,
+// not just controls that don't work (everything they'd do is refused anyway).
+// The Treasurer gets Account Management without its webmaster-only part.
+const PANEL_FILES = {
+  "account-management": path.join(__dirname, "views", "panels", "account-management.html"),
+  "website-management": path.join(__dirname, "views", "panels", "website-management.html"),
+};
+// (each file's opening comment is for whoever edits it, so it isn't sent)
+const PANELS = Object.fromEntries(Object.entries(PANEL_FILES).map(([k, f]) => [k, fs.readFileSync(f, "utf8").replace(/^<!--[\s\S]*?-->\s*/, "")]));
+app.get("/api/panels/:name", authenticateToken, (req, res) => {
+  const html = PANELS[req.params.name];
+  if (!html) return res.status(404).json({ error: "Not found." });
+  const isWebmaster = req.user.role === "webmaster";
+  let out = null;
+  if (isWebmaster) out = html;
+  else if (req.params.name === "account-management") {
+    const me = loadUsers().find((u) => u.username === req.user.username);
+    if (me && me.status === "active" && isTreasurerAccount(me)) {
+      out = html.replace(/<!--webmaster-only-->[\s\S]*?<!--\/webmaster-only-->/g, "");
+    }
+  }
+  if (out === null) {
+    noteSuspicious(req, 3, "role");
+    return res.status(403).json({ error: "You do not have permission to perform this action." });
+  }
+  res.set({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }).send(out);
+});
+
 function requireDuesManager(req, res, next) {
   if (req.user && req.user.role === "webmaster") return next();
   const me = loadUsers().find((u) => u.username === req.user.username);

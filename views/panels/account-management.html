@@ -1,0 +1,103 @@
+<!-- The inside of the Account Management tab. Not part of portal.html: the
+     server sends it only to a signed-in webmaster or Treasurer (GET
+     /api/panels/account-management in server.js). The part between the
+     webmaster-only markers is left out for the Treasurer, who gets the dues
+     view only. -->
+  <h3>Account Management</h3>
+  <p id="account-management-intro">Manage user accounts, permissions, and security settings.</p>
+  <!-- The Treasurer's dues-only view, filled by js/membership.js -->
+  <div id="treasurer-view" style="display: none;"></div>
+<!--webmaster-only-->
+  
+  <div class="account-management-controls">
+    <div class="control-section">
+      <h4>Create New Account</h4>
+      <p style="margin-bottom: 10px;">
+        Creates a normal member account immediately (active, no pending approval needed) - unlike the public
+        "Create New Account" link on the login page, which always starts pending until a webmaster approves it.
+        Change its role from the table below once it's created.
+      </p>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+        <label>Username<br>
+          <input type="text" id="new-user-username" style="padding: 6px; width: 160px;">
+        </label>
+        <label>Email<br>
+          <input type="email" id="new-user-email" style="padding: 6px; width: 200px;">
+        </label>
+        <label>First Name<br>
+          <input type="text" id="new-user-firstname" maxlength="50" style="padding: 6px; width: 140px;">
+        </label>
+        <label>Last Name<br>
+          <input type="text" id="new-user-lastname" maxlength="50" style="padding: 6px; width: 140px;">
+        </label>
+        <label>Password<br>
+          <input type="text" id="new-user-password" style="padding: 6px; width: 160px;">
+        </label>
+        <button type="button" class="btn-success" onclick="createUserAccount()">Create Account</button>
+      </div>
+      <p id="create-user-status" style="margin-top: 8px;"></p>
+    </div>
+
+    <!-- Membership Dues settings (webmasters), filled by js/membership.js -->
+    <div class="control-section" id="dues-settings-section"></div>
+
+    <!-- New sign-ups waiting for a webmaster, kept apart from the member list -->
+    <div class="control-section" id="pending-approvals-section">
+      <h4>Awaiting Approval <span id="pending-approvals-count" style="display: inline-block; min-width: 1.6em; padding: 1px 8px; margin-left: 6px; border-radius: 999px; background: #fdf0dc; color: #9a5b00; font-size: 0.85em; text-align: center;">0</span></h4>
+      <p style="margin: 0 0 10px; color: #555;">People who signed up and confirmed their email address. Approve to let them log in, or reject to delete the sign-up.</p>
+      <p id="pending-approvals-empty" style="margin: 0; color: #777; font-style: italic;">No accounts are waiting for approval.</p>
+      <div class="user-list-container" id="pending-approvals-list" hidden>
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Signed up</th>
+              <th>Sign-up IP</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="pending-approvals-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="control-section">
+      <h4>Members</h4>
+      <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+        <input id="user-account-search" placeholder="Search by username, email, or name..." style="flex: 1; padding: 8px; min-width: 140px;" type="text" autocomplete="off" onkeypress="if (event.key === 'Enter') searchUserAccounts();">
+        <button type="button" class="btn-success" onclick="searchUserAccounts()">Search</button>
+        <button type="button" class="btn-warning" onclick="clearUserAccountSearch()">Clear</button>
+      </div>
+      <div class="user-list-container">
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Dues</th>
+              <th>2FA</th>
+              <th>Last Login</th>
+              <th>Login IPs</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="user-list-table">
+            <!-- Users will be populated here -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <div class="control-section">
+      <h4>Security Logs</h4>
+      <div id="security-logs" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;">
+        <!-- Security logs will be populated here -->
+      </div>
+    </div>
+  </div>
+<!--/webmaster-only-->

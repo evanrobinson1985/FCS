@@ -434,7 +434,7 @@
     // Management (the Treasurer view has its own price box)
     const am = document.querySelector('.tab[data-tab="account-management"]');
     if (am) am.addEventListener('click', () => {
-      if (sessionStorage.getItem('role') === 'webmaster') renderSettings();
+      if (FCSRole.get() === 'webmaster') renderSettings();
     });
   });
 
