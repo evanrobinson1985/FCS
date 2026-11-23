@@ -436,3 +436,34 @@ and confirm `ip` is your own public address. If it's `127.0.0.1` or the
 server's own address, Plesk's proxy chain has an extra hop and
 `app.set("trust proxy", 1)` needs adjusting - otherwise rate limits, lockouts
 and logs treat every visitor as one address.
+
+## Security review, third pass (November 2026)
+
+Fixed:
+
+- **The most damaging staff actions needed only a session token.**
+  Downloading a backup (every account's password hash and personal details),
+  changing roles, creating or deleting accounts, granting the Treasurer role,
+  lifting restrictions and deleting caves now also need the account's password,
+  entered in the last 10 minutes (`requireRecentAuth`; logging in counts). The
+  page asks for it in a masked box when the server answers `reauthRequired`,
+  then repeats the request. A session left open on a shared computer, or a
+  stolen token, isn't enough on its own. (Restores already asked.)
+- **No record of what staff did.** Every successful change by a webmaster,
+  admin or the Treasurer is now logged (`data/staff-activity.json`: who, what,
+  on what, when, from where - never a password) and shown in Website
+  Management > Staff Activity.
+- **Anyone could lock a webmaster out of their own site** by typing wrong
+  passwords for their username: the lockout was account-wide. It's now per
+  account *and* address (the configured number of tries locks that address out
+  of that account), and the whole account locks only after
+  max(10 x that number, 50) failures - a guessing attack spread over many
+  addresses. Unknown usernames behave the same, so it still doesn't reveal
+  which accounts exist.
+- **Links in narratives could take over the reader's tab** (reverse
+  tabnabbing: `target="_blank"` without `rel="noopener"`). Every link is now
+  given `rel="noopener noreferrer nofollow"`.
+- **"Forgot password" and the "someone tried to sign up with your email"
+  notice could be used to flood a member's inbox** (and the site's sending
+  reputation) from many addresses. At most one reset email per account every
+  5 minutes and one sign-up notice an hour, with the same reply either way.

@@ -65,6 +65,31 @@
 
       var result = originalFetch(input, init);
       if (!isSameOrigin) return result;
+      // The most sensitive staff actions need the password again (see
+      // requireRecentAuth in server.js): ask for it, confirm it, and repeat the
+      // request - once. Cancelling just returns the server's refusal.
+      result = result.then(function (response) {
+        if (response.status !== 401 || (init && init.__reauthRetry)) return response;
+        return response.clone().json().then(function (body) {
+          if (!body || !body.reauthRequired) return response;
+          return askForPassword().then(function (password) {
+            if (password === null) return response;
+            return originalFetch("/api/reauth", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sessionStorage.getItem("sessionToken") || "") },
+              body: JSON.stringify({ password: password }),
+            }).then(function (confirm) {
+              if (!confirm.ok) {
+                return confirm.json().catch(function () { return {}; }).then(function (b) {
+                  alert((b && b.error) || "That password isn't right.");
+                  return response;
+                });
+              }
+              return window.fetch(input, Object.assign({}, init || {}, { __reauthRetry: true }));
+            });
+          });
+        }, function () { return response; });
+      });
       // An account the server has just restricted for suspicious activity
       // (see server.js): say so once and go back to the login screen.
       return result.then(function (response) {
@@ -83,6 +108,32 @@
       });
     };
   })();
+
+  // A small "confirm your password" box (a masked field, unlike prompt()).
+  // Resolves with the password, or null if cancelled.
+  function askForPassword() {
+    return new Promise(function (resolve) {
+      var dlg = document.createElement("dialog");
+      dlg.setAttribute("aria-labelledby", "reauth-title");
+      dlg.style.cssText = "margin: auto; max-width: 360px; width: calc(100% - 32px); border: 1px solid #ccd5dd; border-radius: 8px; padding: 18px; box-shadow: 0 8px 30px rgba(0,0,0,.25);";
+      dlg.innerHTML =
+        '<form method="dialog" style="display: grid; gap: 10px; margin: 0;">' +
+        '<strong id="reauth-title">Confirm your password</strong>' +
+        '<span style="font-size: 0.9em; color: #555;">This action needs your password again. You won\'t be asked again for 10 minutes.</span>' +
+        '<input type="password" id="reauth-password" autocomplete="current-password" required style="padding: 8px;">' +
+        '<div style="display: flex; gap: 8px; justify-content: flex-end;">' +
+        '<button type="button" id="reauth-cancel">Cancel</button>' +
+        '<button type="submit" class="btn-success" id="reauth-ok">Confirm</button></div></form>';
+      document.body.appendChild(dlg);
+      var input = dlg.querySelector("#reauth-password");
+      var done = function (value) { if (dlg.open) dlg.close(); dlg.remove(); resolve(value); };
+      dlg.querySelector("#reauth-cancel").addEventListener("click", function () { done(null); });
+      dlg.addEventListener("cancel", function (e) { e.preventDefault(); done(null); });
+      dlg.querySelector("form").addEventListener("submit", function (e) { e.preventDefault(); if (input.value) done(input.value); });
+      dlg.showModal();
+      input.focus();
+    });
+  }
 
   // Companion to the fetch wrapper above, for the requests fetch() can't
   // cover: <img src>, <iframe src>, direct download links, and map-tile
@@ -5543,9 +5594,40 @@ function loadFcsDatabaseTable() {
     }
     window.loadDownloadLog = loadDownloadLog;
 
+    // Website Management > Staff Activity (GET /api/staff-activity)
+    async function loadStaffActivity() {
+      const status = document.getElementById('staff-activity-status');
+      const list = document.getElementById('staff-activity-list');
+      if (!list) return;
+      const q = ((document.getElementById('staff-activity-search') || {}).value || '').trim();
+      if (status) status.textContent = 'Loading…';
+      try {
+        const response = await fetch('/api/staff-activity?' + new URLSearchParams({ q }));
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load staff activity');
+        const shown = data.total > data.entries.length ? ` (newest ${data.entries.length} shown)` : '';
+        if (status) status.textContent = (q ? `${data.total} match${data.total === 1 ? '' : 'es'}` : `${data.total} recorded`) + shown;
+        const describe = (d) => Object.entries(d || {}).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' · ');
+        list.innerHTML = !data.entries.length ? '<p style="margin: 0;">Nothing recorded.</p>' :
+          `<table class="user-table"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th><th>IP address</th></tr></thead><tbody>
+          ${data.entries.map((e) => `<tr>
+            <td>${escapeStatsHtml(new Date(e.at).toLocaleString())}</td>
+            <td>${escapeStatsHtml(e.username)} <small>(${escapeStatsHtml(e.role)})</small></td>
+            <td><code>${escapeStatsHtml(e.method + ' ' + e.path)}</code></td>
+            <td style="font-size: 0.9em; overflow-wrap: anywhere;">${escapeStatsHtml(describe(e.detail))}</td>
+            <td style="font-size: 0.9em;">${escapeStatsHtml(e.ip || '')}</td>
+          </tr>`).join('')}
+          </tbody></table>`;
+      } catch (err) {
+        if (status) status.textContent = err.message;
+      }
+    }
+    window.loadStaffActivity = loadStaffActivity;
+
     async function loadWebsiteManagementSettings() {
       await loadSiteStatus(); // keeps the top banner itself in sync too
       loadDownloadLog();
+      loadStaffActivity();
       const status = await fetchFullSiteConfig();
       if (!status) return;
 

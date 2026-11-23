@@ -18,6 +18,18 @@
       <div id="security-alerts-list"></div>
     </div>
 
+    <div class="control-section" id="staff-activity-section">
+      <h4>Staff Activity</h4>
+      <p style="margin: 0 0 10px; color: #555;">Every change made by a webmaster, an admin or the Treasurer: approving or removing accounts, role changes, deletions, restores, site settings, dues, and cave approvals and edits - who did it, when, and from what address.</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center;">
+        <input type="text" id="staff-activity-search" placeholder="Username, or a word like role, delete, restore" style="width: 280px; padding: 6px;" autocomplete="off">
+        <button type="button" class="btn-success" onclick="loadStaffActivity()">Look up</button>
+        <button type="button" onclick="document.getElementById('staff-activity-search').value=''; loadStaffActivity()">Show all</button>
+        <span id="staff-activity-status" style="color: #555;"></span>
+      </div>
+      <div id="staff-activity-list" style="max-height: 360px; overflow: auto;"></div>
+    </div>
+
     <div class="control-section" id="downloads-section">
       <h4>Data Downloads</h4>
       <p style="margin: 0 0 10px; color: #555;">Every time cave data leaves the site: each copy of the cave database a browser downloads (one per login), every export (CSV, Excel, GPX, database file, Cave Profile), every map file and every backup. Exports carry an <strong>Export ID</strong> (on every row of a spreadsheet, and in the file name), so if a file turns up somewhere it shouldn't, paste its Export ID here to see who it was made for.</p>

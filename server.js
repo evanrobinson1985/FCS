@@ -586,6 +586,49 @@ app.use((req, res, next) => {
   next();
 });
 
+// ---- Staff activity log ----------------------------------------------------
+// Every change a webmaster, admin or the Treasurer makes - approving accounts,
+// roles, deletions, restores, settings, dues, cave approvals and edits - is
+// recorded: who, what, on what, when and from where (never any password).
+// Website Management > Staff Activity shows it, so misuse of a staff account,
+// or a stolen one, leaves a trail.
+const STAFF_LOG_FILE = path.join(DATA_DIR, "staff-activity.json");
+const MAX_STAFF_LOG = 10000;
+let staffLog = [];
+try { const raw = JSON.parse(fs.readFileSync(STAFF_LOG_FILE, "utf8")); if (Array.isArray(raw)) staffLog = raw; } catch { staffLog = []; }
+// Routine requests that aren't changes worth a line (or are logged elsewhere)
+const STAFF_LOG_SKIP = new Set(["/api/logout", "/api/reauth", "/api/site-updates/seen", "/api/stats-preferences", "/api/map-preferences", "/api/exports", "/api/feedback", "/api/cave-jump/scores", "/api/security-alerts/reviewed", "/api/toggle-2fa", "/api/change-password", "/api/change-username"]);
+// The request fields worth recording - names, ids and choices, never secrets
+const STAFF_LOG_FIELDS = ["username", "newRole", "status", "id", "caveId", "isTreasurer", "enabled", "action", "key", "type", "newUsername", "reason", "rejectionReason", "maintenanceMode", "readOnlyMode", "bannerEnabled", "largeFilesDisabled", "hiddenTabs", "hiddenMapTools", "amount", "paidOn", "firstName", "lastName"];
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  res.on("finish", () => {
+    const u = req.user;
+    if (!u || res.statusCode >= 400) return;
+    const p = (req.originalUrl || "").split("?")[0];
+    if (STAFF_LOG_SKIP.has(p)) return;
+    let isStaff = u.role === "admin" || u.role === "webmaster";
+    if (!isStaff && /^\/api\/(dues|users\/[^/]+\/dues)/.test(p)) isStaff = true; // the Treasurer
+    if (!isStaff) return;
+    const detail = {};
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    for (const k of STAFF_LOG_FIELDS) {
+      if (body[k] === undefined) continue;
+      const v = body[k];
+      detail[k] = typeof v === "string" ? v.slice(0, 200) : Array.isArray(v) ? v.slice(0, 20) : v;
+    }
+    if (body.proposedData && typeof body.proposedData === "object") detail.fields = Object.keys(body.proposedData).slice(0, 30);
+    if (Array.isArray(body.caves)) detail.caves = body.caves.length;
+    staffLog.push({
+      at: new Date().toISOString(), username: u.username, role: u.role,
+      ip: String(req.ip || "").replace(/^::ffff:/, ""),
+      method: req.method, path: p.slice(0, 200), detail,
+    });
+    if (staffLog.length > MAX_STAFF_LOG) staffLog.splice(0, staffLog.length - MAX_STAFF_LOG);
+    try { writeFileAtomicSync(STAFF_LOG_FILE, JSON.stringify(staffLog)); } catch (err) { console.error("Could not save the staff activity log:", err.message); }
+  });
+  next();
+});
 // ---- Suspicious activity: automatic, temporary account restriction --------
 // Each logged-in account builds up a score from things ordinary use of the
 // site never does: calling features its role can't use, probing for pages
@@ -1300,7 +1343,7 @@ app.post(
 // enough. Webmaster only; a direct-download link (see withAuthToken() /
 // the ?token= fallback in authenticateToken), same as the narrative-image
 // downloads.
-app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), (req, res) => {
+app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), requireRecentAuth, (req, res) => {
   try {
     [USERS_FILE, CAVE_DB_FILE, submissionsFile, SITE_CONFIG_FILE].forEach((f) => backupDataFile(f));
     // Everything the site needs (accounts, caves, submissions, settings,
@@ -1904,7 +1947,7 @@ app.post("/api/users/:username/name", authenticateToken, requireRole("webmaster"
   res.json({ success: true, firstName: user.firstName, lastName: user.lastName, fullName: user.fullName });
 });
 
-app.post("/api/users/:username/treasurer", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+app.post("/api/users/:username/treasurer", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), (req, res) => {
   const { isTreasurer } = req.body || {};
   if (typeof isTreasurer !== "boolean") return res.status(400).json({ error: "isTreasurer must be true or false." });
   const users = loadUsers();
@@ -2342,6 +2385,47 @@ const authLimiter = rateLimit({
   skip: () => process.env.NODE_ENV === "test",
 });
 
+// ---- Confirm your password ("step-up") -------------------------------------
+// The most damaging things a staff account can do - download a backup (every
+// account's password hash and personal details), change roles, create or
+// delete accounts, delete caves - also need the password itself, entered in
+// the last 10 minutes, not just a session token. So a session left open on a
+// shared computer, or a stolen token, isn't enough on its own. Logging in
+// counts (the password was just typed). The page asks for the password when a
+// request comes back with reauthRequired, then repeats the request.
+const RECENT_AUTH_MS = 10 * 60 * 1000;
+const recentAuth = new Map(); // session id -> confirmed until (ms)
+function markRecentAuth(sid) {
+  if (!sid) return;
+  const now = Date.now();
+  if (recentAuth.size > 5000) for (const [k, until] of recentAuth) if (until < now) recentAuth.delete(k);
+  recentAuth.set(sid, now + RECENT_AUTH_MS);
+}
+function requireRecentAuth(req, res, next) {
+  const until = req.user && req.user.sid ? recentAuth.get(req.user.sid) : 0;
+  if (until && until > Date.now()) return next();
+  res.status(401).json({ error: "Please confirm your password to do this.", reauthRequired: true });
+}
+app.post("/api/reauth", authLimiter, authenticateToken, express.json(), async (req, res) => {
+  const password = req.body && req.body.password;
+  const me = loadUsers().find((u) => u.username === req.user.username);
+  const ok = typeof password === "string" && password.length <= 200 && me && me.passwordHash && (await bcrypt.compare(password, me.passwordHash));
+  if (!ok) {
+    noteSuspicious(req, 3, "password");
+    return res.status(401).json({ error: "That password isn't right." });
+  }
+  markRecentAuth(req.user.sid);
+  res.json({ success: true });
+});
+
+app.get("/api/staff-activity", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+  const rows = q
+    ? staffLog.filter((r) => r.username.toLowerCase() === q || r.path.toLowerCase().includes(q) || JSON.stringify(r.detail).toLowerCase().includes(q))
+    : staffLog;
+  res.json({ entries: rows.slice(-500).reverse(), total: rows.length });
+});
+
 // Per-account caps on what one member can write in an hour, so a single
 // account can't fill the disk or bury reviewers. Generous for real use.
 // These run after authenticateToken, which is what sets req.user.
@@ -2624,10 +2708,32 @@ function getAllowedStatesForUser(user) {
 // lock out after the same number of tries as a real account (see /api/login).
 const unknownLoginFailures = new Map(); // username -> { count, last }
 const MAX_TRACKED_UNKNOWN_LOGINS = 5000;
+// Lockouts are per account AND address: the configured number of wrong
+// passwords (5 by default) locks that address out of that account, not the
+// account for everyone - otherwise anyone who knew a webmaster's username could
+// keep them locked out of their own site just by typing wrong passwords. The
+// whole account is locked only after many more failures (a guessing attack
+// spread over many addresses).
+const ipLoginFailures = new Map(); // "username|ip" -> { count, last }
+const lockoutWindowMs = () => siteConfig.loginLockoutMinutes * 60 * 1000;
+const accountWideLockoutThreshold = () => Math.max(siteConfig.loginLockoutThreshold * 10, 50);
+const ipFailureKey = (username, ip) => `${String(username).toLowerCase()}|${ip}`;
+function isAddressLockedOut(username, ip) {
+  const f = ipLoginFailures.get(ipFailureKey(username, ip));
+  return !!f && f.count >= siteConfig.loginLockoutThreshold && Date.now() - f.last < lockoutWindowMs();
+}
+function recordAddressLoginFailure(username, ip) {
+  const k = ipFailureKey(username, ip);
+  const f = ipLoginFailures.get(k);
+  const fresh = !f || Date.now() - f.last >= lockoutWindowMs();
+  ipLoginFailures.delete(k);
+  ipLoginFailures.set(k, { count: fresh ? 1 : f.count + 1, last: Date.now() });
+  while (ipLoginFailures.size > MAX_TRACKED_UNKNOWN_LOGINS) ipLoginFailures.delete(ipLoginFailures.keys().next().value);
+}
 function isUnknownLoginLockedOut(username) {
   const f = unknownLoginFailures.get(username);
-  return !!f && f.count >= siteConfig.loginLockoutThreshold &&
-    Date.now() - f.last < siteConfig.loginLockoutMinutes * 60 * 1000;
+  return !!f && f.count >= accountWideLockoutThreshold() &&
+    Date.now() - f.last < lockoutWindowMs();
 }
 function recordUnknownLoginFailure(username) {
   const f = unknownLoginFailures.get(username) || { count: 0, last: 0 };
@@ -2658,7 +2764,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     if (!user) {
       // Behaves exactly like a real account, lockout included - otherwise
       // "too many attempts" after a few tries would show the name exists.
-      if (isUnknownLoginLockedOut(username)) {
+      if (isAddressLockedOut(username, req.ip) || isUnknownLoginLockedOut(username)) {
         recordSecurityEvent(req, [{ category: "bruteforce", field: "username", sample: `"${username.slice(0, 40)}" (no such account)` }]);
         return res.status(429).json({
           error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
@@ -2673,21 +2779,20 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
         });
       }
       recordUnknownLoginFailure(username);
+      recordAddressLoginFailure(username, req.ip);
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    // Lock the account out temporarily after repeated failed attempts, on top
-    // of the IP-based rate limiter, so a leaked/guessed username alone isn't
-    // enough to brute-force a single account from many IPs. Threshold/window
-    // are webmaster-tunable (Website Management tab) rather than fixed, with
-    // the same defaults (5 attempts, 15 minutes) as before that existed.
-    const lockoutThreshold = siteConfig.loginLockoutThreshold;
+    // Lockout after repeated failed attempts, on top of the IP-based rate
+    // limiter: this address is locked out of this account after the
+    // webmaster-set number of tries (Website Management, 5 by default), and the
+    // whole account only after many more (see isAddressLockedOut above).
     const lockoutMs = siteConfig.loginLockoutMinutes * 60 * 1000;
-    if (
-      user.loginAttempts >= lockoutThreshold &&
+    const accountLocked =
+      user.loginAttempts >= accountWideLockoutThreshold() &&
       user.lastFailedLogin &&
-      Date.now() - new Date(user.lastFailedLogin).getTime() < lockoutMs
-    ) {
+      Date.now() - new Date(user.lastFailedLogin).getTime() < lockoutMs;
+    if (accountLocked || isAddressLockedOut(user.username, req.ip)) {
       recordSecurityEvent(req, [{ category: "bruteforce", field: "username", sample: `"${user.username}" (a real ${user.role} account)` }]);
       return res.status(429).json({
         error: `Too many failed login attempts. Please try again in ${siteConfig.loginLockoutMinutes} minutes.`,
@@ -2703,8 +2808,10 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       user.loginAttempts = (user.loginAttempts || 0) + 1;
       user.lastFailedLogin = new Date().toISOString();
       saveUsers(users, { backup: false });
+      recordAddressLoginFailure(user.username, req.ip);
       return res.status(401).json({ error: "Invalid username or password" });
     }
+    ipLoginFailures.delete(ipFailureKey(user.username, req.ip));
 
     // A password once printed in this project's own setup instructions is
     // public: anyone could log in with it, so it's never accepted, whichever
@@ -2787,6 +2894,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     saveUsers(users, { backup: false });
 
     const sid = newSessionId();
+    markRecentAuth(sid);
     const token = issueSessionToken(user, sid);
     recordLogin(user);
 
@@ -2862,6 +2970,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     saveUsers(users, { backup: false });
 
     const sid = newSessionId();
+    markRecentAuth(sid);
     const token = issueSessionToken(user, sid);
     recordLogin(user);
 
@@ -2891,6 +3000,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
 // fires this and clears its own session regardless of whether it succeeds.
 app.post("/api/logout", authenticateToken, (req, res) => {
   revokeSession(req.user.sid, req.user.exp);
+  recentAuth.delete(req.user.sid);
   endActiveSession(req.user.username);
   res.json({ success: true });
 });
@@ -5163,6 +5273,9 @@ const NARRATIVE_SANITIZE_OPTIONS = {
   // security policy doesn't load outside images anyway
   allowedSchemesByTag: { img: ["data"] },
   allowProtocolRelative: false,
+  // Every link opens safely: the page it opens can't reach back and redirect
+  // the member's own tab (reverse tabnabbing), and isn't told where they came from
+  transformTags: { a: sanitizeHtml.simpleTransform("a", { rel: "noopener noreferrer nofollow" }, true) },
   // Only the formatting the editor itself produces. An open "style"
   // attribute would let a narrative cover the page with its own content
   // (position/z-index), e.g. a fake login box, or load remote files.
@@ -6856,7 +6969,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
 // and needs separate approval. A webmaster creating the account directly
 // is already that approval, so this skips the pending step. Role is
 // always "member"; use /api/change-user-role afterward to promote it.
-app.post("/api/create-user", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
+app.post("/api/create-user", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
@@ -6934,7 +7047,7 @@ app.post("/api/create-user", authenticateToken, requireRole("webmaster"), expres
 });
 
 // Change user role
-app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), (req, res) => {
   try {
     const { username, newRole } = req.body;
     
@@ -6973,7 +7086,7 @@ app.post("/api/change-user-role", authenticateToken, requireRole("webmaster"), e
 
 // Toggle user status (active/inactive)
 // Ends an automatic restriction early (see "Suspicious activity")
-app.post("/api/users/:username/lift-restriction", authenticateToken, requireRole("webmaster"), (req, res) => {
+app.post("/api/users/:username/lift-restriction", authenticateToken, requireRole("webmaster"), requireRecentAuth, (req, res) => {
   const users = loadUsers();
   const user = users.find((u) => u.username === req.params.username);
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -7022,7 +7135,7 @@ app.post("/api/toggle-user-status", authenticateToken, requireRole("webmaster"),
 });
 
 // Delete user
-app.delete("/api/delete-user", authenticateToken, requireRole("webmaster"), express.json(), (req, res) => {
+app.delete("/api/delete-user", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), (req, res) => {
   try {
     const { username } = req.body;
     
@@ -7173,7 +7286,7 @@ app.get("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, res
 // is made first, so a deleted cave can be put back from Backups & Recovery.
 // The request must repeat the cave's ID as confirmation. Its narratives and
 // photos are left in place.
-app.delete("/api/caves/:id", authenticateToken, requireRole("webmaster"), requireNotReadOnly, express.json(), async (req, res) => {
+app.delete("/api/caves/:id", authenticateToken, requireRole("webmaster"), requireRecentAuth, requireNotReadOnly, express.json(), async (req, res) => {
   const id = String(req.params.id || "");
   if (!req.body || req.body.confirmId !== id) {
     return res.status(400).json({ error: "Deleting a cave needs its ID repeated as confirmation." });
@@ -7204,7 +7317,7 @@ app.post("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, re
   }
 });
 
-app.get("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), (req, res) => {
+app.get("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), requireRecentAuth, (req, res) => {
   const file = snapshots.fileFor(req.params.id);
   if (!file) return res.status(404).json({ error: "Backup not found." });
   logDownload(req, { kind: "backup", file: path.basename(file) });
@@ -7464,6 +7577,11 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     const existingByEmail = users.find((u) => String(u.email).toLowerCase() === email.toLowerCase());
     if (existingByEmail) {
       await bcrypt.hash(password, 12);
+      // at most one of these notices an hour per account
+      const lastNotice = existingByEmail.signupAttemptNoticeAt ? new Date(existingByEmail.signupAttemptNoticeAt).getTime() : 0;
+      if (Date.now() - lastNotice < 60 * 60 * 1000) return res.json(SIGNUP_SENT_REPLY);
+      existingByEmail.signupAttemptNoticeAt = new Date().toISOString();
+      saveUsers(users, { backup: false });
       try {
         await sendUserEmail(existingByEmail, {
           subject: "Florida Cave Survey - Someone tried to sign up with your email",
@@ -7697,8 +7815,15 @@ app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) =
     if (!user) {
       return res.json(genericResponse);
     }
+    // At most one reset email per account every 5 minutes (same reply either
+    // way), so the form can't be used to flood a member's inbox - or to burn
+    // the site's sending reputation - from many addresses at once
+    if (user.resetRequestedAt && Date.now() - new Date(user.resetRequestedAt).getTime() < 5 * 60 * 1000) {
+      return res.json(genericResponse);
+    }
 
     const rawToken = crypto.randomBytes(32).toString("hex");
+    user.resetRequestedAt = new Date().toISOString();
     user.resetTokenHash = hashResetToken(rawToken);
     user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
     saveUsers(users, { backup: false });

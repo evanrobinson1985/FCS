@@ -978,7 +978,17 @@ describe("password reset", () => {
   // link to the console instead of emailing it (see sendPasswordResetEmail
   // in server.js) - capture that console.log call to get a real, valid
   // token to drive the rest of the flow with.
+  // The server sends at most one reset email per account every 5 minutes;
+  // these tests ask for several in a row, so clear that timer as if the
+  // 5 minutes had passed (the limit itself is tested below)
+  function forgetLastResetRequest(email) {
+    const file = path.join(process.env.DATA_DIR, "users.json");
+    const users = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const u of users) if (String(u.email).toLowerCase() === email.toLowerCase()) delete u.resetRequestedAt;
+    fs.writeFileSync(file, JSON.stringify(users, null, 2));
+  }
   async function requestResetToken(email) {
+    forgetLastResetRequest(email);
     const originalLog = console.log;
     let capturedUrl = null;
     console.log = (...args) => {
@@ -996,6 +1006,20 @@ describe("password reset", () => {
     assert.ok(capturedUrl, "expected a [DEV] reset link to be logged");
     return new URL(capturedUrl).searchParams.get("resetToken");
   }
+
+  test("sends at most one reset email per account every 5 minutes, with the same reply", async () => {
+    const users = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8"));
+    const email = users.find((u) => u.username === "resetuser").email;
+    await requestResetToken(email);
+    const originalLog = console.log;
+    let sent = false;
+    console.log = (...args) => { if (/\[DEV\] Password reset link/.test(args.join(" "))) sent = true; else originalLog(...args); };
+    let res;
+    try { res = await request(app).post("/api/forgot-password").send({ email }); } finally { console.log = originalLog; }
+    assert.equal(res.status, 200);
+    assert.match(res.body.message, /If the email exists/);
+    assert.equal(sent, false, "no second email within 5 minutes");
+  });
 
   before(async () => {
     await seedUser({ username: "resetuser", password: "OldPassword123!", role: "member" });
@@ -4974,5 +4998,64 @@ describe("security review, second pass", () => {
     attackDetect.scanBody(body);
     assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
     assert.ok(attackDetect.scanBody({ a: "<img src=x onerror=alert(1)>" }).some((f) => f.category === "xss"), "still catches the real thing");
+  });
+});
+
+// Third security review pass
+describe("security review, third pass", () => {
+  before(async () => {
+    await seedUser({ username: "lockme-wm", password: "LockMeWebmaster123!", role: "webmaster" });
+    await seedUser({ username: "stepup-target", password: "StepUpTarget123!", role: "member" });
+  });
+
+  test("sensitive webmaster actions need the password again once the login is over 10 minutes old", async () => {
+    const jwt = require("jsonwebtoken");
+    // a session that logged in long enough ago: a valid token whose session was never "recently confirmed"
+    const res = await request(app).post("/api/login").send({ username: "lockme-wm", password: "LockMeWebmaster123!" });
+    const claims = jwt.decode(res.body.token);
+    const { iat, exp, ...rest } = claims; // eslint-disable-line no-unused-vars
+    const stale = jwt.sign({ ...rest, sid: "stale-session-0001" }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const h = { Authorization: `Bearer ${stale}` };
+    const backup = await request(app).get("/api/backup-now").set(h);
+    assert.equal(backup.status, 401);
+    assert.equal(backup.body.reauthRequired, true);
+    assert.equal((await request(app).post("/api/change-user-role").set(h).send({ username: "stepup-target", newRole: "admin" })).status, 401);
+    assert.equal((await request(app).post("/api/reauth").set(h).send({ password: "wrong-password" })).status, 401);
+    assert.equal((await request(app).post("/api/reauth").set(h).send({ password: "LockMeWebmaster123!" })).status, 200);
+    assert.equal((await request(app).get("/api/backup-now").set(h)).status, 200, "allowed once the password is confirmed");
+    // a fresh login counts as just confirmed
+    assert.equal((await request(app).get("/api/backup-now").set({ Authorization: `Bearer ${res.body.token}` })).status, 200);
+  });
+
+  test("staff changes are recorded in the staff activity log, without passwords", async () => {
+    const h = { Authorization: `Bearer ${await login("lockme-wm", "LockMeWebmaster123!")}` };
+    assert.equal((await request(app).post("/api/change-user-role").set(h).send({ username: "stepup-target", newRole: "admin", password: "NotLogged123!" })).status, 200);
+    const log = await request(app).get("/api/staff-activity?q=change-user-role").set(h);
+    assert.equal(log.status, 200);
+    const e = log.body.entries.find((x) => x.detail && x.detail.username === "stepup-target");
+    assert.ok(e, JSON.stringify(log.body.entries.slice(0, 3)));
+    assert.equal(e.username, "lockme-wm");
+    assert.equal(e.detail.newRole, "admin");
+    assert.ok(!JSON.stringify(log.body).includes("NotLogged123!"), "no password is ever recorded");
+    const member = { Authorization: `Bearer ${await login("stepup-target", "StepUpTarget123!")}` };
+    assert.equal((await request(app).get("/api/staff-activity").set(member)).status, 403);
+  });
+
+  test("wrong passwords lock out the guessing address, not the account owner", async () => {
+    for (let i = 0; i < 6; i++) {
+      await request(app).post("/api/login").set("X-Forwarded-For", "198.51.100.66").send({ username: "lockme-wm", password: "wrong-" + i });
+    }
+    const attacker = await request(app).post("/api/login").set("X-Forwarded-For", "198.51.100.66").send({ username: "lockme-wm", password: "LockMeWebmaster123!" });
+    assert.equal(attacker.status, 429, "the guessing address is locked out");
+    const owner = await request(app).post("/api/login").set("X-Forwarded-For", "203.0.113.77").send({ username: "lockme-wm", password: "LockMeWebmaster123!" });
+    assert.equal(owner.status, 200, "the owner, from their own address, still gets in");
+  });
+
+  test("narrative links can't take over the reader's tab", async () => {
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/save-narrative").set(h).send({ id: "F01001", name: "Test Cave", images: [], html: '<p><a href="https://example.org" target="_blank" rel="opener">link</a></p>' });
+    const saved = (await request(app).get("/get-narrative?id=F01001").set(h)).body.pop();
+    assert.match(saved.html, /rel="noopener noreferrer nofollow"/);
+    assert.doesNotMatch(saved.html, /rel="opener"/);
   });
 });
