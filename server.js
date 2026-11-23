@@ -1789,10 +1789,12 @@ function isTreasurerAccount(user) {
 // after login, and only an account the server itself confirms gets them. A
 // member who edits their role in the browser gets no webmaster controls at all,
 // not just controls that don't work (everything they'd do is refused anyway).
-// The Treasurer gets Account Management without its webmaster-only part.
+// The Treasurer gets Account Management without its webmaster-only part, and
+// admins get the Upload Cave Maps box (uploading is admin/webmaster only).
 const PANEL_FILES = {
   "account-management": path.join(__dirname, "views", "panels", "account-management.html"),
   "website-management": path.join(__dirname, "views", "panels", "website-management.html"),
+  "cave-map-upload": path.join(__dirname, "views", "panels", "cave-map-upload.html"),
 };
 // (each file's opening comment is for whoever edits it, so it isn't sent)
 const PANELS = Object.fromEntries(Object.entries(PANEL_FILES).map(([k, f]) => [k, fs.readFileSync(f, "utf8").replace(/^<!--[\s\S]*?-->\s*/, "")]));
@@ -1802,6 +1804,7 @@ app.get("/api/panels/:name", authenticateToken, (req, res) => {
   const isWebmaster = req.user.role === "webmaster";
   let out = null;
   if (isWebmaster) out = html;
+  else if (req.params.name === "cave-map-upload" && req.user.role === "admin") out = html;
   else if (req.params.name === "account-management") {
     const me = loadUsers().find((u) => u.username === req.user.username);
     if (me && me.status === "active" && isTreasurerAccount(me)) {

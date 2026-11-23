@@ -4772,6 +4772,18 @@ describe("webmaster screens are sent only to confirmed accounts (GET /api/panels
     assert.equal((await request(app).get("/api/panels/website-management").set(t)).status, 403);
   });
 
+  test("the Upload Cave Maps box goes to admins and webmasters only", async () => {
+    const page = require("fs").readFileSync(require("path").join(__dirname, "..", "httpdocs", "portal.html"), "utf8");
+    assert.ok(!page.includes('id="cave-map-upload"'), "the upload box is not in portal.html");
+    const as = async (u, pw) => request(app).get("/api/panels/cave-map-upload").set({ Authorization: `Bearer ${await login(u, pw)}` });
+    const admin = await as("panels-admin", "PanelsAdminPass123!");
+    assert.equal(admin.status, 200);
+    assert.match(admin.text, /id="cave-map-upload"/);
+    assert.equal((await as("webmaster1", WEBMASTER_PASSWORD)).status, 200);
+    assert.equal((await as("panels-member", "PanelsMemberPass123!")).status, 403);
+    assert.equal((await as("panels-treasurer", "PanelsTreasurerPass123!")).status, 403);
+  });
+
   test("a member or admin gets neither, and an unknown name or no login gets nothing", async () => {
     for (const [u, pw] of [["panels-member", "PanelsMemberPass123!"], ["panels-admin", "PanelsAdminPass123!"]]) {
       const h = { Authorization: `Bearer ${await login(u, pw)}` };

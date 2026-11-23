@@ -22,7 +22,7 @@
  <link rel="stylesheet" href="styles.css?v=13">
 <!-- Dark mode: in <head> so a dark-mode visitor never sees a white flash -->
 <script src="js/theme.js?v=2"></script>
-<script src="js/role.js?v=1"></script>
+<script src="js/role.js?v=2"></script>
 <script>
   // Every fetch() call in this app that hits our own API needs to carry the
   // logged-in member's session token, or the server now rejects it (see
@@ -594,13 +594,9 @@
   </div>
 </div>
 
-<div class="cave-maps-admin" style="margin-top: 20px;" data-map-tool="cave-map-upload">
-  <h4>Upload Cave Maps</h4>
-  <input type="file" id="cave-map-upload" accept=".tif,.tiff,.shp,.dbf,.shx,.prj" multiple>
-  <input type="text" id="cave-map-upload-cave" placeholder="Cave ID (optional), e.g. FCI004" style="width: 220px; padding: 6px;" autocomplete="off">
-  <button onclick="uploadCaveMaps()">Upload Maps</button>
-  <small style="display: block; color: #555; margin-top: 4px;">Give the cave's ID to link these files to it, so they show on its Cave Profile.</small>
-</div>
+<!-- "Upload Cave Maps": filled in after login for admins and webmasters only
+     (the server sends it - views/panels/cave-map-upload.html; see loadPanels()) -->
+<div class="cave-maps-admin" id="cave-map-upload-panel" style="margin-top: 20px;" data-map-tool="cave-map-upload"></div>
 
 <div class="cave-maps-admin" style="margin-top: 20px;" data-map-tool="georeferencer">
   <h4>Map Georeferencer</h4>
@@ -5327,9 +5323,6 @@ function loadFcsDatabaseTable() {
     // note saying who can't see them, so it's clear why a member might say they're missing.
     function applyHiddenMapTools(hiddenMapTools) {
       const hiddenSet = new Set(hiddenMapTools || []);
-      // sessionStorage first: it belongs to this tab's own login, whereas
-      // localStorage is shared by every tab and may still hold a role from a
-      // different account logged in elsewhere in the same browser.
       const isWebmaster = (FCSRole.get()) === 'webmaster';
       document.querySelectorAll('[data-map-tool]').forEach(section => {
         const hidden = hiddenSet.has(section.dataset.mapTool);
@@ -8523,16 +8516,21 @@ window.addEventListener('error', function(e) {
   // Finishes a successful login (called directly for accounts without 2FA,
   // and from handleVerifyTwoFactor() once a 2FA code is confirmed) - stores
   // the session, shows the dashboard, and kicks off the initial data loads.
-  // The insides of the Account Management and Website Management tabs, from
-  // the server (GET /api/panels/:name), which sends them only to a confirmed
-  // webmaster (and Account Management's dues view to the Treasurer).
-  const PANEL_IDS = ['account-management', 'website-management'];
-  async function loadPanels(isWebmaster, isTreasurer) {
+  // The webmaster and admin controls that aren't part of the page: the insides
+  // of the Account Management and Website Management tabs, and the Upload Cave
+  // Maps box. The server (GET /api/panels/:name) sends each only to an account
+  // it confirms: webmasters get all three, admins the upload box, and the
+  // Treasurer Account Management's dues view.
+  // Each screen and the element it goes into
+  const PANEL_BOXES = { 'account-management': 'account-management', 'website-management': 'website-management', 'cave-map-upload': 'cave-map-upload-panel' };
+  async function loadPanels(role, isTreasurer) {
+    const isWebmaster = role === 'webmaster', isAdmin = role === 'admin' || isWebmaster;
     const want = [];
     if (isWebmaster || isTreasurer) want.push('account-management');
     if (isWebmaster) want.push('website-management');
+    if (isAdmin) want.push('cave-map-upload');
     await Promise.all(want.map(async (name) => {
-      const box = document.getElementById(name);
+      const box = document.getElementById(PANEL_BOXES[name]);
       if (!box) return;
       try {
         const resp = await fetch('/api/panels/' + name, { headers: { Authorization: 'Bearer ' + sessionStorage.getItem('sessionToken') } });
@@ -8545,7 +8543,7 @@ window.addEventListener('error', function(e) {
     }));
   }
   function clearPanels() {
-    PANEL_IDS.forEach((id) => { const box = document.getElementById(id); if (box) box.innerHTML = ''; });
+    Object.values(PANEL_BOXES).forEach((id) => { const box = document.getElementById(id); if (box) box.innerHTML = ''; });
     ['account-management-tab', 'website-management-tab'].forEach((id) => { const t = document.getElementById(id); if (t) t.style.display = 'none'; });
   }
 
@@ -8563,8 +8561,8 @@ window.addEventListener('error', function(e) {
 
     // Store user information
     localStorage.setItem('username', result.username);
-    // The role lives in memory only (js/role.js), straight from the server's
-    // reply - not in browser storage, where it could be edited
+    // The page reads the role from the server-signed token itself (js/role.js),
+    // not from browser storage, where it could be edited
     FCSRole.set(result.role, result.isTreasurer);
     try { localStorage.removeItem('role'); sessionStorage.removeItem('role'); } catch (e) { /* storage blocked */ }
     sessionStorage.setItem('sessionToken', result.token);
@@ -8596,7 +8594,7 @@ window.addEventListener('error', function(e) {
     // an account it confirms; their tabs appear once they've arrived.
     const accountTab = document.getElementById('account-management-tab');
     if (accountTab) accountTab.style.display = 'none';
-    loadPanels(result.role === 'webmaster', !!result.isTreasurer).then(() => {
+    loadPanels(FCSRole.get(), !!result.isTreasurer).then(() => {
       if (accountTab) accountTab.style.display = (FCSRole.isWebmaster() || FCSRole.isTreasurer()) ? 'block' : 'none';
       toggleWebsiteManagementTabVisibility();
     });

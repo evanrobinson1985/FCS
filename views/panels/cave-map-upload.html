@@ -1,0 +1,9 @@
+<!-- The "Upload Cave Maps" box on the Cave Maps tab. Not part of portal.html:
+     the server sends it only to a signed-in admin or webmaster (GET
+     /api/panels/cave-map-upload in server.js), the only roles allowed to
+     upload. -->
+  <h4>Upload Cave Maps</h4>
+  <input type="file" id="cave-map-upload" accept=".tif,.tiff,.shp,.dbf,.shx,.prj" multiple>
+  <input type="text" id="cave-map-upload-cave" placeholder="Cave ID (optional), e.g. FCI004" style="width: 220px; padding: 6px;" autocomplete="off">
+  <button onclick="uploadCaveMaps()">Upload Maps</button>
+  <small style="display: block; color: #555; margin-top: 4px;">Give the cave's ID to link these files to it, so they show on its Cave Profile.</small>
