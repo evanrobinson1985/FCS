@@ -467,3 +467,41 @@ Fixed:
   notice could be used to flood a member's inbox** (and the site's sending
   reputation) from many addresses. At most one reset email per account every
   5 minutes and one sign-up notice an hour, with the same reply either way.
+
+## Encryption at rest
+
+Members' personal details and the site's backups are encrypted on disk
+(`lib/data-crypto.js`), all with AES-256-GCM, which also detects any change:
+a tampered value fails to decrypt instead of decrypting to something else.
+
+- **Account fields** in `data/users.json` and `data/pending-signups.json` -
+  email, first/last/full name, NSS number, login IP history, sign-up and
+  restriction IP addresses, restriction log and dues payments - are each
+  encrypted with the server's data key (`DATA_ENCRYPTION_KEY`, 32 random
+  bytes) and their own random IV, stored as `enc:v1:...`. Usernames, roles,
+  statuses, dates and password hashes (bcrypt, already one-way) stay
+  readable: the site needs them to find accounts and check logins. The server
+  decrypts on reading and encrypts on saving, so the rest of the code is
+  unchanged. Files from before this are encrypted at the first start with a
+  key, together with the saved copies of `users.json` in `data/backups/`.
+- **Backups kept on the server** (`data/snapshots/`) are encrypted as a whole
+  with the data key.
+- **Downloaded backups** are encrypted with a passphrase the webmaster
+  chooses at download time (at least 12 characters; key derived with scrypt,
+  N=2^15, and a random salt). The server never stores it. Inside, members'
+  details are in plain form, so the file restores on another server with a
+  different data key, which encrypts them again with its own. Restoring
+  needs the passphrase; older, unencrypted backup files still restore.
+- `scripts/create-user.js` encrypts with the key from `.env` when it can.
+
+What this protects against: copied data files, a lost laptop with a backup on
+it, a leaked backup. What it doesn't: someone who takes over the running
+server, since the key has to be there for the site to work.
+
+**Setting it up:** generate a key (see `.env.example`), set
+`DATA_ENCRYPTION_KEY` in the site's environment (Plesk's Node.js settings or
+`.env`), and keep a copy in a password manager. In production the server
+won't start without it. Losing it loses the encrypted details (passwords
+still work, being hashes), but a downloaded backup only needs its passphrase.
+Still not encrypted: the logs (security events, sessions, downloads, staff
+activity), which hold usernames and IP addresses, and the cave database.

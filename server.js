@@ -167,6 +167,27 @@ app.locals.publishedPasswordHashes = PUBLISHED_PASSWORD_HASHES; // for the test 
 // Every token this site issues is HS256-signed; accept nothing else
 const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
 
+// Members' personal details and the site's backups are encrypted at rest with
+// this key (see lib/data-crypto.js). 64 hex characters. Required in
+// production; keep a copy somewhere safe away from the server - without it
+// the encrypted details (emails, names...) can't be read back.
+const dataCrypto = require("./lib/data-crypto");
+let DATA_KEY = dataCrypto.parseKey(process.env.DATA_ENCRYPTION_KEY);
+if (!DATA_KEY) {
+  if (process.env.NODE_ENV === "production") {
+    console.error(
+      "FATAL: DATA_ENCRYPTION_KEY must be set (64 hex characters) before starting this server. Generate one with:\n" +
+        "  node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"\n" +
+        "put it in your .env file, and keep a copy somewhere safe (a password manager): members' emails and names " +
+        "are encrypted with it, and can't be read back without it."
+    );
+    process.exit(1);
+  }
+  // Development and tests only: a key derived from JWT_SECRET
+  DATA_KEY = crypto.createHash("sha256").update("fcs-dev-data-key:" + JWT_SECRET).digest();
+  if (process.env.NODE_ENV !== "test") console.warn("DATA_ENCRYPTION_KEY isn't set: using a development key. Set one before going live.");
+}
+
 const isProduction = process.env.NODE_ENV === "production";
 
 // --- Outbound email (password reset) ---------------------------------------
@@ -1343,17 +1364,35 @@ app.post(
 // enough. Webmaster only; a direct-download link (see withAuthToken() /
 // the ?token= fallback in authenticateToken), same as the narrative-image
 // downloads.
-app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), requireRecentAuth, (req, res) => {
+// A downloaded backup is encrypted with a passphrase the webmaster chooses
+// there and then (see lib/data-crypto.js): it leaves the server, so it mustn't
+// be readable by whoever ends up with the file, and it has to restore on a
+// different server too. The passphrase is never stored.
+const MIN_BACKUP_PASSPHRASE = 12;
+function backupPassphrase(req, res) {
+  const p = req.body && req.body.passphrase;
+  if (typeof p !== "string" || p.length < MIN_BACKUP_PASSPHRASE || p.length > 200) {
+    res.status(400).json({ error: `Choose a passphrase of at least ${MIN_BACKUP_PASSPHRASE} characters for the backup file.` });
+    return null;
+  }
+  return p;
+}
+function sendBackupFile(res, buffer, name) {
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+  res.send(buffer);
+}
+
+app.post("/api/backup-now", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), (req, res) => {
   try {
+    const passphrase = backupPassphrase(req, res);
+    if (!passphrase) return;
     [USERS_FILE, CAVE_DB_FILE, submissionsFile, SITE_CONFIG_FILE].forEach((f) => backupDataFile(f));
     // Everything the site needs (accounts, caves, submissions, settings,
     // narratives...), in the same form "Restore from a file" accepts
     const snapshot = snapshots.capture("download", req.user.username);
     logDownload(req, { kind: "backup", caves: (snapshot.counts && snapshot.counts.caves) || 0 });
-    const filename = `fcs-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(JSON.stringify(snapshot));
+    sendBackupFile(res, snapshots.exportBuffer(snapshot, passphrase), `fcs-backup-${new Date().toISOString().slice(0, 10)}.fcsbackup`);
   } catch (err) {
     console.error("Error creating on-demand backup:", err);
     res.status(500).json({ error: "Failed to create backup." });
@@ -3125,8 +3164,14 @@ function loadUsers() {
     if (fs.existsSync(USERS_FILE)) {
       const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
       if (!Array.isArray(data)) throw new Error("users.json does not hold a list");
+      let plain;
+      try {
+        plain = dataCrypto.decryptRecords(DATA_KEY, data);
+      } catch (cryptErr) {
+        throw new Error("users.json couldn't be decrypted - is DATA_ENCRYPTION_KEY the key it was saved with?");
+      }
       usersFileUnreadable = false;
-      return data;
+      return plain;
     }
     usersFileUnreadable = false;
     return [];
@@ -3151,7 +3196,7 @@ function saveUsers(users, { backup = true } = {}) {
   }
   try {
     if (backup) backupDataFile(USERS_FILE);
-    writeFileAtomicSync(USERS_FILE, JSON.stringify(users, null, 2));
+    writeFileAtomicSync(USERS_FILE, JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, users), null, 2));
   } catch (err) {
     console.error("Error saving users:", err);
   }
@@ -3356,7 +3401,7 @@ function loadPendingSignups() {
   try {
     if (fs.existsSync(PENDING_SIGNUPS_FILE)) {
       const data = JSON.parse(fs.readFileSync(PENDING_SIGNUPS_FILE, "utf8"));
-      if (Array.isArray(data)) list = data;
+      if (Array.isArray(data)) list = dataCrypto.decryptRecords(DATA_KEY, data);
     }
   } catch (err) {
     console.error("Error loading pending sign-ups:", err);
@@ -3366,7 +3411,7 @@ function loadPendingSignups() {
 }
 
 function savePendingSignups(list) {
-  writeFileAtomicSync(PENDING_SIGNUPS_FILE, JSON.stringify(list, null, 2));
+  writeFileAtomicSync(PENDING_SIGNUPS_FILE, JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, list), null, 2));
 }
 
 // Gives a waiting sign-up a fresh link (replacing any earlier one) and
@@ -7191,7 +7236,56 @@ const snapshots = createSnapshotStore({
   },
   narrativeDir: NARRATIVE_DIR,
   writeFileAtomicSync,
+  // a snapshot holds members' details decrypted, so it restores on any server
+  codec: {
+    users: {
+      decode: (text) => { try { return JSON.stringify(dataCrypto.decryptRecords(DATA_KEY, JSON.parse(text)), null, 2); } catch { return text; } },
+      encode: (text) => { try { return JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, JSON.parse(text)), null, 2); } catch { return text; } },
+    },
+  },
+  // ...and the snapshot files kept here are encrypted with the data key
+  seal: (buffer) => dataCrypto.sealWithKey(DATA_KEY, buffer),
+  open: (buffer) => dataCrypto.openWithKey(DATA_KEY, buffer),
 });
+
+// Files written before encryption at rest are encrypted once, at startup: the
+// account and sign-up files, the copies of the account file kept before each
+// change, and the snapshot files. Nothing is lost if this is interrupted - it
+// just carries on next time.
+function encryptExistingData() {
+  let done = 0;
+  try {
+    for (const file of [USERS_FILE, PENDING_SIGNUPS_FILE]) {
+      if (!fs.existsSync(file)) continue;
+      const list = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (dataCrypto.hasPlainFields(list)) { writeFileAtomicSync(file, JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, list), null, 2)); done++; }
+    }
+    if (fs.existsSync(BACKUP_DIR)) {
+      for (const f of fs.readdirSync(BACKUP_DIR)) {
+        if (!/^users\..*\.json$/.test(f)) continue;
+        const file = path.join(BACKUP_DIR, f);
+        try {
+          const list = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (dataCrypto.hasPlainFields(list)) { writeFileAtomicSync(file, JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, list), null, 2)); done++; }
+        } catch (err) { console.error(`Could not encrypt ${f}:`, err.message); }
+      }
+    }
+    if (fs.existsSync(SNAPSHOT_DIR)) {
+      for (const f of fs.readdirSync(SNAPSHOT_DIR)) {
+        if (!f.endsWith(".json.gz")) continue;
+        const file = path.join(SNAPSHOT_DIR, f);
+        const buf = fs.readFileSync(file);
+        if (dataCrypto.isKeySealed(buf)) continue;
+        writeFileAtomicSync(file, dataCrypto.sealWithKey(DATA_KEY, buf));
+        done++;
+      }
+    }
+  } catch (err) {
+    console.error("Encrypting existing data failed (will try again at the next start):", err.message);
+  }
+  if (done) console.log(`Encrypted ${done} existing data file(s) at rest.`);
+}
+encryptExistingData();
 
 // Emails webmasters if a lot of data vanished since the previous backup -
 // the most likely sign of a malicious or accidental mass deletion
@@ -7253,7 +7347,7 @@ function restoreSnapshot(snapshot, by) {
   siteConfig = loadSiteConfig();
   const users = loadUsers();
   users.forEach((u) => { u.tokenVersion = (u.tokenVersion || 0) + 1; });
-  writeFileAtomicSync(USERS_FILE, JSON.stringify(users, null, 2));
+  writeFileAtomicSync(USERS_FILE, JSON.stringify(dataCrypto.encryptRecords(DATA_KEY, users), null, 2));
   ipOwners.at = 0;
   console.warn(`Site data restored by ${by} from a backup made ${snapshot.createdAt || "(unknown date)"}; previous data saved as ${before.id}`);
   return { before };
@@ -7317,13 +7411,15 @@ app.post("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, re
   }
 });
 
-app.get("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), requireRecentAuth, (req, res) => {
+app.post("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), requireRecentAuth, express.json(), (req, res) => {
   const file = snapshots.fileFor(req.params.id);
   if (!file) return res.status(404).json({ error: "Backup not found." });
+  const passphrase = backupPassphrase(req, res);
+  if (!passphrase) return;
+  const { snapshot, error } = snapshots.read(req.params.id);
+  if (error) return res.status(500).json({ error });
   logDownload(req, { kind: "backup", file: path.basename(file) });
-  res.setHeader("Content-Type", "application/gzip");
-  res.setHeader("Content-Disposition", `attachment; filename="fcs-backup-${req.params.id}.json.gz"`);
-  res.sendFile(file);
+  sendBackupFile(res, snapshots.exportBuffer(snapshot, passphrase), `fcs-backup-${req.params.id}.fcsbackup`);
 });
 
 app.post("/api/snapshots/:id/restore", authenticateToken, requireRole("webmaster"), express.json(), async (req, res) => {
@@ -7343,8 +7439,8 @@ app.post("/api/snapshots/restore-upload", authenticateToken, requireRole("webmas
     if (err) return res.status(400).json({ error: err.message || "Upload failed" });
     if (!req.file) return res.status(400).json({ error: "Choose a backup file first." });
     if (!(await confirmWebmasterPassword(req, res))) return;
-    const { snapshot, error } = snapshots.parse(req.file.buffer);
-    if (error) return res.status(400).json({ error });
+    const { snapshot, error, needsPassphrase } = snapshots.parse(req.file.buffer, { passphrase: req.body && req.body.passphrase });
+    if (error) return res.status(400).json({ error, needsPassphrase: !!needsPassphrase });
     const result = restoreSnapshot(snapshot, req.user.username);
     if (result.error) return res.status(400).json({ error: result.error });
     res.json({

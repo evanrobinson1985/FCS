@@ -31,6 +31,13 @@
 const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+try { require("dotenv").config({ path: path.join(__dirname, "..", ".env") }); } catch { /* no .env */ }
+const dataCrypto = require("../lib/data-crypto");
+// Members' details are encrypted at rest with DATA_ENCRYPTION_KEY (see
+// lib/data-crypto.js). Without it here (Plesk's command box doesn't pass on the
+// app's settings), the account is written plain and the site encrypts it the
+// next time it starts.
+const DATA_KEY = dataCrypto.parseKey(process.env.DATA_ENCRYPTION_KEY);
 
 const rawArgs = process.argv.slice(2);
 const dataDirFlag = rawArgs.find((a) => a.startsWith("--data-dir="));
@@ -101,8 +108,9 @@ if (fs.existsSync(USERS_FILE)) {
     console.log(`Created new user "${username}" (role: ${role}, status: active).`);
   }
 
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+  fs.writeFileSync(USERS_FILE, JSON.stringify(DATA_KEY ? dataCrypto.encryptRecords(DATA_KEY, users) : users, null, 2));
   console.log(`Written to ${USERS_FILE}`);
+  if (!DATA_KEY) console.log("DATA_ENCRYPTION_KEY isn't available here, so this account's details are stored plain until the site next starts (it encrypts them then).");
   console.log(
     `They can log in with this password now, and change it themselves afterward from ` +
       `the dashboard header ("Change Password") once logged in.`

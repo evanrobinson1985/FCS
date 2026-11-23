@@ -5866,11 +5866,53 @@ function loadFcsDatabaseTable() {
       setTimeout(() => URL.revokeObjectURL(link.href), 60000);
     }
 
+    // A downloaded backup is encrypted with a passphrase chosen here (the
+    // server never keeps it): ask for it twice, so a typo doesn't lock the file
+    function askBackupPassphrase() {
+      return new Promise((resolve) => {
+        const dlg = document.createElement('dialog');
+        dlg.style.cssText = 'margin: auto; max-width: 420px; width: calc(100% - 32px); border: 1px solid #ccd5dd; border-radius: 8px; padding: 18px; box-shadow: 0 8px 30px rgba(0,0,0,.25);';
+        dlg.innerHTML = `<form style="display: grid; gap: 10px; margin: 0;">
+          <strong>Protect this backup with a passphrase</strong>
+          <span style="font-size: 0.9em; color: #555;">The file holds every account and all the cave data, so it's encrypted. You'll need this passphrase to restore it - <strong>it can't be recovered if you forget it</strong>. Use at least 12 characters, and keep it somewhere safe, apart from the file (a password manager).</span>
+          <input type="password" id="bk-pass-1" placeholder="Passphrase" autocomplete="new-password" minlength="12" required style="padding: 8px;">
+          <input type="password" id="bk-pass-2" placeholder="Type it again" autocomplete="new-password" required style="padding: 8px;">
+          <span id="bk-pass-msg" style="color: #b3261e; font-size: 0.9em;"></span>
+          <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button type="button" id="bk-pass-cancel">Cancel</button>
+            <button type="submit" class="btn-success">Download</button>
+          </div></form>`;
+        document.body.appendChild(dlg);
+        const done = (v) => { if (dlg.open) dlg.close(); dlg.remove(); resolve(v); };
+        dlg.querySelector('#bk-pass-cancel').addEventListener('click', () => done(null));
+        dlg.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+        dlg.querySelector('form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          const a = dlg.querySelector('#bk-pass-1').value, b = dlg.querySelector('#bk-pass-2').value;
+          const msg = dlg.querySelector('#bk-pass-msg');
+          if (a.length < 12) { msg.textContent = 'Use at least 12 characters.'; return; }
+          if (a !== b) { msg.textContent = "The two don't match."; return; }
+          done(a);
+        });
+        dlg.showModal();
+        dlg.querySelector('#bk-pass-1').focus();
+      });
+    }
+
+    async function downloadEncryptedBackup(url, fallbackName) {
+      const passphrase = await askBackupPassphrase();
+      if (!passphrase) return;
+      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ passphrase }) });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      await saveResponseAsFile(response, fallbackName);
+    }
+
     async function downloadBackupById(id) {
       try {
-        const response = await fetch(`/api/snapshots/${encodeURIComponent(id)}/download`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        await saveResponseAsFile(response, 'fcs-backup.json.gz');
+        await downloadEncryptedBackup(`/api/snapshots/${encodeURIComponent(id)}/download`, 'fcs-backup.fcsbackup');
       } catch (error) {
         alert('Could not download the backup: ' + error.message);
       }
@@ -5927,6 +5969,8 @@ function loadFcsDatabaseTable() {
       if (!file) { status.textContent = 'Choose a backup file first.'; return; }
       const form = new FormData();
       form.append('password', document.getElementById('backup-upload-password').value);
+      const passphrase = (document.getElementById('backup-upload-passphrase') || {}).value || '';
+      if (passphrase) form.append('passphrase', passphrase);
       form.append('backup', file);
       status.style.color = '';
       status.textContent = 'Checking and restoring...';
@@ -5944,12 +5988,7 @@ function loadFcsDatabaseTable() {
 
     async function downloadBackupNow() {
       try {
-        const response = await fetch('/api/backup-now');
-        if (!response.ok) {
-          const result = await response.json().catch(() => ({}));
-          throw new Error(result.error || `HTTP ${response.status}`);
-        }
-        await saveResponseAsFile(response, 'fcs-backup.json');
+        await downloadEncryptedBackup('/api/backup-now', 'fcs-backup.fcsbackup');
       } catch (error) {
         console.error('Backup download failed:', error);
         alert('Could not download the backup: ' + error.message);

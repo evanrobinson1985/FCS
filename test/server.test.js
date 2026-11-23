@@ -17,6 +17,26 @@ const XLSX = require("xlsx");
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "fcs-test-"));
 
 process.env.JWT_SECRET = "test-jwt-secret-not-for-real-use-0123456789abcdef";
+// Members' details are encrypted at rest (lib/data-crypto.js); the tests use a
+// fixed key and read the account files through readUserList()/readPendingList()
+process.env.DATA_ENCRYPTION_KEY = "0f".repeat(32);
+const dataCrypto = require("../lib/data-crypto");
+const TEST_DATA_KEY = dataCrypto.parseKey(process.env.DATA_ENCRYPTION_KEY);
+function readUserList() {
+  return dataCrypto.decryptRecords(TEST_DATA_KEY, JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8")));
+}
+// A backup download: POST with a passphrase, an encrypted file back
+const BACKUP_PASSPHRASE = "correct horse battery staple";
+async function downloadBackup(headers, passphrase = BACKUP_PASSPHRASE) {
+  return request(app).post("/api/backup-now").set(headers).send({ passphrase })
+    .buffer(true).parse((r, cb) => { const c = []; r.on("data", (d) => c.push(d)); r.on("end", () => cb(null, Buffer.concat(c))); });
+}
+function openBackup(buffer, passphrase = BACKUP_PASSPHRASE) {
+  return JSON.parse(require("zlib").gunzipSync(dataCrypto.openWithPassphrase(passphrase, buffer)).toString("utf8"));
+}
+function readPendingList() {
+  return dataCrypto.decryptRecords(TEST_DATA_KEY, JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "pending-signups.json"), "utf8")));
+}
 process.env.DATA_DIR = path.join(TEST_ROOT, "data");
 process.env.SUBMISSIONS_FILE = path.join(TEST_ROOT, "pending-submissions.json");
 process.env.NARRATIVE_DIR = path.join(TEST_ROOT, "narratives");
@@ -417,7 +437,7 @@ describe("password hashing", () => {
     });
     assert.equal(res.status, 200);
 
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const created = users.find((u) => u.username === "newmember");
     assert.ok(created, "new user should be present in users.json");
     assert.equal(created.password, undefined, "plaintext password must never be stored");
@@ -447,7 +467,7 @@ describe("password hashing", () => {
     });
     assert.equal(res.status, 400);
 
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     assert.ok(!users.some((u) => u.email === "xssattempt@example.com"), "no account should have been created");
   });
 
@@ -468,7 +488,7 @@ describe("password hashing", () => {
     });
     // Activate the pending account directly (no client-facing endpoint
     // creates an already-active account other than webmaster-managed ones).
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const user = users.find((u) => u.username === "roundtrip");
     user.status = "active";
     fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
@@ -577,7 +597,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
       .send({ firstName: "Test", lastName: "Member", username: "webcreated1", email: "webcreated1@example.com", password: "WebCreatedPass123!" });
     assert.equal(res.status, 200);
 
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const created = users.find((u) => u.username === "webcreated1");
     assert.ok(created, "new user should be present in users.json");
     assert.equal(created.role, "member");
@@ -602,7 +622,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
       .post("/api/create-user")
       .set("Authorization", wm)
       .send({ firstName: "Dana", lastName: "Rivers", username: "nofullname", email: "nofullname@example.com", password: "NoFullNamePass123!" });
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const created = users.find((u) => u.username === "nofullname");
     assert.equal(created.firstName, "Dana");
     assert.equal(created.lastName, "Rivers");
@@ -653,7 +673,7 @@ describe("webmaster-created user accounts (POST /api/create-user)", () => {
       .send({ firstName: "Test", lastName: "Member", username: '<img src=x onerror=alert(1)>', email: "webxss@example.com", password: "SomePass123!" });
     assert.equal(res.status, 400);
 
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     assert.ok(!users.some((u) => u.email === "webxss@example.com"), "no account should have been created");
   });
 });
@@ -984,7 +1004,7 @@ describe("password reset", () => {
   function forgetLastResetRequest(email) {
     const file = path.join(process.env.DATA_DIR, "users.json");
     const users = JSON.parse(fs.readFileSync(file, "utf8"));
-    for (const u of users) if (String(u.email).toLowerCase() === email.toLowerCase()) delete u.resetRequestedAt;
+    for (const u of users) if (String(dataCrypto.decryptRecord(TEST_DATA_KEY, u).email).toLowerCase() === email.toLowerCase()) delete u.resetRequestedAt;
     fs.writeFileSync(file, JSON.stringify(users, null, 2));
   }
   async function requestResetToken(email) {
@@ -1008,7 +1028,7 @@ describe("password reset", () => {
   }
 
   test("sends at most one reset email per account every 5 minutes, with the same reply", async () => {
-    const users = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8"));
+    const users = readUserList();
     const email = users.find((u) => u.username === "resetuser").email;
     await requestResetToken(email);
     const originalLog = console.log;
@@ -2630,18 +2650,27 @@ describe("website management: site status, banner, and maintenance mode", () => 
       assert.equal(publicRes.body.loginLockoutMinutes, undefined);
     });
 
-    test("GET /api/backup-now requires webmaster", async () => {
+    test("POST /api/backup-now requires webmaster", async () => {
       const token = await login("member1", MEMBER_PASSWORD);
-      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      const res = await request(app).post("/api/backup-now").set("Authorization", `Bearer ${token}`).send({ passphrase: BACKUP_PASSPHRASE });
       assert.equal(res.status, 403);
     });
 
-    test("GET /api/backup-now returns a downloadable JSON snapshot with the expected shape", async () => {
+    test("POST /api/backup-now needs a passphrase of 12+ characters", async () => {
+      const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+      assert.equal((await request(app).post("/api/backup-now").set(h).send({})).status, 400);
+      assert.equal((await request(app).post("/api/backup-now").set(h).send({ passphrase: "short" })).status, 400);
+    });
+
+    test("POST /api/backup-now returns a passphrase-encrypted snapshot with the expected shape", async () => {
       const token = await login("webmaster1", WEBMASTER_PASSWORD);
-      const res = await request(app).get("/api/backup-now").set("Authorization", `Bearer ${token}`);
+      const res = await downloadBackup({ Authorization: `Bearer ${token}` });
       assert.equal(res.status, 200);
-      assert.match(res.headers["content-disposition"], /attachment; filename="fcs-backup-\d{4}-\d{2}-\d{2}\.json"/);
-      const body = JSON.parse(res.text);
+      assert.match(res.headers["content-disposition"], /attachment; filename="fcs-backup-\d{4}-\d{2}-\d{2}\.fcsbackup"/);
+      assert.ok(dataCrypto.isPassphraseSealed(res.body), "the file is encrypted");
+      assert.ok(!res.body.toString("latin1").includes("fcs-snapshot"), "nothing readable without the passphrase");
+      assert.throws(() => openBackup(res.body, "the wrong passphrase"));
+      const body = openBackup(res.body);
       assert.equal(body.format, "fcs-snapshot");
       assert.ok(body.createdAt);
       assert.ok(Array.isArray(JSON.parse(body.files.users)));
@@ -3071,7 +3100,7 @@ describe("login IP history", () => {
     // What supertest's requests arrive as
     const res0 = await request(app).post("/api/login").send({ username: "ip-history", password: MEMBER_PASSWORD });
     assert.equal(res0.status, 200);
-    let users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    let users = readUserList();
     const myIP = users.find((u) => u.username === "ip-history").loginIPs.slice(-1)[0];
 
     // Pretend there's a long history with this address near the start
@@ -3080,7 +3109,7 @@ describe("login IP history", () => {
     fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
 
     await login("ip-history", MEMBER_PASSWORD);
-    users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    users = readUserList();
     const ips = users.find((u) => u.username === "ip-history").loginIPs;
     assert.equal(ips.length, 50);
     assert.equal(ips[ips.length - 1], myIP);
@@ -3377,7 +3406,7 @@ describe("legal first and last names", () => {
     assert.equal((await request(app).post("/api/create-account").send({ ...base, firstName: "Ann", lastName: "<b>x</b>" })).status, 400);
     const ok = await signUpConfirmed({ ...base, firstName: "  Mary-Jane ", lastName: "O'Neil" });
     assert.equal(ok.status, 200);
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const u = users.find((x) => x.username === "named-signup");
     assert.equal(u.firstName, "Mary-Jane");
     assert.equal(u.lastName, "O'Neil");
@@ -3698,7 +3727,7 @@ describe("a new password ends older sessions", () => {
 
   test("resetting the password by emailed link rejects tokens issued before it", async () => {
     const old = await login("sessionreset", "SessionResetPass1!");
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     const user = users.find((u) => u.username === "sessionreset");
     const rawToken = "a".repeat(64);
     user.resetTokenHash = require("crypto").createHash("sha256").update(rawToken).digest("hex");
@@ -3866,7 +3895,7 @@ describe("tokens in URLs are view-only", () => {
   });
 
   test("the view-only token is refused everywhere else, in the URL or a header", async () => {
-    for (const route of ["/api/cave-database", "/api/users", "/api/backup-now", "/api/my-membership"]) {
+    for (const route of ["/api/cave-database", "/api/users", "/api/download-log", "/api/my-membership"]) {
       assert.equal((await request(app).get(`${route}?token=${assetToken}`)).status, 401, route);
       assert.equal((await request(app).get(route).set("Authorization", `Bearer ${assetToken}`)).status, 401, route);
     }
@@ -3878,10 +3907,10 @@ describe("tokens in URLs are view-only", () => {
   });
 
   test("a session token in the URL is refused for anything but photos and map files", async () => {
-    assert.equal((await request(app).get(`/api/backup-now?token=${session}`)).status, 401);
+    assert.equal((await request(app).get(`/api/download-log?token=${session}`)).status, 401);
     assert.equal((await request(app).get(`/api/cave-database?token=${session}`)).status, 401);
     assert.equal((await request(app).get(`${imageUrl}?token=${session}`)).status, 200); // sessions begun before the change
-    assert.equal((await request(app).get("/api/backup-now").set("Authorization", `Bearer ${session}`)).status, 200);
+    assert.equal((await request(app).get("/api/download-log").set("Authorization", `Bearer ${session}`)).status, 200);
   });
 
   test("a password change ends the view-only token too", async () => {
@@ -3930,7 +3959,7 @@ describe("narrative styling is limited to what the editor produces", () => {
 describe("two-factor code re-sends are capped per login", () => {
   test("a fourth re-send is refused until the member logs in again", async () => {
     await seedUser({ username: "resendcap", password: "ResendCapPass123!", role: "member" });
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     users.find((u) => u.username === "resendcap").twoFactorEnabled = true;
     fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2));
 
@@ -3976,7 +4005,7 @@ describe("email confirmation at sign-up", () => {
   }
 
   function stored(username) {
-    return JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).find((u) => u.username === username);
+    return readUserList().find((u) => u.username === username);
   }
   const pendingFile = () => path.join(process.env.DATA_DIR, "pending-signups.json");
   function expirePending(username) {
@@ -4172,7 +4201,7 @@ describe("automatic restriction of suspicious accounts", () => {
     try {
       const h = { Authorization: `Bearer ${await login("lingerer", "LingererPass123!")}` };
       for (let i = 0; i < 7; i++) await request(app).get("/api/users").set(h);
-      const stored = JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).find((u) => u.username === "lingerer");
+      const stored = readUserList().find((u) => u.username === "lingerer");
       assert.equal(stored.restrictedIndefinitely, true);
       assert.equal(stored.restrictedUntil, undefined, "no end time");
       const relog = await request(app).post("/api/login").send({ username: "lingerer", password: "LingererPass123!" });
@@ -4404,7 +4433,7 @@ describe("Backups & Recovery", () => {
     fs.writeFileSync(caveFile(), "[]");
     fs.writeFileSync(path.join(narrativeDir(), "BKP001.json"), JSON.stringify([{ user: "x", html: "<p>defaced</p>", timestamp: "t2" }]));
     fs.writeFileSync(path.join(narrativeDir(), "PLANTED.json"), "[]");
-    const users = JSON.parse(fs.readFileSync(usersFilePath(), "utf8"));
+    const users = readUserList();
     fs.writeFileSync(usersFilePath(), JSON.stringify(users.filter((u) => u.username !== "member1"), null, 2));
 
     const wrong = await request(app).post(`/api/snapshots/${id}/restore`).set(wm).send({ password: "not-my-password" });
@@ -4416,7 +4445,7 @@ describe("Backups & Recovery", () => {
     assert.equal(fs.readFileSync(caveFile(), "utf8"), goodCaves);
     assert.match(fs.readFileSync(path.join(narrativeDir(), "BKP001.json"), "utf8"), /Original story/);
     assert.equal(fs.existsSync(path.join(narrativeDir(), "PLANTED.json")), false);
-    assert.ok(JSON.parse(fs.readFileSync(usersFilePath(), "utf8")).some((u) => u.username === "member1"));
+    assert.ok(readUserList().some((u) => u.username === "member1"));
 
     // the server's in-memory cave list is reloaded, and everyone was signed out
     assert.equal((await request(app).get("/api/snapshots").set(wm)).status, 401);
@@ -4429,20 +4458,29 @@ describe("Backups & Recovery", () => {
 
   test("a downloaded backup restores the whole site from a file, and edited files are refused", async () => {
     const wm = await wmHeader();
-    const download = await request(app).get("/api/backup-now").set(wm);
+    const download = await downloadBackup(wm);
     assert.equal(download.status, 200);
     const goodCaves = fs.readFileSync(caveFile(), "utf8");
     fs.writeFileSync(caveFile(), "[]");
 
-    const tampered = JSON.parse(download.text);
+    const tampered = openBackup(download.body);
     tampered.files.users = tampered.files.users.replace(/"role": "member"/, '"role": "webmaster"');
     const bad = await request(app).post("/api/snapshots/restore-upload").set(wm)
       .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(JSON.stringify(tampered)), "fcs-backup.json");
     assert.equal(bad.status, 400);
     assert.match(bad.body.error, /checksum/);
 
+    const noPassphrase = await request(app).post("/api/snapshots/restore-upload").set(wm)
+      .field("password", WEBMASTER_PASSWORD).attach("backup", download.body, "fcs-backup.fcsbackup");
+    assert.equal(noPassphrase.status, 400);
+    assert.equal(noPassphrase.body.needsPassphrase, true);
+    const wrong = await request(app).post("/api/snapshots/restore-upload").set(wm)
+      .field("password", WEBMASTER_PASSWORD).field("passphrase", "not the passphrase").attach("backup", download.body, "fcs-backup.fcsbackup");
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.body.error, /passphrase/);
+
     const ok = await request(app).post("/api/snapshots/restore-upload").set(wm)
-      .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(download.text), "fcs-backup.json");
+      .field("password", WEBMASTER_PASSWORD).field("passphrase", BACKUP_PASSPHRASE).attach("backup", download.body, "fcs-backup.fcsbackup");
     assert.equal(ok.status, 200);
     assert.equal(ok.body.narrativesIncluded, true);
     assert.equal(fs.readFileSync(caveFile(), "utf8"), goodCaves);
@@ -4450,7 +4488,7 @@ describe("Backups & Recovery", () => {
 
   test("a backup that would lock everyone out is refused", async () => {
     const wm = await wmHeader();
-    const download = JSON.parse((await request(app).get("/api/backup-now").set(wm)).text);
+    const download = openBackup((await downloadBackup(wm)).body);
     const noWebmaster = { exportedAt: "x", users: JSON.parse(download.files.users).filter((u) => u.role !== "webmaster"), caveDatabase: [] };
     const res = await request(app).post("/api/snapshots/restore-upload").set(wm)
       .field("password", WEBMASTER_PASSWORD).attach("backup", Buffer.from(JSON.stringify(noWebmaster)), "old.json");
@@ -4859,14 +4897,14 @@ describe("security review fixes", () => {
   });
 
   test("signing up with an email that already has an account looks the same as a new sign-up", async () => {
-    const users = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8"));
+    const users = readUserList();
     const taken = users.find((u) => u.username === "review-member").email;
     const fresh = await request(app).post("/api/create-account").send({ username: "brandnewcaver", email: "brandnewcaver@gmail.com", password: "BrandNewCaver123!", firstName: "Brand", lastName: "New" });
     const dup = await request(app).post("/api/create-account").send({ username: "someoneelse", email: taken, password: "SomeoneElse123!", firstName: "Some", lastName: "One" });
     assert.equal(fresh.status, 200);
     assert.equal(dup.status, fresh.status);
     assert.deepEqual(dup.body, fresh.body);
-    const pending = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "pending-signups.json"), "utf8"));
+    const pending = readPendingList();
     assert.ok(!pending.some((p) => p.username === "someoneelse"), "no sign-up is started for a taken address");
   });
 
@@ -5016,15 +5054,15 @@ describe("security review, third pass", () => {
     const { iat, exp, ...rest } = claims; // eslint-disable-line no-unused-vars
     const stale = jwt.sign({ ...rest, sid: "stale-session-0001" }, process.env.JWT_SECRET, { expiresIn: "1h" });
     const h = { Authorization: `Bearer ${stale}` };
-    const backup = await request(app).get("/api/backup-now").set(h);
+    const backup = await request(app).post("/api/backup-now").set(h).send({ passphrase: BACKUP_PASSPHRASE });
     assert.equal(backup.status, 401);
     assert.equal(backup.body.reauthRequired, true);
     assert.equal((await request(app).post("/api/change-user-role").set(h).send({ username: "stepup-target", newRole: "admin" })).status, 401);
     assert.equal((await request(app).post("/api/reauth").set(h).send({ password: "wrong-password" })).status, 401);
     assert.equal((await request(app).post("/api/reauth").set(h).send({ password: "LockMeWebmaster123!" })).status, 200);
-    assert.equal((await request(app).get("/api/backup-now").set(h)).status, 200, "allowed once the password is confirmed");
+    assert.equal((await request(app).post("/api/backup-now").set(h).send({ passphrase: BACKUP_PASSPHRASE })).status, 200, "allowed once the password is confirmed");
     // a fresh login counts as just confirmed
-    assert.equal((await request(app).get("/api/backup-now").set({ Authorization: `Bearer ${res.body.token}` })).status, 200);
+    assert.equal((await request(app).post("/api/backup-now").set({ Authorization: `Bearer ${res.body.token}` }).send({ passphrase: BACKUP_PASSPHRASE })).status, 200);
   });
 
   test("staff changes are recorded in the staff activity log, without passwords", async () => {
@@ -5057,5 +5095,49 @@ describe("security review, third pass", () => {
     const saved = (await request(app).get("/get-narrative?id=F01001").set(h)).body.pop();
     assert.match(saved.html, /rel="noopener noreferrer nofollow"/);
     assert.doesNotMatch(saved.html, /rel="opener"/);
+  });
+});
+
+
+// Encryption at rest (lib/data-crypto.js)
+describe("members' details and backups are encrypted at rest", () => {
+  test("personal details in users.json are encrypted; usernames, roles and password hashes are not", async () => {
+    await seedUser({ username: "crypt-member", password: "CryptMember123!", role: "member" });
+    // any save (a login) writes the file in encrypted form
+    await login("crypt-member", "CryptMember123!");
+    const raw = fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8");
+    const stored = JSON.parse(raw).find((u) => u.username === "crypt-member");
+    assert.ok(dataCrypto.isEncryptedValue(stored.email), "email is encrypted");
+    assert.ok(dataCrypto.isEncryptedValue(stored.loginIPs), "login IP history is encrypted");
+    assert.ok(!raw.includes("crypt-member@example.com"), "the plain address isn't anywhere in the file");
+    assert.equal(stored.role, "member");
+    assert.match(stored.passwordHash, /^\$2[aby]\$/);
+    // ...and the site still works with it: the address is found for a reset
+    const users = readUserList();
+    assert.equal(users.find((u) => u.username === "crypt-member").email, "crypt-member@example.com");
+  });
+
+  test("a value changed in the file is refused, not decrypted to garbage", () => {
+    const v = dataCrypto.encryptValue(TEST_DATA_KEY, "someone@example.com");
+    const raw = Buffer.from(v.slice(7), "base64");
+    raw[raw.length - 1] ^= 1;
+    assert.throws(() => dataCrypto.decryptValue(TEST_DATA_KEY, "enc:v1:" + raw.toString("base64")));
+    assert.throws(() => dataCrypto.decryptValue(Buffer.alloc(32, 7), v), "a different key can't read it");
+  });
+
+  test("the backups kept on the server are encrypted with the data key", async () => {
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const made = await request(app).post("/api/snapshots").set(h);
+    assert.equal(made.status, 200);
+    const file = path.join(process.env.DATA_DIR, "snapshots", `${made.body.snapshot.id}.json.gz`);
+    assert.ok(dataCrypto.isKeySealed(fs.readFileSync(file)));
+  });
+
+  test("a downloaded backup restores on a server with a different data key", async () => {
+    // the backup holds members' details decrypted (inside the passphrase encryption)
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const snapshot = openBackup((await downloadBackup(h)).body);
+    const users = JSON.parse(snapshot.files.users);
+    assert.ok(users.every((u) => !u.email || !dataCrypto.isEncryptedValue(u.email)), "plain inside, so another key can encrypt it again");
   });
 });

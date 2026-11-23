@@ -229,9 +229,10 @@
         <div id="backup-restore-panel" class="bk-restore" hidden></div>
         <details style="margin-top: 12px;">
           <summary style="cursor: pointer; font-weight: 600;">Restore from a downloaded backup file</summary>
-          <p style="margin: 8px 0; color: #555;">Use this if the server's own backups are missing too. Pick a file saved with "Download Full Backup" (or an older "Download Backup Now" file).</p>
+          <p style="margin: 8px 0; color: #555;">Use this if the server's own backups are missing too. Pick a file saved with "Download Full Backup" and enter the passphrase you chose when you downloaded it (an older, unencrypted backup file needs no passphrase).</p>
           <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-            <input type="file" id="backup-upload-file" accept=".json,.gz,application/json,application/gzip">
+            <input type="file" id="backup-upload-file" accept=".fcsbackup,.json,.gz,application/json,application/gzip,application/octet-stream">
+            <input type="password" id="backup-upload-passphrase" placeholder="Backup passphrase" autocomplete="off" style="padding: 6px;">
             <input type="password" id="backup-upload-password" placeholder="Your password" autocomplete="current-password" style="padding: 6px;">
             <button type="button" class="btn-danger" onclick="restoreBackupFromFile()">Restore This File</button>
           </div>
