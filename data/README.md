@@ -29,25 +29,20 @@ cp data/users.example.json data/users.json
   or by deleting individual sample records via the app and adding real
   ones through the Edit Cave Data tab.
 
-- **`users.example.json`** - one dummy `webmaster` account, as an example
-  of a user record:
+- **`users.example.json`** - one example user record, to show what an account
+  looks like in `users.json`. It has no password and is inactive, so it can't
+  be used to log in.
 
-  | Username           | Password           |
-  |---------------------|---------------------|
-  | `sample-webmaster`  | `ChangeMe123!Now`   |
-
-  **That password can't be used to log in.** It's published here and in
-  git history, so the server refuses it outright (whichever account has it).
-  The sample account only shows what a user record looks like.
-
-  Create your own webmaster account instead - see `scripts/create-user.js`
-  and the "Before you deploy" checklist in `SECURITY.md`:
+  Create your own webmaster account on the server with
+  `scripts/create-user.js` (see also the "Before you deploy" checklist in
+  `SECURITY.md`):
   ```
   node scripts/create-user.js <your-username> <your-password> webmaster <your-email>
   ```
-  Then remove the `sample-webmaster` account, either from the Account
-  Management tab (logged in as any webmaster) or by deleting its entry
-  from `data/users.json` directly.
+  If your `users.json` was copied from an older version of the example file,
+  delete the sample webmaster account it contained (Account Management tab,
+  or remove its entry from `data/users.json`): its password was published
+  in earlier versions of these instructions.
 
 ## Files here
 

@@ -153,8 +153,16 @@ const MAP_TILE_HOSTS = [
   "https://*.a.ssl.fastly.net",
 ];
 
-// Passwords published in this project's own documentation (see data/README.md)
-const PUBLISHED_PASSWORDS = new Set(["ChangeMe123!Now"]);
+// Passwords that were published in this project's own documentation (earlier
+// versions of data/README.md), so they're public through the git history and
+// must never be accepted. Kept as SHA-256 fingerprints so the passwords
+// themselves aren't written in the code.
+const PUBLISHED_PASSWORD_HASHES = new Set([
+  "7fa68d4743f3c7d85868dc240ff7b7b653a24f4713af37e63c8f908b6d2cfd2b",
+]);
+const isPublishedPassword = (password) =>
+  PUBLISHED_PASSWORD_HASHES.has(crypto.createHash("sha256").update(String(password)).digest("hex"));
+app.locals.publishedPasswordHashes = PUBLISHED_PASSWORD_HASHES; // for the test suite
 
 // Every token this site issues is HS256-signed; accept nothing else
 const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
@@ -2698,10 +2706,10 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    // A password printed in this project's own setup instructions (the sample
-    // webmaster account in data/users.example.json) is public: anyone could
-    // log in with it, so it's never accepted, whichever account has it.
-    if (PUBLISHED_PASSWORDS.has(password)) {
+    // A password once printed in this project's own setup instructions is
+    // public: anyone could log in with it, so it's never accepted, whichever
+    // account has it.
+    if (isPublishedPassword(password)) {
       noteSuspicious(req, 3, "password");
       return res.status(403).json({
         error: "This account still uses the sample password published in the setup instructions, so it can't be used. " +

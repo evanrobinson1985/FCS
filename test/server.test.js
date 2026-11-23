@@ -4941,9 +4941,11 @@ describe("download log and export watermarks", () => {
 
 // Second security review pass
 describe("security review, second pass", () => {
-  test("the password published in the setup instructions is refused, even when it's correct", async () => {
-    await seedUser({ username: "sample-webmaster-copy", password: "ChangeMe123!Now", role: "webmaster" });
-    const res = await request(app).post("/api/login").send({ username: "sample-webmaster-copy", password: "ChangeMe123!Now" });
+  test("a password published in the setup instructions is refused, even when it's correct", async () => {
+    const published = "Test-Published-Pass-1";
+    app.locals.publishedPasswordHashes.add(require("crypto").createHash("sha256").update(published).digest("hex"));
+    await seedUser({ username: "published-pass-user", password: published, role: "webmaster" });
+    const res = await request(app).post("/api/login").send({ username: "published-pass-user", password: published });
     assert.equal(res.status, 403);
     assert.match(res.body.error, /sample password/);
     assert.ok(!res.body.token);

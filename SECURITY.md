@@ -287,7 +287,8 @@ Being upfront about the tradeoffs and what's left:
    yet and just want the site running to try it out, copy the dummy
    templates instead (`cp data/cave-database.example.json
    data/cave-database.json`, same for `users.example.json`) - see
-   `data/README.md` for what's in them and the sample login they provide.
+   `data/README.md` for what's in them (the user template is an example
+   record only; it has no password and can't log in).
    Swap in your real files whenever you're ready; nothing under `data/`
    except those two `.example.json` templates is ever committed.
 4. Make sure something in front of Node is terminating real TLS (see
@@ -409,11 +410,13 @@ Fixed:
   database; a narrative with pasted pictures), which parse their own 10 MB
   bodies after the login and role checks. Oversized or malformed bodies get
   413 / 400 instead of a 500.
-- **The setup instructions publish a webmaster password**
-  (`sample-webmaster` / `ChangeMe123!Now` in `data/README.md`, and told people
-  to copy `users.example.json` into place). That password is now refused at
-  login for any account, and the instructions say to create your own
-  webmaster with `scripts/create-user.js`.
+- **The setup instructions published a webmaster password** (a sample
+  webmaster account in `data/users.example.json`, with its password printed in
+  `data/README.md`, which told people to copy the file into place). The
+  credentials are removed from the instructions and the example file (now an
+  inactive member record with no password), and the server refuses that
+  password at login for any account, since it stays in the git history. The
+  instructions say to create your own webmaster with `scripts/create-user.js`.
 - **The download log could be flooded** to push an export record out of it.
   Exports and backups are now kept ahead of routine entries, and each account
   is limited to 60 cave database downloads an hour and 50 exports a day.
