@@ -447,11 +447,14 @@
     d.innerHTML = String(html || '').replace(/<\/(p|div|h\d|li)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n');
     return d.textContent.replace(/\n{3,}/g, '\n\n').trim();
   }
-  function downloadProfile(data) {
+  async function downloadProfile(data) {
     const c = data.cave;
+    // Registered and marked like every other export (see registerExport in portal.html)
+    let wm;
+    try { wm = await window.registerExport('profile', 1, c.id); } catch (err) { alert('The download was stopped: ' + err.message + '. Please try again.'); return; }
     const lines = [];
     const add = (k, v) => { if (v !== '' && v != null) lines.push(`${k}: ${v}`); };
-    lines.push(`FLORIDA CAVE SURVEY - CAVE PROFILE`, `${c.id} - ${c.name || ''}`, `Exported ${new Date().toLocaleString()}`, '');
+    lines.push(`FLORIDA CAVE SURVEY - CAVE PROFILE`, `${c.id} - ${c.name || ''}`, wm.notice, '');
     add('County', c.county); add('Type', c.type); add('Latitude', pick(c, 'latitude', 'lat')); add('Longitude', pick(c, 'longitude', 'lng'));
     add('Location accuracy', label('edit-location-accuracy', c.locationAccuracy)); add('Elevation (ft)', pick(c, 'elevation'));
     add('Entrance type', label('edit-entrance-type', c.entranceType)); add('Field indication', label('edit-field-indication', c.fieldIndication));
@@ -475,7 +478,7 @@
     const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/plain;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${c.id}-profile.txt`;
+    a.download = `${c.id}-profile-${wm.exportId}.txt`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   }

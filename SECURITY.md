@@ -351,10 +351,15 @@ server.
 
 Still open (need a decision or a larger change):
 
-- **Any approved member can download the whole cave database**, including
-  landowner details (`ownerInfo`), in one request, and nothing records who did.
-  Options: hide landowner details from members, log each download, limit or
-  watermark exports.
+- **Any approved member can download the whole cave database** (landowner
+  details included, by decision). Since this review, every download is logged
+  and every export is watermarked (see "Download log and export watermarks"
+  below), so a leaked export can be traced. The raw database copy each
+  browser downloads at login is logged but can't carry a watermark, so a
+  member who copies it out of the browser is only identifiable as one of the
+  members who downloaded it. A per-account fingerprint in that copy (tiny,
+  harmless differences in the coordinates each account receives) would close
+  that gap; not done.
 - **`'unsafe-inline'` scripts and session tokens in `sessionStorage`.** If an
   injection bug were ever found, script could run and read the token. The
   fix is moving the page's inline scripts into files (then dropping
@@ -369,3 +374,23 @@ Still open (need a decision or a larger change):
 - **Hosting**: server patching, Plesk panel access, SSH, TLS settings and
   off-site encrypted backups are outside the code, and an independent
   penetration test of the deployed site is the real proof.
+
+## Download log and export watermarks
+
+Every time cave data leaves the site it's recorded in `data/download-log.json`
+(newest 20,000 entries): who, when, IP address, browser, what and how many
+caves. That covers each copy of the cave database a browser downloads (one per
+login), each export (CSV, Excel, GPX, the `.js` database file, a Cave
+Profile), each map file sent in full, and each backup.
+
+Exports are registered with the server first (`POST /api/exports`), which logs
+them and returns an Export ID; the page then writes "Exported for <name>
+(<username>) on <date>. Export ID <id>. Do not share..." into the file - the
+first line of a CSV plus an Export ID column on every row, an "About this
+export" sheet plus the column and the file properties in Excel, the metadata
+plus every waypoint in GPX, a header in the `.js` and profile files - and puts
+the ID in the file name. The page won't make an export the server didn't
+register. Webmasters look an Export ID (or a username or IP address) up in
+Website Management > Data Downloads, which also totals each account's
+downloads over the last 30 days. Members are told by the export buttons that
+exports are marked and logged.

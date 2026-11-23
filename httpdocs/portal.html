@@ -757,6 +757,7 @@
 <button class="btn-success" onclick="exportToCSV()" style="margin-right:5px;">Export CSV</button>
 <button class="btn-success" onclick="exportToExcel()" style="margin-right:5px;">Export Excel</button>
 <button class="btn-success" onclick="exportToGPX()">Export GPX</button>
+<p class="export-notice" style="margin: 6px 0 0; font-size: 0.85em; color: #555;">To protect cave locations, every export is marked with your name and an export ID, and every download is logged.</p>
 <div id="download-database-button-container">
 <button class="btn-warning" onclick="downloadUpdatedCaveData()" style="margin-left:10px;">Download Updated Database</button>
 </div>
@@ -1317,7 +1318,7 @@
 <!-- Membership dues: status line, Dues column, dues settings -->
 <script src="js/membership.js?v=10"></script>
 <!-- Cave Profile page -->
-<script src="js/cave-profile.js?v=3"></script>
+<script src="js/cave-profile.js?v=4"></script>
 <!-- "Who's online" notice for webmaster/admin/Treasurer -->
 <script src="js/active-sessions.js?v=2"></script>
 
@@ -4645,8 +4646,39 @@ function loadFcsDatabaseTable() {
     document.addEventListener("DOMContentLoaded", loadFcsDatabaseTable);
 
     // Export functions
-    function exportToCSV() {
+    // Every export is registered with the server first (it's logged there and
+    // gets an Export ID), then marked with the member's name, the date and that
+    // ID, so a copy that turns up where it shouldn't can be traced back (Website
+    // Management > Data Downloads). No registration, no file.
+    async function registerExport(kind, caves, caveId) {
+      const response = await fetch('/api/exports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, caves, ...(caveId ? { caveId } : {}) }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.exportId) throw new Error(data.error || 'the export could not be registered');
+      data.when = new Date(data.at).toLocaleString();
+      data.notice = `Florida Cave Survey - confidential cave location data. Exported for ${data.name} (${data.username}) on ${data.when}. ` +
+        `Export ID ${data.exportId}. Do not share, publish or post this file.`;
+      return data;
+    }
+    window.registerExport = registerExport;
+    async function startExport(kind, caves, caveId) {
+      try {
+        return await registerExport(kind, caves, caveId);
+      } catch (err) {
+        alert('The export was stopped: ' + err.message + '. Please try again.');
+        return null;
+      }
+    }
+    const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const xmlText = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    async function exportToCSV() {
       console.log("Exporting current cave database to CSV");
+      const wm = await startExport('csv', caveDataStore.length);
+      if (!wm) return;
       
       // Use the complete set of headers
       const headers = [
@@ -4659,11 +4691,13 @@ function loadFcsDatabaseTable() {
         'Vertical Extent', 'Max Water Depth', 'Deepest Pitch',
         'Latitude', 'Longitude', 'Exploration Possibility',
         'Reporter NSS #', 'Date YYMM', 'Cave Type', 'Hazardous Conditions', 
-        'Hazard Notes', 'Owner/Entity Info'
+        'Hazard Notes', 'Owner/Entity Info', 'Export ID'
       ];
       
-      // Convert caveDataStore to CSV format
+      // Convert caveDataStore to CSV format. The first line is the export's
+      // notice, and every row carries its Export ID.
       const rows = [
+        csvCell(wm.notice),
         headers.join(','),
         ...caveDataStore.map(cave => {
           const resolved = resolveCaveStateAndCounty(cave);
@@ -4712,7 +4746,8 @@ function loadFcsDatabaseTable() {
               cave.hazards.histoplasmosis ? 'Histoplasmosis' : ''
             ].filter(h => h).join(', ') : ''}"`,
             `"${(cave.hazards?.notes || '').replace(/"/g, '""')}"`,
-            `"${(cave.ownerInfo || '').replace(/"/g, '""')}"`
+            `"${(cave.ownerInfo || '').replace(/"/g, '""')}"`,
+            wm.exportId
           ];
           
           return values.join(',');
@@ -4725,12 +4760,14 @@ function loadFcsDatabaseTable() {
       const blob = new Blob([csvContent], { type: 'text/csv' });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = "FCS_Cave_Database_Export.csv";
+      link.download = `FCS_Cave_Database_Export_${wm.exportId}.csv`;
       link.click();
     }
 
     // Update the Excel export function
-    function exportToExcel() {
+    async function exportToExcel() {
+      const wm = await startExport('excel', caveDataStore.length);
+      if (!wm) return;
       // Use the complete set of headers
       const headers = [
         'State', 'County', 'Cave ID', 'Record Type', 'Entrance No', 'Line No', 'Cave Name',
@@ -4742,7 +4779,7 @@ function loadFcsDatabaseTable() {
         'Vertical Extent', 'Max Water Depth', 'Deepest Pitch',
         'Latitude', 'Longitude', 'Exploration Possibility',
         'Reporter NSS #', 'Date YYMM', 'Cave Type', 'Hazardous Conditions', 
-        'Hazard Notes', 'Owner/Entity Info'
+        'Hazard Notes', 'Owner/Entity Info', 'Export ID'
       ];
       
       // First convert our data to a format XLSX can understand, including all fields
@@ -4793,7 +4830,8 @@ function loadFcsDatabaseTable() {
             cave.hazards.casualties ? 'Casualties' : ''
           ].filter(h => h).join(', ') : '',
           cave.hazards?.notes || '',
-          cave.ownerInfo || ''
+          cave.ownerInfo || '',
+          wm.exportId
           ];
         })
       ];
@@ -4812,12 +4850,25 @@ function loadFcsDatabaseTable() {
       });
       ws['!cols'] = colWidths;
       
-      // Create a workbook with that worksheet
+      // Create a workbook: the export's notice first, then the data (every row
+      // carrying the Export ID), with the same notice in the file's properties
       const wb = XLSX.utils.book_new();
+      const about = XLSX.utils.aoa_to_sheet([
+        ['Florida Cave Survey - confidential cave location data'],
+        [],
+        ['Exported for', `${wm.name} (${wm.username})`],
+        ['Date', wm.when],
+        ['Export ID', wm.exportId],
+        [],
+        ['Do not share, publish or post this file. Every export is logged and marked with who it was made for.'],
+      ]);
+      about['!cols'] = [{ wch: 16 }, { wch: 60 }];
+      XLSX.utils.book_append_sheet(wb, about, "About this export");
       XLSX.utils.book_append_sheet(wb, ws, "FCS Database");
+      wb.Props = { Title: 'Florida Cave Survey export ' + wm.exportId, Author: wm.name, Subject: 'Confidential cave location data', Comments: wm.notice };
       
       // Generate the Excel file and trigger download
-      XLSX.writeFile(wb, "FCS_Cave_Database.xlsx");
+      XLSX.writeFile(wb, `FCS_Cave_Database_${wm.exportId}.xlsx`);
     }
 
     // Format a date string
@@ -5448,8 +5499,53 @@ function loadFcsDatabaseTable() {
       }
     }
 
+    // Website Management > Data Downloads (GET /api/download-log): who took
+    // what, and an Export ID lookup for a file found where it shouldn't be
+    async function loadDownloadLog() {
+      const status = document.getElementById('downloads-status');
+      const list = document.getElementById('downloads-list');
+      const summaryBox = document.getElementById('downloads-summary');
+      if (!list) return;
+      const q = (document.getElementById('downloads-search') || {}).value || '';
+      const kind = (document.getElementById('downloads-kind') || {}).value || '';
+      if (status) status.textContent = 'Loading…';
+      try {
+        const response = await fetch('/api/download-log?' + new URLSearchParams({ q: q.trim(), kind }));
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load the download log');
+        const kindLabel = (k) => k === 'database' ? 'Cave database' : k === 'map file' ? 'Map file' : k === 'backup' ? 'Backup'
+          : k.startsWith('export-') ? (data.kinds[k.slice(7)] || 'Export') : k;
+        const shown = data.total > data.entries.length ? ` (newest ${data.entries.length} shown)` : '';
+        if (status) status.textContent = q.trim()
+          ? `${data.total} match${data.total === 1 ? '' : 'es'} for "${q.trim()}"${shown}`
+          : `${data.total} recorded${shown}`;
+        if (summaryBox) {
+          summaryBox.innerHTML = q.trim() || !data.summary.length ? '' :
+            `<details style="margin-bottom: 8px;"><summary style="cursor: pointer;">Per account, last 30 days</summary>
+              <table class="user-table" style="margin-top: 6px;"><thead><tr><th>Account</th><th>Database</th><th>Exports</th><th>Map files</th><th>Backups</th><th>IP addresses</th><th>Last</th></tr></thead><tbody>
+              ${data.summary.map((u) => `<tr><td>${escapeStatsHtml(u.username || '(none)')}</td><td>${Number(u.database)}</td><td>${Number(u.exports)}</td><td>${Number(u.mapFiles)}</td><td>${Number(u.backups)}</td><td>${Number(u.ips)}</td><td>${escapeStatsHtml(new Date(u.last).toLocaleString())}</td></tr>`).join('')}
+              </tbody></table></details>`;
+        }
+        list.innerHTML = !data.entries.length ? '<p style="margin: 0;">Nothing recorded.</p>' :
+          `<table class="user-table"><thead><tr><th>When</th><th>Account</th><th>What</th><th>Export ID</th><th>Detail</th><th>IP address</th></tr></thead><tbody>
+          ${data.entries.map((e) => `<tr>
+            <td>${escapeStatsHtml(new Date(e.at).toLocaleString())}</td>
+            <td>${escapeStatsHtml(e.username || '(none)')}${e.role && e.role !== 'member' ? ` <small>(${escapeStatsHtml(e.role)})</small>` : ''}</td>
+            <td>${escapeStatsHtml(kindLabel(e.kind))}</td>
+            <td><code>${escapeStatsHtml(e.exportId || '')}</code></td>
+            <td>${escapeStatsHtml([e.caves != null ? `${e.caves} cave${e.caves === 1 ? '' : 's'}` : '', e.caveId || '', e.file || ''].filter(Boolean).join(' · '))}</td>
+            <td style="font-size: 0.9em;">${escapeStatsHtml(e.ip || '')}</td>
+          </tr>`).join('')}
+          </tbody></table>`;
+      } catch (err) {
+        if (status) status.textContent = err.message;
+      }
+    }
+    window.loadDownloadLog = loadDownloadLog;
+
     async function loadWebsiteManagementSettings() {
       await loadSiteStatus(); // keeps the top banner itself in sync too
+      loadDownloadLog();
       const status = await fetchFullSiteConfig();
       if (!status) return;
 
@@ -7094,11 +7190,14 @@ window.addEventListener('error', function(e) {
       setTimeout(() => restore(0), 300);
     }
 
-    function downloadUpdatedCaveData() {
-      downloadUpdatedCaveDataWithProperFormat(window.caveDataStore || window.caveDatabase || []);
+    async function downloadUpdatedCaveData() {
+      const data = window.caveDataStore || window.caveDatabase || [];
+      const wm = await startExport('databasejs', data.length);
+      if (!wm) return;
+      downloadUpdatedCaveDataWithProperFormat(data, wm);
     }
 
-    function downloadUpdatedCaveDataWithProperFormat(data) {
+    function downloadUpdatedCaveDataWithProperFormat(data, wm) {
       // Builds each cave with the same "readable" key order as before, but
       // serializes every value through JSON.stringify instead of hand-built
       // template strings. The old hand-built version only escaped double
@@ -7128,14 +7227,14 @@ window.addEventListener('error', function(e) {
         return ordered;
       });
 
-      const formattedData = `const caveDatabase = ${JSON.stringify(orderedCaves, null, 2)};\n`;
+      const formattedData = `/* ${wm.notice.replace(/\*\//g, '* /')} */\nconst caveDatabaseExportId = ${JSON.stringify(wm.exportId)};\nconst caveDatabase = ${JSON.stringify(orderedCaves, null, 2)};\n`;
 
       const blob = new Blob([formattedData], { type: 'text/javascript' });
       const url = URL.createObjectURL(blob);
 
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'cave-database.js';
+      a.download = `cave-database-${wm.exportId}.js`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -7938,14 +8037,23 @@ window.addEventListener('error', function(e) {
       // Reload all caves
       loadCavesToMap();
     }
-    function exportToGPX() {
+    async function exportToGPX() {
       if (!Array.isArray(caveDataStore) || caveDataStore.length === 0) {
         alert('No cave data available to export.');
         return;
       }
+      const wm = await startExport('gpx', caveDataStore.length);
+      if (!wm) return;
 
       let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+    <!-- ${xmlText(wm.notice).replace(/--/g, '-')} -->
     <gpx version="1.1" creator="Florida Cave Survey" xmlns="http://www.topografix.com/GPX/1/1">
+      <metadata>
+        <name>Florida Cave Survey export ${xmlText(wm.exportId)}</name>
+        <desc>${xmlText(wm.notice)}</desc>
+        <author><name>${xmlText(wm.name)}</name></author>
+        <keywords>${xmlText(wm.exportId)}</keywords>
+      </metadata>
     `;
 
       caveDataStore.forEach(cave => {
@@ -8001,6 +8109,7 @@ window.addEventListener('error', function(e) {
           gpx += `  <wpt lat="${cave.latitude || cave.lat}" lon="${cave.longitude || cave.lng}">
         <name>${waypointName.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</name>
         <desc>${description}</desc>
+        <src>Export ${xmlText(wm.exportId)}</src>
       </wpt>
     `;
         }
@@ -8012,7 +8121,7 @@ window.addEventListener('error', function(e) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'FCS_Caves.gpx';
+      a.download = `FCS_Caves_${wm.exportId}.gpx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -9398,6 +9507,9 @@ window.addEventListener('error', function(e) {
         return;
       }
 
+      // Where it was, in case the server can't save the move
+      const before = { latitude: cave.latitude, longitude: cave.longitude, lat: cave.lat, lng: cave.lng };
+
       // Update both coordinate properties
       cave.latitude = lat;
       cave.longitude = lng;
@@ -9444,8 +9556,12 @@ window.addEventListener('error', function(e) {
         alert(`Moved ${cave.id} to new location:\nLatitude: ${lat}\nLongitude: ${lng}`);
       } catch (err) {
         console.error("Error saving cave location:", err);
-        alert("Failed to save the new location to the server. Downloading backup file instead.");
-        downloadUpdatedCaveDataWithProperFormat(caveDataStore);
+        // Put it back where it was (the server still has the old spot)
+        Object.assign(cave, before);
+        if (originalCave) Object.assign(originalCave, before);
+        loadCavesToMap();
+        map.setView([before.latitude || before.lat, before.longitude || before.lng], zoomBeforeRefresh);
+        alert(`The new location for ${cave.id} couldn't be saved, so the cave hasn't moved. Please try again.`);
       }
 
       // Clean up the click handler

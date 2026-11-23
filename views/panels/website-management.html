@@ -18,6 +18,26 @@
       <div id="security-alerts-list"></div>
     </div>
 
+    <div class="control-section" id="downloads-section">
+      <h4>Data Downloads</h4>
+      <p style="margin: 0 0 10px; color: #555;">Every time cave data leaves the site: each copy of the cave database a browser downloads (one per login), every export (CSV, Excel, GPX, database file, Cave Profile), every map file and every backup. Exports carry an <strong>Export ID</strong> (on every row of a spreadsheet, and in the file name), so if a file turns up somewhere it shouldn't, paste its Export ID here to see who it was made for.</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center;">
+        <input type="text" id="downloads-search" placeholder="Export ID, username or IP address" style="width: 260px; padding: 6px;" autocomplete="off">
+        <select id="downloads-kind" style="padding: 6px;">
+          <option value="">Everything</option>
+          <option value="export">Exports only</option>
+          <option value="database">Database downloads</option>
+          <option value="map file">Map files</option>
+          <option value="backup">Backups</option>
+        </select>
+        <button type="button" class="btn-success" onclick="loadDownloadLog()">Look up</button>
+        <button type="button" onclick="document.getElementById('downloads-search').value=''; loadDownloadLog()">Show all</button>
+        <span id="downloads-status" style="color: #555;"></span>
+      </div>
+      <div id="downloads-summary"></div>
+      <div id="downloads-list" style="max-height: 360px; overflow: auto;"></div>
+    </div>
+
     <div class="control-section">
       <h4>Maintenance Mode</h4>
       <p style="margin-bottom: 10px;">

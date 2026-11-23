@@ -1295,6 +1295,7 @@ app.get("/api/backup-now", authenticateToken, requireRole("webmaster"), (req, re
     // Everything the site needs (accounts, caves, submissions, settings,
     // narratives...), in the same form "Restore from a file" accepts
     const snapshot = snapshots.capture("download", req.user.username);
+    logDownload(req, { kind: "backup", caves: (snapshot.counts && snapshot.counts.caves) || 0 });
     const filename = `fcs-backup-${new Date().toISOString().slice(0, 10)}.json`;
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -3288,12 +3289,94 @@ app.get("/api/cave-database", authenticateToken, (req, res) => {
   const users = loadUsers();
   const user = users.find((u) => u.username === req.user.username);
   const allowed = getAllowedStatesForUser(user);
+  const caves = allowed === null ? caveDatabase : caveDatabase.filter((cave) => allowed.includes(resolveCaveStateAndCounty(cave).state));
+  logDownload(req, { kind: "database", caves: caves.length });
+  res.json(caves);
+});
 
-  if (allowed === null) {
-    return res.json(caveDatabase);
+// ---- Download log and export watermarks ----------------------------------
+// Every time cave data leaves the site, who took it is recorded: each copy of
+// the cave database a browser downloads, each export (CSV, Excel, GPX, the
+// .js database file, a Cave Profile), each map file and each backup. Exports
+// are registered here first and get an Export ID, which the page writes into
+// the file with the member's name and the date (on every row of a
+// spreadsheet). If a file turns up somewhere it shouldn't, a webmaster looks
+// its Export ID up in Website Management > Data Downloads to see whose it was.
+// The page refuses to make an export the server hasn't registered.
+const DOWNLOAD_LOG_FILE = path.join(DATA_DIR, "download-log.json");
+const MAX_DOWNLOAD_LOG = 20000;
+let downloadLog = [];
+try {
+  const raw = JSON.parse(fs.readFileSync(DOWNLOAD_LOG_FILE, "utf8"));
+  if (Array.isArray(raw)) downloadLog = raw;
+} catch { downloadLog = []; }
+function logDownload(req, entry) {
+  const record = {
+    at: new Date().toISOString(),
+    username: req.user ? req.user.username : "",
+    role: req.user ? req.user.role : "",
+    ip: String(req.ip || "").replace(/^::ffff:/, ""),
+    userAgent: String(req.get("user-agent") || "").slice(0, 200),
+    ...entry,
+  };
+  downloadLog.push(record);
+  if (downloadLog.length > MAX_DOWNLOAD_LOG) downloadLog.splice(0, downloadLog.length - MAX_DOWNLOAD_LOG);
+  try { writeFileAtomicSync(DOWNLOAD_LOG_FILE, JSON.stringify(downloadLog)); } catch (err) { console.error("Could not save the download log:", err.message); }
+  return record;
+}
+// A map file sent in full (a whole-file request, or the first part of a ranged one)
+function logFileDownloads(kind) {
+  return (req, res, next) => {
+    if (req.method === "GET") {
+      res.on("finish", () => {
+        const range = String(req.get("range") || "");
+        if (res.statusCode === 200 || (res.statusCode === 206 && /^bytes=0-/.test(range))) {
+          logDownload(req, { kind, file: path.basename(decodeURIComponent(req.path)).slice(0, 200) });
+        }
+      });
+    }
+    next();
+  };
+}
+
+const EXPORT_KINDS = { csv: "CSV export", excel: "Excel export", gpx: "GPX export", databasejs: "Database file (.js)", profile: "Cave Profile" };
+app.post("/api/exports", authenticateToken, express.json(), (req, res) => {
+  const { kind, caves, caveId } = req.body || {};
+  if (!Object.prototype.hasOwnProperty.call(EXPORT_KINDS, kind)) return res.status(400).json({ error: "Unknown export type." });
+  if (!Number.isInteger(caves) || caves < 0 || caves > 1000000) return res.status(400).json({ error: "caves must be a whole number." });
+  if (caveId !== undefined && !isSafeRecordId(String(caveId))) return res.status(400).json({ error: "Invalid cave ID." });
+  const user = loadUsers().find((u) => u.username === req.user.username) || {};
+  const exportId = "EX-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  const record = logDownload(req, { kind: `export-${kind}`, caves, ...(caveId ? { caveId: String(caveId) } : {}), exportId });
+  const name = user.fullName || [user.firstName, user.lastName].filter(Boolean).join(" ") || req.user.username;
+  res.json({ exportId, at: record.at, username: req.user.username, name });
+});
+
+// Webmaster view: newest first, optionally narrowed to one Export ID, one
+// account, or one kind; plus how much each account took over the last 30 days.
+app.get("/api/download-log", authenticateToken, requireRole("webmaster"), (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const kind = typeof req.query.kind === "string" ? req.query.kind : "";
+  let rows = downloadLog;
+  if (q) {
+    const lq = q.toLowerCase();
+    rows = rows.filter((r) => (r.exportId && r.exportId.toLowerCase() === lq) || r.username.toLowerCase() === lq || r.ip === q);
   }
-
-  res.json(caveDatabase.filter((cave) => allowed.includes(resolveCaveStateAndCounty(cave).state)));
+  if (kind) rows = rows.filter((r) => r.kind === kind || (kind === "export" && r.kind.startsWith("export-")));
+  const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const byUser = {};
+  for (const r of downloadLog) {
+    if (new Date(r.at).getTime() < since) continue;
+    const u = (byUser[r.username] = byUser[r.username] || { username: r.username, database: 0, exports: 0, mapFiles: 0, backups: 0, ips: new Set(), last: r.at });
+    if (r.kind === "database") u.database++;
+    else if (r.kind.startsWith("export-")) u.exports++;
+    else if (r.kind === "map file") u.mapFiles++;
+    else if (r.kind === "backup") u.backups++;
+    if (r.ip) u.ips.add(r.ip);
+    if (r.at > u.last) u.last = r.at;
+  }
+  const summary = Object.values(byUser).map((u) => ({ ...u, ips: u.ips.size })).sort((a, b) => b.exports - a.exports || b.database - a.database);
+  res.json({ entries: rows.slice(-500).reverse(), total: rows.length, summary, kinds: EXPORT_KINDS });
 });
 
 // Public Florida cave count for the "X caves and counting" banner shown on
@@ -4809,6 +4892,7 @@ app.get(
     const filePath = path.join(caveMapsCollectionDir, filename);
 
     if (fs.existsSync(filePath)) {
+      logDownload(req, { kind: "map file", file: filename });
       res.download(filePath);
     } else {
       res.status(404).json({ error: "Cave map file not found" });
@@ -4819,7 +4903,7 @@ app.get(
 // Serve cave maps collection files. These are cave location maps and are
 // exactly the kind of data this app must keep away from anyone who isn't
 // logged in - so this, like every other cave-maps route, requires a token.
-app.use("/cave-maps-collection", authenticateToken, requireLargeFilesEnabled, express.static(caveMapsCollectionDir));
+app.use("/cave-maps-collection", authenticateToken, requireLargeFilesEnabled, logFileDownloads("map file"), express.static(caveMapsCollectionDir));
 
 // Upload endpoint for cave maps. This used to be a stub that always
 // returned 501, while the client had a matching "Upload Maps" button and
@@ -4979,7 +5063,7 @@ app.delete(
 // website on the internet to read these files from a logged-in member's
 // browser - has been removed; the app-wide CORS policy above already covers
 // the legitimate front-end origin.)
-app.use("/cave-maps", authenticateToken, requireLargeFilesEnabled, express.static(caveMapsDir));
+app.use("/cave-maps", authenticateToken, requireLargeFilesEnabled, logFileDownloads("map file"), express.static(caveMapsDir));
 
 // Overridable so the test suite can point this at a throwaway directory
 // instead of the real narratives/ folder.
@@ -7053,6 +7137,7 @@ app.post("/api/snapshots", authenticateToken, requireRole("webmaster"), (req, re
 app.get("/api/snapshots/:id/download", authenticateToken, requireRole("webmaster"), (req, res) => {
   const file = snapshots.fileFor(req.params.id);
   if (!file) return res.status(404).json({ error: "Backup not found." });
+  logDownload(req, { kind: "backup", file: path.basename(file) });
   res.setHeader("Content-Type", "application/gzip");
   res.setHeader("Content-Disposition", `attachment; filename="fcs-backup-${req.params.id}.json.gz"`);
   res.sendFile(file);

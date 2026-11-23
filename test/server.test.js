@@ -4878,3 +4878,63 @@ describe("security review fixes", () => {
     assert.match(second.body.error, /already exists/);
   });
 });
+
+// Every download of cave data is logged; exports are registered and get an Export ID
+describe("download log and export watermarks", () => {
+  before(async () => {
+    await seedUser({ username: "dl-member", password: "DlMemberPass123!", role: "member" });
+  });
+  const member = async () => ({ Authorization: `Bearer ${await login("dl-member", "DlMemberPass123!")}` });
+  const webmaster = async () => ({ Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` });
+
+  test("each cave database download is recorded with who, when, where and how many caves", async () => {
+    const h = await member();
+    const db = await request(app).get("/api/cave-database").set(h).set("User-Agent", "dl-test-agent");
+    const log = await request(app).get("/api/download-log?q=dl-member&kind=database").set(await webmaster());
+    assert.equal(log.status, 200);
+    const e = log.body.entries[0];
+    assert.equal(e.username, "dl-member");
+    assert.equal(e.kind, "database");
+    assert.equal(e.caves, db.body.length);
+    assert.equal(e.userAgent, "dl-test-agent");
+    assert.ok(e.at && e.ip);
+  });
+
+  test("an export gets an Export ID naming the member, and the ID looks up who it was for", async () => {
+    const reg = await request(app).post("/api/exports").set(await member()).send({ kind: "csv", caves: 42 });
+    assert.equal(reg.status, 200);
+    assert.match(reg.body.exportId, /^EX-[0-9A-F]{10}$/);
+    assert.equal(reg.body.username, "dl-member");
+    const found = await request(app).get(`/api/download-log?q=${reg.body.exportId}`).set(await webmaster());
+    assert.equal(found.body.total, 1);
+    assert.equal(found.body.entries[0].username, "dl-member");
+    assert.equal(found.body.entries[0].kind, "export-csv");
+    assert.equal(found.body.entries[0].caves, 42);
+    const profile = await request(app).post("/api/exports").set(await member()).send({ kind: "profile", caves: 1, caveId: "F01001" });
+    assert.equal(profile.status, 200);
+  });
+
+  test("bad export requests are refused", async () => {
+    const h = await member();
+    assert.equal((await request(app).post("/api/exports").set(h).send({ kind: "everything", caves: 1 })).status, 400);
+    assert.equal((await request(app).post("/api/exports").set(h).send({ kind: "csv", caves: "lots" })).status, 400);
+    assert.equal((await request(app).post("/api/exports").set(h).send({ kind: "profile", caves: 1, caveId: "../x" })).status, 400);
+    assert.equal((await request(app).post("/api/exports").send({ kind: "csv", caves: 1 })).status, 401);
+  });
+
+  test("map file downloads are recorded", async () => {
+    const wm = await webmaster();
+    await request(app).post("/api/cave-maps/upload").set(wm).attach("mapFiles", Buffer.from("II*\0map"), "dl-log-map.tif");
+    const got = await request(app).get("/cave-maps/geotiff/dl-log-map.tif").set(await member());
+    assert.equal(got.status, 200);
+    const log = await request(app).get("/api/download-log?q=dl-member&kind=map file").set(wm);
+    assert.ok(log.body.entries.some((e) => e.file === "dl-log-map.tif"));
+  });
+
+  test("only webmasters can read the log, and it summarises each account's last 30 days", async () => {
+    assert.equal((await request(app).get("/api/download-log").set(await member())).status, 403);
+    const all = await request(app).get("/api/download-log").set(await webmaster());
+    const me = all.body.summary.find((u) => u.username === "dl-member");
+    assert.ok(me && me.database >= 1 && me.exports >= 2 && me.mapFiles >= 1, JSON.stringify(me));
+  });
+});
