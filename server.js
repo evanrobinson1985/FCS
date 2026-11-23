@@ -198,11 +198,18 @@ const isProduction = process.env.NODE_ENV === "production";
 // links are logged to the console instead of emailed, so the feature is
 // still usable (by an operator watching the logs) in development.
 let mailTransporter = null;
+// A mail server on this same machine (the only case where a self-signed
+// certificate, or no encryption at all, is acceptable)
+const SMTP_IS_LOCAL = /^(localhost|127\.\d+\.\d+\.\d+|::1)$/i.test(String(process.env.SMTP_HOST || "").trim());
 if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
   mailTransporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT || "587", 10),
     secure: process.env.SMTP_SECURE === "true",
+    // On port 587 the connection starts unencrypted and upgrades (STARTTLS).
+    // Without requireTLS, anyone between this server and Gmail could strip
+    // the upgrade and read the login - the app password - in plain text.
+    requireTLS: !SMTP_IS_LOCAL,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
@@ -227,9 +234,28 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     // default - keeps strict verification as the default for any SMTP_HOST
     // pointing at a real external provider (Gmail, SendGrid, etc).
     tls: {
-      rejectUnauthorized: process.env.SMTP_ALLOW_SELF_SIGNED !== "true",
+      // ...and only ever for a mail server on this machine: for Gmail or any
+      // other outside server it would let an impostor take the password
+      rejectUnauthorized: !(SMTP_IS_LOCAL && process.env.SMTP_ALLOW_SELF_SIGNED === "true"),
     },
   });
+  if (process.env.SMTP_ALLOW_SELF_SIGNED === "true" && !SMTP_IS_LOCAL) {
+    console.warn("SMTP_ALLOW_SELF_SIGNED is ignored: it only applies to a mail server on this machine, never to an outside one like Gmail.");
+  }
+  // Sending limits, so nobody can use the site to send mail in bulk - which
+  // would get the site's Gmail account flagged as a spammer or suspended -
+  // and so the site stays inside Gmail's own daily limit. A send over the
+  // limit fails like any other mail error (every caller handles that).
+  const realSend = mailTransporter.sendMail.bind(mailTransporter);
+  mailTransporter.sendMail = (message) => {
+    const why = outgoingMailOverLimit();
+    if (why) {
+      console.error(`Email not sent (${why}): "${message && message.subject}"`);
+      return Promise.reject(new Error("The site's email sending limit has been reached. Please try again later."));
+    }
+    outgoingMailSent.push(Date.now());
+    return realSend(message);
+  };
   console.log("✅ SMTP configured - password reset emails will be sent for real");
 } else {
   console.log(
@@ -237,6 +263,41 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
       "password reset links will be logged to the console instead of emailed."
   );
 }
+
+const MAIL_PER_HOUR = parseInt(process.env.SMTP_MAX_PER_HOUR || "100", 10);
+const MAIL_PER_DAY = parseInt(process.env.SMTP_MAX_PER_DAY || "450", 10); // Gmail allows 500 a day (2,000 on Workspace)
+const outgoingMailSent = []; // send times (ms), newest last
+function outgoingMailOverLimit() {
+  const now = Date.now();
+  while (outgoingMailSent.length && outgoingMailSent[0] < now - 24 * 60 * 60 * 1000) outgoingMailSent.shift();
+  if (outgoingMailSent.length >= MAIL_PER_DAY) return `daily limit of ${MAIL_PER_DAY}`;
+  if (outgoingMailSent.filter((t) => t > now - 60 * 60 * 1000).length >= MAIL_PER_HOUR) return `hourly limit of ${MAIL_PER_HOUR}`;
+  return null;
+}
+
+// Text that came from outside - a visitor's request, a sign-up's name or
+// address, a member's feedback, a cave name - shown in an email the site sends.
+// The site's address is trusted, so whatever it sends must not carry someone
+// else's message or a live link: line breaks are flattened (so it can't add
+// lines that look like the site's own), it's cut to length, and links and web
+// addresses are disarmed the way security teams quote suspicious text
+// ("evil.com" -> "evil[.]com", "https://" -> "hxxps[:]//").
+function untrusted(value, max = 300) {
+  let t = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (t.length > max) t = t.slice(0, max) + "...";
+  return t
+    .replace(/\b(h)(tt)(ps?)(:\/\/)/gi, (m, h, tt, s) => `${h}xx${s}[:]//`)
+    .replace(/\b(ftp|file|javascript|data|mailto)(:)/gi, "$1[:]")
+    .replace(/([a-z0-9-])\.(?=[a-z][a-z0-9-]*\b)/gi, "$1[.]");
+}
+// The same, keeping line breaks (a member's longer message)
+function untrustedBlock(value, max = 4000) {
+  return String(value ?? "").slice(0, max).split(/\r?\n/).slice(0, 80).map((line) => untrusted(line, 500)).join("\n");
+}
+app.locals.untrustedEmailText = untrusted; // for the test suite
 
 async function sendPasswordResetEmail(user, resetUrl) {
   const subject = "Florida Cave Survey - Password Reset";
@@ -374,9 +435,9 @@ async function notifyNewSubmission(submission, req) {
     const text =
       "A new submission is waiting for review on the Florida Cave Survey.\n\n" +
       `Type: ${submission.type === "new_cave" ? "New cave" : "Cave edit"}\n` +
-      `Cave: ${submission.caveName || submission.caveId} (${submission.caveId})\n` +
-      `State/County: ${submission.state}/${submission.county}\n` +
-      `Submitted by: ${submission.submittedBy}\n\n` +
+      `Cave: ${untrusted(submission.caveName || submission.caveId, 120)} (${untrusted(submission.caveId, 40)})\n` +
+      `State/County: ${untrusted(submission.state, 10)}/${untrusted(submission.county, 10)}\n` +
+      `Submitted by: ${untrusted(submission.submittedBy, 40)}\n\n` +
       `Review it here: ${siteOrigin(req)}/portal`;
     await sendAdminNotification(recipients, subject, text);
   } catch (err) {
@@ -428,9 +489,9 @@ async function notifyNewAccount(user, req) {
     const subject = "Florida Cave Survey - New Account Awaiting Approval";
     const text =
       "A new account has signed up and is waiting for approval.\n\n" +
-      `Name: ${user.firstName || ""} ${user.lastName || ""}\n` +
-      `Username: ${user.username}\n` +
-      `Email: ${user.email}\n\n` +
+      `Name: ${untrusted(`${user.firstName || ""} ${user.lastName || ""}`, 110)}\n` +
+      `Username: ${untrusted(user.username, 40)}\n` +
+      `Email: ${untrusted(user.email, 254)}\n\n` +
       `Approve or reject it in Account Management: ${siteOrigin(req)}/portal`;
     await sendAdminNotification(recipients, subject, text);
   } catch (err) {
@@ -751,8 +812,8 @@ function restrictAccount(username, reason, req) {
     sendAdminNotification(
       getNotificationRecipients(["webmaster"]),
       "Florida Cave Survey - Account automatically restricted",
-      `The account "${username}" (${user.role}) was automatically restricted ${howLong} ` +
-        `because it ${reason}.\n\nLast address: ${req.ip}\nRequest: ${req.method} ${String(req.originalUrl).slice(0, 200)}\n\n` +
+      `The account "${untrusted(username, 40)}" (${user.role}) was automatically restricted ${howLong} ` +
+        `because it ${untrusted(reason, 300)}.\n\nLast address: ${untrusted(req.ip, 60)}\nRequest (links disabled): ${req.method} ${untrusted(req.originalUrl, 200)}\n\n` +
         (minutes > 0
           ? "It has been signed out and can't log in until the restriction ends. You can lift it early in Account Management."
           : "It has been signed out and can't log in until you lift the restriction in Account Management.")
@@ -904,13 +965,14 @@ function maybeEmailSecurityEvent(event, eventsFromIpThisHour) {
   const text =
     `The website detected a possible attack.\n\n` +
     `What: ${labels} (severity: ${event.severity})\n` +
-    `Who: ${describeAttribution(event.attribution)}\n` +
-    `IP address: ${event.ip}\n` +
+    `Who: ${untrusted(describeAttribution(event.attribution), 400)}\n` +
+    `IP address: ${untrusted(event.ip, 60)}\n` +
     `When: ${event.at}\n` +
-    `Request: ${event.method} ${event.url}\n` +
-    (event.samples.length ? `Matched: ${event.samples.map((s) => `${s.field ? s.field + ": " : ""}${s.sample}`).join(" | ")}\n` : "") +
-    (event.detail ? `Detail: ${event.detail}\n` : "") +
-    `Browser/tool: ${event.userAgent || "(none given)"}\n\n` +
+    "(Everything below came from the attacker's own request. Links in it are disabled: don't follow or copy anything from it.)\n" +
+    `Request: ${event.method} ${untrusted(event.url, 300)}\n` +
+    (event.samples.length ? `Matched: ${event.samples.map((s) => untrusted(`${s.field ? s.field + ": " : ""}${s.sample}`, 160)).join(" | ")}\n` : "") +
+    (event.detail ? `Detail: ${untrusted(event.detail, 300)}\n` : "") +
+    `Browser/tool: ${untrusted(event.userAgent || "(none given)", 200)}\n\n` +
     `More details are in Website Management > Security Alerts. You'll get at most one email per address every 6 hours.`;
   sendAdminNotification(getNotificationRecipients(["webmaster"]), `Florida Cave Survey - Security alert: ${labels}`, text)
     .catch((err) => console.error("Failed to send security alert:", err));
@@ -1788,12 +1850,13 @@ async function notifyNewFeedback(item, req) {
     const kind = item.type === "bug" ? "Bug Report" : "Feature Request";
     const text =
       `A new ${kind.toLowerCase()} was sent from the Site Updates tab.\n\n` +
-      `Title: ${item.title}\n` +
-      `From: ${item.submittedBy}\n\n` +
-      `${item.description}\n\n` +
-      (item.userAgent ? `Browser: ${item.userAgent}\n\n` : "") +
+      `Title: ${untrusted(item.title, 150)}\n` +
+      `From: ${untrusted(item.submittedBy, 40)}\n\n` +
+      "(The member's message, with any links disabled:)\n" +
+      `${untrustedBlock(item.description)}\n\n` +
+      (item.userAgent ? `Browser: ${untrusted(item.userAgent, 200)}\n\n` : "") +
       `See and manage it on the Site Updates tab: ${siteOrigin(req)}/portal`;
-    await sendAdminNotification(recipients, `Florida Cave Survey - New ${kind}: ${item.title}`, text);
+    await sendAdminNotification(recipients, `Florida Cave Survey - New ${kind}: ${untrusted(item.title, 80)}`, text);
   } catch (err) {
     console.error("Error sending feedback notification:", err);
   }
@@ -3371,7 +3434,29 @@ function startEmailVerification(user, req) {
   return `${siteOrigin(req)}/portal?verifyEmail=${rawToken}`;
 }
 
+// Confirmation emails go to addresses nobody has proven yet, so they're the
+// one kind of email a stranger can point at someone else's inbox. Limit them:
+// a few per address an hour, and a site-wide cap so a flood of sign-ups can't
+// use up the Gmail account's daily allowance (or get it flagged for spam).
+const VERIFY_MAIL_PER_ADDRESS_HOUR = parseInt(process.env.VERIFY_MAX_PER_ADDRESS_HOUR || "3", 10);
+const VERIFY_MAIL_PER_HOUR = parseInt(process.env.VERIFY_MAX_PER_HOUR || "30", 10);
+const verifyMailSent = []; // { at, to }
+function verificationMailOverLimit(address) {
+  const now = Date.now();
+  while (verifyMailSent.length && verifyMailSent[0].at < now - 60 * 60 * 1000) verifyMailSent.shift();
+  const to = String(address || "").trim().toLowerCase();
+  if (verifyMailSent.filter((m) => m.to === to).length >= VERIFY_MAIL_PER_ADDRESS_HOUR) return "address";
+  if (verifyMailSent.length >= VERIFY_MAIL_PER_HOUR) return "site";
+  return null;
+}
+app.locals.resetVerificationMailLimit = () => { verifyMailSent.length = 0; }; // for the test suite
 async function sendVerificationEmail(user, verifyUrl) {
+  const over = verificationMailOverLimit(user.email);
+  if (over) {
+    console.error(`Confirmation email to ${user.email} not sent: ${over === "address" ? "too many to this address" : "site-wide hourly limit"} reached`);
+    throw new Error("Too many confirmation emails have been sent. Please try again in an hour.");
+  }
+  verifyMailSent.push({ at: Date.now(), to: String(user.email || "").trim().toLowerCase() });
   if (!mailTransporter) {
     console.log(`[DEV] Email confirmation link for ${user.email}: ${verifyUrl}`);
     return;
@@ -3379,7 +3464,9 @@ async function sendVerificationEmail(user, verifyUrl) {
   await sendUserEmail(user, {
     subject: "Florida Cave Survey - Confirm your email address",
     text:
-      `Hi ${user.firstName || user.username},\n\n` +
+      // No name here: this goes to an address nobody has proven is theirs, so
+      // nothing typed into the sign-up form is put in front of its owner
+      "Hello,\n\n" +
       "Thanks for signing up for the Florida Cave Survey. Please confirm this is your email address " +
       `by opening this link within ${EMAIL_VERIFY_MINUTES} minutes:\n\n` +
       `${verifyUrl}\n\n` +
@@ -4006,14 +4093,14 @@ function recordLocationChange(cave, before, details) {
 function notifyRepeatMove(submission, cave, history, req) {
   const fmt = (c) => (c ? `${c.lat}, ${c.lng}` : "(none)");
   const lines = history.slice(-5).map((h) =>
-    `- ${h.at.slice(0, 10)}: ${fmt(h.from)} -> ${fmt(h.to)} (${h.via}; asked by ${h.requestedBy}, approved by ${h.approvedBy})`
+    `- ${h.at.slice(0, 10)}: ${fmt(h.from)} -> ${fmt(h.to)} (${untrusted(h.via, 40)}; asked by ${untrusted(h.requestedBy, 40)}, approved by ${untrusted(h.approvedBy, 40)})`
   );
   const now = caveCoords(cave);
   const proposed = { lat: submission.proposedData.lat ?? (now && now.lat), lng: submission.proposedData.lng ?? (now && now.lng) };
   sendAdminNotification(
     getNotificationRecipients(["webmaster"]),
     `Florida Cave Survey - Cave ${cave.id} asked to be moved again`,
-    `${submission.submittedBy} has asked to move cave ${cave.id} (${cave.name || "unnamed"}), whose location has already been changed:\n\n` +
+    `${untrusted(submission.submittedBy, 40)} has asked to move cave ${untrusted(cave.id, 40)} (${untrusted(cave.name || "unnamed", 120)}), whose location has already been changed:\n\n` +
       lines.join("\n") +
       `\n\nNow: ${fmt(now)}\nRequested: ${fmt(proposed)}\n\n` +
       `Please check it before approving: ${siteOrigin(req)}/portal (Pending Submissions).`

@@ -5141,3 +5141,46 @@ describe("members' details and backups are encrypted at rest", () => {
     assert.ok(users.every((u) => !u.email || !dataCrypto.isEncryptedValue(u.email)), "plain inside, so another key can encrypt it again");
   });
 });
+
+describe("the site's email can't be used to send someone else's message", () => {
+  const untrusted = app.locals.untrustedEmailText;
+
+  test("outside text in an email has its links disarmed and can't add lines", () => {
+    const out = untrusted("Click https://evil.example/login\r\nFrom: Florida Cave Survey‮ now");
+    assert.ok(!/https?:\/\//i.test(out), out);
+    assert.ok(out.includes("hxxps[:]//evil[.]example/login"), out);
+    assert.ok(!/[\r\n‮]/.test(out), "no line breaks or direction tricks");
+    assert.ok(!/javascript:/i.test(untrusted("javascript:alert(1)")));
+    assert.equal(untrusted("x".repeat(500), 20), "x".repeat(20) + "...");
+    assert.equal(untrusted("Devil's Eye Spring"), "Devil's Eye Spring", "ordinary text is left alone");
+  });
+
+  test("the confirmation email doesn't repeat anything typed into the sign-up form", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    const fn = src.slice(src.indexOf("async function sendVerificationEmail"), src.indexOf("// ---- Sign-ups waiting for their email"));
+    assert.ok(fn.includes('"Hello,\\n\\n"'));
+    assert.ok(!/firstName|lastName|fullName|username/.test(fn.replace(/\/\/.*$/gm, "")), "no name or username in it");
+  });
+
+  test("mail is sent over checked TLS unless the mail server is on this machine", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+    assert.ok(src.includes("requireTLS: !SMTP_IS_LOCAL"));
+    assert.ok(src.includes('rejectUnauthorized: !(SMTP_IS_LOCAL && process.env.SMTP_ALLOW_SELF_SIGNED === "true")'));
+  });
+
+  test("only a few confirmation emails go to one address an hour", async () => {
+    app.locals.resetVerificationMailLimit();
+    const email = "flooded@example.com";
+    const first = await request(app).post("/api/create-account").send({
+      firstName: "Flood", lastName: "Target", username: "floodtarget", email, password: "SomeStrongPass123!",
+    });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    const statuses = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await request(app).post("/api/resend-verification").send({ username: "floodtarget", password: "SomeStrongPass123!" });
+      statuses.push(r.status);
+    }
+    assert.deepEqual(statuses, [200, 200, 502], "the fourth email to the same address is refused");
+    app.locals.resetVerificationMailLimit();
+  });
+});

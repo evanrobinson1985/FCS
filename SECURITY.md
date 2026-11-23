@@ -505,3 +505,43 @@ won't start without it. Losing it loses the encrypted details (passwords
 still work, being hashes), but a downloaded backup only needs its passphrase.
 Still not encrypted: the logs (security events, sessions, downloads, staff
 activity), which hold usernames and IP addresses, and the cave database.
+
+## The site's email (November 2026)
+
+The site sends email from its own Gmail account, so a message from it is
+trusted by members. The goal is that nobody can use the site to put their own
+words or links in front of members under that name.
+
+- **Who mail goes to is never chosen by a visitor.** Every email goes to a
+  member's address on file, a reviewer, or the address a sign-up typed in.
+  No route takes a "to" address, subject or body from a request. Links in
+  emails are built from the configured site address, never from the
+  request's Host header, so a reset or confirmation link can't be pointed at
+  another site.
+- **The one email a stranger can aim** is the sign-up confirmation (they type
+  in any address). It has a fixed text, no name or username from the form
+  (just "Hello,"), and only the site's own link. It's limited to 3 per
+  address and 30 site-wide an hour (`VERIFY_MAX_PER_ADDRESS_HOUR`,
+  `VERIFY_MAX_PER_HOUR`), and resending needs the sign-up's password.
+- **Outside text in staff emails is defanged.** Sign-up names, feedback,
+  cave names, an attacker's request in a security alert and the like are put
+  through `untrusted()`: line breaks are flattened (so they can't add lines
+  that look like the site's own), length is capped, and links are disarmed the
+  way security teams quote suspicious text (`hxxps[:]//evil[.]com`). Longer
+  feedback keeps its line breaks but is defanged line by line. Security alerts
+  say that what follows came from the attacker.
+- **Sending limits.** The site stops sending after `SMTP_MAX_PER_HOUR` (100)
+  or `SMTP_MAX_PER_DAY` (450) emails and logs why, so a bug or a flood can't
+  exhaust or get the Gmail account flagged.
+- **Encrypted connection.** Mail goes over TLS with a checked certificate
+  (`requireTLS`); a self-signed certificate is only accepted for a mail
+  server on the same machine, and only with `SMTP_ALLOW_SELF_SIGNED=true`.
+- Reset requests (one per 5 minutes per account) and the other limits from
+  the earlier passes still apply.
+
+Keeping the Gmail account itself safe (outside the code): 2-Step
+Verification on, the site using its own App Password (revoke and replace it if
+the server is ever suspected compromised), no forwarding rules or filters you
+didn't make, current recovery phone and address, and a look at the Sent
+folder now and then. If the site moves to its own domain, send from it with
+SPF, DKIM and DMARC set up.
