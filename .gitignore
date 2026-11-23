@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+*.out
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+#Data Files
+cave-database.js
+cave-database.json
+users.json
+*.sqlite
+*.db
+*.bak
+dump.sql
+*.geojson
+
+# Private data directory (cave database, user list) - never committed,
+# except the dummy *.example.json templates and their README, which are
+# meant to be copied to the real filenames and then edited/replaced.
+data/*
+!data/*.example.json
+!data/README.md
+
+# Cave Pictures and Maps
+cave-pictures/
+cave-maps/
+narratives/
+
+# Passenger's restart signal file (tmp/restart.txt), written by Plesk's
+# "Restart App". (The site has no self-update feature: it is updated only by
+# pulling with Git in Plesk.)
+tmp/

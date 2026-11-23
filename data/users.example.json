@@ -1,0 +1,19 @@
+[
+  {
+    "id": "example-user",
+    "username": "example-user",
+    "email": "member@example.com",
+    "passwordHash": "",
+    "fullName": "Example Member",
+    "nssNumber": "",
+    "role": "member",
+    "status": "inactive",
+    "created": "2026-01-01T00:00:00.000Z",
+    "lastLogin": null,
+    "loginAttempts": 0,
+    "lastFailedLogin": null,
+    "isEmailVerified": true,
+    "twoFactorEnabled": false,
+    "loginIPs": []
+  }
+]
