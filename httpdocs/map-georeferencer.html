@@ -589,7 +589,7 @@ async function addMoreMaps(files){
     if(isPdf){
       try{
         const buf=await f.arrayBuffer();
-        const doc=await pdfjsLib.getDocument({data:buf}).promise;   // separate document — never touches the shared pdfDoc
+        const doc=await pdfjsLib.getDocument({data:buf,isEvalSupported:false}).promise;   // separate document — never touches the shared pdfDoc
         for(let n=1;n<=doc.numPages;n++){
           const page=await doc.getPage(n);
           const vp0=page.getViewport({scale:1});
@@ -640,7 +640,7 @@ function addPage(rec){
 async function loadPdf(file){
   $('headHint').textContent='Loading '+file.name+' …';
   const buf=await file.arrayBuffer();
-  pdfDoc=await pdfjsLib.getDocument({data:buf}).promise;
+  pdfDoc=await pdfjsLib.getDocument({data:buf,isEvalSupported:false}).promise;
   resetPages();
   $('headHint').textContent=file.name+' · '+pdfDoc.numPages+' pages';
   for(let n=1;n<=pdfDoc.numPages;n++) addPage({kind:'pdf', num:n});

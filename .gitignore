@@ -33,6 +33,7 @@ cave-pictures/
 cave-maps/
 narratives/
 
-# Passenger restart signal file, written by the self-update feature
-# (POST /api/update-now) - see server.js.
+# Passenger's restart signal file (tmp/restart.txt), written by Plesk's
+# "Restart App". (The site has no self-update feature: it is updated only by
+# pulling with Git in Plesk.)
 tmp/

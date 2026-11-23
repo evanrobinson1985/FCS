@@ -306,3 +306,66 @@ Being upfront about the tradeoffs and what's left:
    afterward from the dashboard header ("Change Password", backed by
    `POST /api/change-password` - requires the current password, works for
    any role, not just webmaster).
+
+## Security review, November 2026
+
+A full review of the server routes, login and session handling, uploads,
+page rendering (cross-site scripting), headers, dependencies and member data
+exposure. Fixed in this pass:
+
+- **Email links built from the request's Host header.** Password-reset and
+  verification links fell back to the Host header when `ALLOWED_ORIGINS` was
+  unset, so a forged Host could send a member a link to an attacker's site
+  carrying their reset token. Links now always use the configured address.
+- **Logging out didn't end the session.** A copied token kept working for up
+  to 8 hours. Each login now has a session id; logging out revokes it (both
+  the session token and its view-only token), recorded on disk.
+- **Two-factor sign-in was optional for admins and webmasters.** They now
+  always get an emailed code at login (once email is configured) and can't
+  turn it off.
+- **Sign-up revealed whether an email address had an account.** It now gives
+  the same reply either way and emails the existing owner instead.
+- **Data replies could be cached.** Everything under `/api/` and the narrative
+  routes is sent with `Cache-Control: no-store`, so the cave database isn't
+  left in a browser's disk cache.
+- **The Content-Security-Policy allowed images and fetches to any HTTPS
+  site.** `img-src` and `connect-src` now list only the map and data services
+  the pages use, so an injected script would have nowhere to send data.
+  Narratives can no longer embed images hosted elsewhere (also a privacy leak:
+  that site saw every member who opened the narrative).
+- **PDF.js 3.11 (CVE-2024-4367).** Already blocked by the CSP (no
+  `unsafe-eval`); the Map Georeferencer now also turns off PDF.js's eval path.
+- **JWT algorithm** pinned to HS256 on every verify.
+- **Map uploads** no longer silently replace an existing file.
+- **Webmaster and admin controls** (Account Management, Website Management,
+  Upload Cave Maps) are sent only to accounts the server confirms, and the
+  page reads the role from the signed token, not browser storage.
+
+Checked and found sound: every route's role gate; narrative HTML
+sanitizing; escaping in the page (including the security log, the usual way
+to attack a webmaster); photo uploads (type from the file's bytes, random
+names); password reset (hashed, single-use, 1-hour tokens that end old
+sessions); 2FA code attempt limits; login rate limiting and lockout; no shell
+commands anywhere; no self-update feature; `npm audit` clean for the running
+server.
+
+Still open (need a decision or a larger change):
+
+- **Any approved member can download the whole cave database**, including
+  landowner details (`ownerInfo`), in one request, and nothing records who did.
+  Options: hide landowner details from members, log each download, limit or
+  watermark exports.
+- **`'unsafe-inline'` scripts and session tokens in `sessionStorage`.** If an
+  injection bug were ever found, script could run and read the token. The
+  fix is moving the page's inline scripts into files (then dropping
+  `'unsafe-inline'`) and moving sessions to HttpOnly cookies with CSRF
+  protection.
+- **Two-factor is an emailed code**, so whoever controls an admin's email
+  controls the account. An authenticator-app option (TOTP) would be stronger.
+- **SheetJS (`xlsx`) 0.18.5** (dev-only: import scripts and the bulk-import
+  screen) has known prototype-pollution and ReDoS issues; the fixed release
+  is published on cdn.sheetjs.com, not npm.
+- **PDF.js** should be upgraded to 4.x.
+- **Hosting**: server patching, Plesk panel access, SSH, TLS settings and
+  off-site encrypted backups are outside the code, and an independent
+  penetration test of the deployed site is the real proof.

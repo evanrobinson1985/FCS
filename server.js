@@ -126,6 +126,36 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
+// Sessions ended by logging out: session id -> when its tokens would have
+// expired anyway (ms). Kept on disk, so a restart doesn't bring a logged-out
+// session back; entries drop off once past that time.
+const REVOKED_SESSIONS_FILE = path.join(DATA_DIR, "revoked-sessions.json");
+let revokedSessions = {};
+try { revokedSessions = JSON.parse(fs.readFileSync(REVOKED_SESSIONS_FILE, "utf8")) || {}; } catch { revokedSessions = {}; }
+function revokeSession(sid, expSeconds) {
+  if (typeof sid !== "string" || !sid) return;
+  const now = Date.now();
+  for (const [k, until] of Object.entries(revokedSessions)) if (!(until > now)) delete revokedSessions[k];
+  revokedSessions[sid] = Number.isFinite(expSeconds) ? expSeconds * 1000 : now + 8 * 60 * 60 * 1000;
+  try { fs.writeFileSync(REVOKED_SESSIONS_FILE, JSON.stringify(revokedSessions)); } catch (err) { console.error("Could not save logged-out sessions:", err.message); }
+}
+function isSessionRevoked(sid) {
+  return typeof sid === "string" && revokedSessions[sid] > Date.now();
+}
+
+// The map tile and imagery services the pages draw from (see the CSP below)
+const MAP_TILE_HOSTS = [
+  "https://basemap.nationalmap.gov",
+  "https://elevation.nationalmap.gov",
+  "https://server.arcgisonline.com",
+  "https://services.arcgisonline.com",
+  "https://*.tile.opentopomap.org",
+  "https://*.a.ssl.fastly.net",
+];
+
+// Every token this site issues is HS256-signed; accept nothing else
+const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
+
 const isProduction = process.env.NODE_ENV === "production";
 
 // --- Outbound email (password reset) ---------------------------------------
@@ -262,8 +292,13 @@ function getNotificationRecipients(roles) {
 
 // Same "first configured origin, falling back to the request's own host"
 // logic POST /api/forgot-password already uses to build its reset link.
-function siteOrigin(req) {
-  return (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
+// The site's own address, for links in emails. Always the configured address
+// (ALLOWED_ORIGINS, else the production domain) - never taken from the request's
+// Host header, which the sender controls: a forged Host would otherwise put the
+// attacker's site in a password-reset or verification link sent to a real member,
+// and hand them the token when the member clicks it.
+function siteOrigin(req) { // eslint-disable-line no-unused-vars
+  return defaultSiteUrl();
 }
 
 async function sendAdminNotification(recipients, subject, text) {
@@ -376,7 +411,7 @@ async function notifyNewAccount(user, req) {
 // or isn't actually a pending-2FA token.
 function verifyTwoFactorToken(token) {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS);
     return decoded && decoded.pending2FA ? decoded : null;
   } catch {
     return null;
@@ -463,11 +498,17 @@ app.use(
         scriptSrc: ["'self'", "'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         fontSrc: ["'self'", "data:"],
-        // Map tiles/imagery are pulled from many geographic data providers
-        // (Esri, USGS National Map, Stamen, etc.) so these stay broad, but are
-        // still restricted to HTTPS - see SECURITY.md for the tradeoff.
-        imgSrc: ["'self'", "data:", "blob:", "https:"],
-        connectSrc: ["'self'", "https:"],
+        // Only the services the site actually uses - not "any HTTPS site" - so
+        // that even if a script injection bug ever slipped through, it would
+        // have nowhere to send data (no fetch, and no image request, to an
+        // outside server). Add a host here when a feature starts using one.
+        // Map tiles and imagery:
+        imgSrc: ["'self'", "data:", "blob:", ...MAP_TILE_HOSTS],
+        // Data the page fetches: USGS elevation (3D view, Sink Scan), the US
+        // Census road map (Sink Scan), place search (OpenStreetMap Nominatim,
+        // Map Georeferencer), OCR language data (Map Georeferencer), and the
+        // Esri/USGS map services' own metadata requests:
+        connectSrc: ["'self'", ...MAP_TILE_HOSTS, "https://tigerweb.geo.census.gov", "https://nominatim.openstreetmap.org", "https://tessdata.projectnaptha.com"],
         workerSrc: ["'self'", "blob:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -522,6 +563,17 @@ app.use(
     credentials: true,
   })
 );
+
+// Replies carrying site data (the cave database, accounts, narratives,
+// submissions...) must never be kept in a browser's disk cache or by any proxy:
+// on a shared or stolen computer that cache would still hold every cave
+// location after the member logged out. A route that wants caching (map tiles)
+// sets its own Cache-Control afterwards, which replaces this.
+const NO_STORE_PATHS = /^\/(api\/|get-|save-|delete-|download-narrative-image|upload-narrative-image)/;
+app.use((req, res, next) => {
+  if (NO_STORE_PATHS.test(req.path)) res.set("Cache-Control", "no-store");
+  next();
+});
 
 // ---- Suspicious activity: automatic, temporary account restriction --------
 // Each logged-in account builds up a score from things ordinary use of the
@@ -820,7 +872,7 @@ app.use((req, res, next) => {
   });
   if (token) {
     try {
-      const d = jwt.verify(token, JWT_SECRET);
+      const d = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS);
       if (d && !d.pending2FA && d.username) req.suspectUsername = d.username;
     } catch (err) {
       // An expired login is normal. A token that isn't signed with this
@@ -1293,7 +1345,7 @@ app.use((req, res, next) => {
   let role = null;
   if (token) {
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
+      const decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS);
       if (!decoded.pending2FA) role = decoded.role;
     } catch (e) {
       // invalid/expired token - treated the same as no token
@@ -2453,7 +2505,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: "Authentication required" });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, (err, decoded) => {
     if (err) {
       return res.status(403).json({ error: "Invalid or expired session. Please log in again." });
     }
@@ -2496,6 +2548,11 @@ function authenticateToken(req, res, next) {
     }
     if (isRestricted(liveUser)) {
       return res.status(403).json({ error: restrictedMessage(liveUser), restricted: true });
+    }
+    // Logged out: the token (and its view-only partner) is dead from then on,
+    // not only once it expires
+    if (isSessionRevoked(decoded.sid)) {
+      return res.status(401).json({ error: "You've logged out of this session. Please log in again." });
     }
     req.user = { ...decoded, role: liveUser.role };
     touchActiveSession(liveUser.username, liveUser.role, req.ip);
@@ -2676,7 +2733,7 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
     // not enough to log in yet - email a code and hand back a short-lived
     // pending token instead of a real session token. The real token is only
     // issued once that code is confirmed at /api/verify-2fa.
-    if (user.twoFactorEnabled) {
+    if (user.twoFactorEnabled || staffMustUseTwoFactor(user)) {
       const code = generateOtpCode();
       user.twoFactorCodeHash = hashOtp(code);
       user.twoFactorCodeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -2706,18 +2763,19 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
 
     saveUsers(users, { backup: false });
 
-    const token = issueSessionToken(user);
+    const sid = newSessionId();
+    const token = issueSessionToken(user, sid);
     recordLogin(user);
 
     res.json({
       success: true,
       token,
-      assetToken: issueAssetToken(user),
+      assetToken: issueAssetToken(user, sid),
       username: user.username,
       fullName: user.fullName,
       role: user.role,
       nssNumber: user.nssNumber,
-      twoFactorEnabled: !!user.twoFactorEnabled,
+      twoFactorEnabled: !!user.twoFactorEnabled || staffMustUseTwoFactor(user),
       allowedStates: getAllowedStatesForUser(user),
       isTreasurer: isTreasurerAccount(user),
     });
@@ -2780,18 +2838,19 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
     delete user.twoFactorResends;
     saveUsers(users, { backup: false });
 
-    const token = issueSessionToken(user);
+    const sid = newSessionId();
+    const token = issueSessionToken(user, sid);
     recordLogin(user);
 
     res.json({
       success: true,
       token,
-      assetToken: issueAssetToken(user),
+      assetToken: issueAssetToken(user, sid),
       username: user.username,
       fullName: user.fullName,
       role: user.role,
       nssNumber: user.nssNumber,
-      twoFactorEnabled: !!user.twoFactorEnabled,
+      twoFactorEnabled: !!user.twoFactorEnabled || staffMustUseTwoFactor(user),
       allowedStates: getAllowedStatesForUser(user),
       isTreasurer: isTreasurerAccount(user),
     });
@@ -2808,6 +2867,7 @@ app.post("/api/verify-2fa", authLimiter, express.json(), async (req, res) => {
 // few minutes after someone actually leaves. Best-effort: the client
 // fires this and clears its own session regardless of whether it succeeds.
 app.post("/api/logout", authenticateToken, (req, res) => {
+  revokeSession(req.user.sid, req.user.exp);
   endActiveSession(req.user.username);
   res.json({ success: true });
 });
@@ -2871,6 +2931,14 @@ app.post("/api/resend-2fa", authLimiter, express.json(), async (req, res) => {
   }
 });
 
+// Admins and webmasters can change or export the whole site, so a stolen or
+// guessed password alone must not be enough to get in: they always get an
+// emailed code at login, whatever their own 2FA setting. (Only once email is
+// set up, so a site without email can't lock its own webmasters out.)
+function staffMustUseTwoFactor(user) {
+  return !!mailTransporter && !!user && (user.role === "admin" || user.role === "webmaster");
+}
+
 // Lets a logged-in user turn 2FA on or off for their own account. Turning it
 // off weakens the account, so (unlike turning it on) it requires re-entering
 // the current password - a hijacked session token alone isn't enough.
@@ -2887,6 +2955,9 @@ app.post("/api/toggle-2fa", authenticateToken, express.json(), async (req, res) 
       return res.status(404).json({ error: "User not found" });
     }
 
+    if (!enabled && staffMustUseTwoFactor(user)) {
+      return res.status(400).json({ error: "Two-factor sign-in is required for admins and webmasters, so it can't be turned off." });
+    }
     if (!enabled) {
       const passwordMatches =
         !!password && !!user.passwordHash && (await bcrypt.compare(password, user.passwordHash));
@@ -3043,9 +3114,15 @@ function carryOverAuthoredContent(oldUsername, newUsername) {
 // account's tokenVersion, and authenticateToken refuses a token whose
 // version is behind - so a new password signs out every older session,
 // including one held by whoever the password was changed to lock out.
-function issueSessionToken(user) {
+// Each login is a session with its own random id ("sid"), carried by both its
+// session token and its view-only token, so logging out can end exactly that
+// session (see revokeSession) without signing the account out everywhere.
+function newSessionId() {
+  return crypto.randomBytes(16).toString("hex");
+}
+function issueSessionToken(user, sid) {
   return jwt.sign(
-    { id: user.id, username: user.username, role: user.role, fullName: user.fullName, tv: user.tokenVersion || 0 },
+    { id: user.id, username: user.username, role: user.role, fullName: user.fullName, tv: user.tokenVersion || 0, sid },
     JWT_SECRET,
     { expiresIn: "8h" }
   );
@@ -3060,9 +3137,9 @@ function issueSessionToken(user) {
 // can't be used to read the cave database, change anything, or act as the
 // account. Tied to the account's tokenVersion like a session token, so a
 // password change ends it too.
-function issueAssetToken(user) {
+function issueAssetToken(user, sid) {
   return jwt.sign(
-    { id: user.id, username: user.username, tv: user.tokenVersion || 0, scope: "asset" },
+    { id: user.id, username: user.username, tv: user.tokenVersion || 0, scope: "asset", sid },
     JWT_SECRET,
     { expiresIn: "8h" }
   );
@@ -4789,6 +4866,13 @@ const caveMapUpload = multer({
     if (!CAVE_MAP_EXTENSIONS.has(ext)) {
       return cb(new Error(`Unsupported file type: ${ext || "(no extension)"}`));
     }
+    // Never silently replace a map that's already there (same name rules as
+    // the storage settings above); delete the old one first to replace it
+    const name = path.basename(file.originalname).replace(/[^A-Za-z0-9._-]/g, "_");
+    const dir = ext === ".tif" || ext === ".tiff" ? geotiffDir : shapefilesDir;
+    if (fs.existsSync(path.join(dir, name))) {
+      return cb(new Error(`A map file named ${name} already exists. Delete it first if you want to replace it.`));
+    }
     cb(null, true);
   },
 });
@@ -4931,7 +5015,12 @@ const NARRATIVE_SANITIZE_OPTIONS = {
   },
   allowedSchemes: ["http", "https", "mailto"],
   // data: is for pasted pictures only, never for a link
-  allowedSchemesByTag: { img: ["http", "https", "data"] },
+  // Pictures are this site's own uploads (/cave-pictures/..., a relative
+  // address) or pasted ones (data:), never an image on another website: that
+  // site would see every member who opens the narrative, and the page's
+  // security policy doesn't load outside images anyway
+  allowedSchemesByTag: { img: ["data"] },
+  allowProtocolRelative: false,
   // Only the formatting the editor itself produces. An open "style"
   // attribute would let a narrative cover the page with its own content
   // (position/z-index), e.g. a fake login box, or load remote files.
@@ -6588,7 +6677,7 @@ app.get("/api/users", authenticateToken, requireRole("webmaster"), (req, res) =>
       loginAttempts: user.loginAttempts,
       isEmailVerified: user.isEmailVerified,
       emailUnconfirmed: isEmailUnconfirmed(user),
-      twoFactorEnabled: !!user.twoFactorEnabled,
+      twoFactorEnabled: !!user.twoFactorEnabled || staffMustUseTwoFactor(user),
       allowedStates: getAllowedStatesForUser(user), // null for admin/webmaster = unrestricted
       loginIPs: user.loginIPs || [],
       signupIP: user.signupIP || null,
@@ -7148,6 +7237,13 @@ app.get("/api/security-logs", authenticateToken, requireRole("webmaster"), (req,
 // This is the public "Create New Account" form on the login page (see
 // handleCreateAccount() in httpdocs/portal.html) - it must stay reachable by
 // anyone, so it's rate-limited instead of authenticated.
+const SIGNUP_SENT_REPLY = {
+  success: true,
+  emailConfirmationSent: true,
+  message:
+    "Check your email. Your account has NOT been created yet: it is created only when you open the " +
+    `confirmation link we just sent, and the link expires in ${EMAIL_VERIFY_MINUTES} minutes. An administrator then reviews it before you can log in.`,
+};
 app.post("/api/create-account", authLimiter, express.json(), async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -7206,8 +7302,26 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
     if (isUsernameInUse(users, username) || isUsernameRetired(username, null)) {
       return res.status(400).json({ error: "Username already exists" });
     }
-    if (users.find((u) => String(u.email).toLowerCase() === email.toLowerCase())) {
-      return res.status(400).json({ error: "Email already exists" });
+    // An address that already has an account gets the very same reply as a
+    // new sign-up (after the same password-hashing time), and the email goes
+    // to that account's owner instead - so sign-up can't be used to find out
+    // whether someone is a member (forgot-password already works this way).
+    const existingByEmail = users.find((u) => String(u.email).toLowerCase() === email.toLowerCase());
+    if (existingByEmail) {
+      await bcrypt.hash(password, 12);
+      try {
+        await sendUserEmail(existingByEmail, {
+          subject: "Florida Cave Survey - Someone tried to sign up with your email",
+          text:
+            `Hi ${existingByEmail.firstName || existingByEmail.username},\n\n` +
+            "Someone just tried to create a new account with this email address, which already has an account. " +
+            "No new account was created.\n\nIf it was you, log in with your existing account (or use \"Forgot password\" " +
+            "on the login page). If it wasn't you, you can ignore this email.\n",
+        });
+      } catch (mailErr) {
+        console.error("Failed to send the account-exists notice:", mailErr.message);
+      }
+      return res.json(SIGNUP_SENT_REPLY);
     }
 
     // Signing up again with the same address replaces the earlier attempt
@@ -7241,13 +7355,7 @@ app.post("/api/create-account", authLimiter, express.json(), async (req, res) =>
       return res.status(502).json({ error: "We couldn't send the confirmation email. Please check the address and try again." });
     }
 
-    res.json({
-      success: true,
-      emailConfirmationSent: true,
-      message:
-        "Check your email. Your account has NOT been created yet: it is created only when you open the " +
-        `confirmation link we just sent, and the link expires in ${EMAIL_VERIFY_MINUTES} minutes. An administrator then reviews it before you can log in.`,
-    });
+    res.json(SIGNUP_SENT_REPLY);
   } catch (error) {
     console.error("Error creating account:", error);
     res.status(500).json({ error: "Failed to create account" });
@@ -7440,8 +7548,7 @@ app.post("/api/forgot-password", authLimiter, express.json(), async (req, res) =
     user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
     saveUsers(users, { backup: false });
 
-    const origin = (process.env.ALLOWED_ORIGINS || "").split(",")[0].trim() || `${req.protocol}://${req.get("host")}`;
-    const resetUrl = `${origin}/?resetToken=${rawToken}`;
+    const resetUrl = `${siteOrigin(req)}/?resetToken=${rawToken}`;
 
     // Sent in the background, not awaited: waiting for the mail server
     // would make the reply for a registered address noticeably slower than
@@ -7538,7 +7645,8 @@ app.post("/api/change-password", authLimiter, authenticateToken, express.json(),
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     saveUsers(users);
 
-    res.json({ success: true, message: "Password updated.", token: issueSessionToken(user), assetToken: issueAssetToken(user) });
+    // the same session carries on, with tokens that match the new password
+    res.json({ success: true, message: "Password updated.", token: issueSessionToken(user, req.user.sid), assetToken: issueAssetToken(user, req.user.sid) });
   } catch (error) {
     console.error("Error changing password:", error);
     res.status(500).json({ error: "Failed to change password" });
@@ -7608,9 +7716,9 @@ app.post("/api/change-username", authLimiter, authenticateToken, express.json(),
     // finding this account on the very next request otherwise. Issue a
     // fresh token the same way login does, so the client can swap it in
     // immediately (see handleChangeUsername() in httpdocs/portal.html).
-    const token = issueSessionToken(user);
+    const token = issueSessionToken(user, req.user.sid);
 
-    res.json({ success: true, message: "Username updated.", username: user.username, token, assetToken: issueAssetToken(user) });
+    res.json({ success: true, message: "Username updated.", username: user.username, token, assetToken: issueAssetToken(user, req.user.sid) });
   } catch (error) {
     console.error("Error changing username:", error);
     res.status(500).json({ error: "Failed to change username" });

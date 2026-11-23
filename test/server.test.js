@@ -4797,3 +4797,84 @@ describe("webmaster screens are sent only to confirmed accounts (GET /api/panels
     assert.equal((await request(app).get("/api/panels/website-management")).status, 401);
   });
 });
+
+// Fixes from the November 2026 security review
+describe("security review fixes", () => {
+  before(async () => {
+    await seedUser({ username: "review-member", password: "ReviewMemberPass123!", role: "member" });
+  });
+
+  test("logging out ends that session at once, view-only token included; a new login works", async () => {
+    const res = await request(app).post("/api/login").send({ username: "review-member", password: "ReviewMemberPass123!" });
+    const h = { Authorization: `Bearer ${res.body.token}` };
+    assert.equal((await request(app).get("/api/session").set(h)).status, 200);
+    assert.equal((await request(app).post("/api/logout").set(h)).status, 200);
+    const after = await request(app).get("/api/session").set(h);
+    assert.equal(after.status, 401);
+    assert.match(after.body.error, /logged out/);
+    const picture = await request(app).get(`/cave-pictures/none.jpg?token=${res.body.assetToken}`);
+    assert.equal(picture.status, 401, "the view-only token from that login is dead too");
+    const again = await login("review-member", "ReviewMemberPass123!");
+    assert.equal((await request(app).get("/api/session").set({ Authorization: `Bearer ${again}` })).status, 200);
+  });
+
+  test("tokens signed any other way (alg none, or a different secret) are refused", async () => {
+    const jwt = require("jsonwebtoken");
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const none = `${b64({ alg: "none", typ: "JWT" })}.${b64({ username: "webmaster1", role: "webmaster" })}.`;
+    assert.equal((await request(app).get("/api/users").set({ Authorization: `Bearer ${none}` })).status, 403);
+    const forged = jwt.sign({ username: "webmaster1", role: "webmaster" }, "not-the-secret");
+    assert.equal((await request(app).get("/api/users").set({ Authorization: `Bearer ${forged}` })).status, 403);
+  });
+
+  test("data replies are never cached", async () => {
+    const h = { Authorization: `Bearer ${await login("review-member", "ReviewMemberPass123!")}` };
+    for (const url of ["/api/cave-database", "/api/pending-submissions", "/get-caves-with-narratives"]) {
+      assert.equal((await request(app).get(url).set(h)).headers["cache-control"], "no-store", url);
+    }
+  });
+
+  test("signing up with an email that already has an account looks the same as a new sign-up", async () => {
+    const users = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "users.json"), "utf8"));
+    const taken = users.find((u) => u.username === "review-member").email;
+    const fresh = await request(app).post("/api/create-account").send({ username: "brandnewcaver", email: "brandnewcaver@gmail.com", password: "BrandNewCaver123!", firstName: "Brand", lastName: "New" });
+    const dup = await request(app).post("/api/create-account").send({ username: "someoneelse", email: taken, password: "SomeoneElse123!", firstName: "Some", lastName: "One" });
+    assert.equal(fresh.status, 200);
+    assert.equal(dup.status, fresh.status);
+    assert.deepEqual(dup.body, fresh.body);
+    const pending = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "pending-signups.json"), "utf8"));
+    assert.ok(!pending.some((p) => p.username === "someoneelse"), "no sign-up is started for a taken address");
+  });
+
+  test("narratives can't embed images from other websites", async () => {
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    await request(app).post("/save-narrative").set(h).send({
+      id: "F01001", name: "Test Cave", images: [],
+      html: '<p>x</p><img src="https://tracker.example/pixel.png"><img src="//tracker.example/p.png"><img src="/cave-pictures/ok.jpg"><img src="data:image/png;base64,AAAA">',
+    });
+    const saved = (await request(app).get("/get-narrative?id=F01001").set(h)).body.pop();
+    assert.ok(!saved.html.includes("tracker.example"), saved.html);
+    assert.match(saved.html, /src="\/cave-pictures\/ok\.jpg"/);
+    assert.match(saved.html, /src="data:image\/png/);
+  });
+
+  test("the security policy only allows the site's own map and data services", async () => {
+    const csp = (await request(app).get("/portal")).headers["content-security-policy"];
+    const directive = (name) => (csp.split(";").find((d) => d.trim().startsWith(name + " ")) || "").trim().split(/\s+/).slice(1);
+    for (const name of ["img-src", "connect-src"]) {
+      const sources = directive(name);
+      assert.ok(sources.length, name);
+      assert.ok(!sources.includes("https:") && !sources.includes("*"), `${name} is not open to every site: ${sources.join(" ")}`);
+    }
+    assert.ok(directive("connect-src").includes("https://tigerweb.geo.census.gov"));
+  });
+
+  test("an uploaded map never silently replaces one that's already there", async () => {
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const up = () => request(app).post("/api/cave-maps/upload").set(h).attach("mapFiles", Buffer.from("II*\0data"), "review-dup.tif");
+    assert.equal((await up()).status, 200);
+    const second = await up();
+    assert.equal(second.status, 400);
+    assert.match(second.body.error, /already exists/);
+  });
+});
