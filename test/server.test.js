@@ -4938,3 +4938,39 @@ describe("download log and export watermarks", () => {
     assert.ok(me && me.database >= 1 && me.exports >= 2 && me.mapFiles >= 1, JSON.stringify(me));
   });
 });
+
+// Second security review pass
+describe("security review, second pass", () => {
+  test("the password published in the setup instructions is refused, even when it's correct", async () => {
+    await seedUser({ username: "sample-webmaster-copy", password: "ChangeMe123!Now", role: "webmaster" });
+    const res = await request(app).post("/api/login").send({ username: "sample-webmaster-copy", password: "ChangeMe123!Now" });
+    assert.equal(res.status, 403);
+    assert.match(res.body.error, /sample password/);
+    assert.ok(!res.body.token);
+  });
+
+  test("anonymous requests can't send big JSON bodies, and bad JSON gets a clear 400", async () => {
+    const big = JSON.stringify({ username: "x", email: "x@example.com", password: "y", pad: "a".repeat(300 * 1024) });
+    const r = await request(app).post("/api/create-account").set("Content-Type", "application/json").send(big);
+    assert.equal(r.status, 413);
+    const bad = await request(app).post("/api/create-account").set("Content-Type", "application/json").send("{not json");
+    assert.equal(bad.status, 400);
+  });
+
+  test("a signed-in admin can still save a large cave database", async () => {
+    const h = { Authorization: `Bearer ${await login("webmaster1", WEBMASTER_PASSWORD)}` };
+    const db = (await request(app).get("/api/cave-database").set(h)).body;
+    const res = await request(app).post("/api/save-cave-database").set(h).send({ caves: db, pad: "a".repeat(300 * 1024) });
+    assert.notEqual(res.status, 413);
+  });
+
+  test("text full of '<' no longer makes the attack check slow", () => {
+    const attackDetect = require("../lib/attack-detect");
+    const body = {};
+    for (let i = 0; i < 200; i++) body["f" + i] = "<".repeat(20000);
+    const t = Date.now();
+    attackDetect.scanBody(body);
+    assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
+    assert.ok(attackDetect.scanBody({ a: "<img src=x onerror=alert(1)>" }).some((f) => f.category === "xss"), "still catches the real thing");
+  });
+});

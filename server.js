@@ -153,6 +153,9 @@ const MAP_TILE_HOSTS = [
   "https://*.a.ssl.fastly.net",
 ];
 
+// Passwords published in this project's own documentation (see data/README.md)
+const PUBLISHED_PASSWORDS = new Set(["ChangeMe123!Now"]);
+
 // Every token this site issues is HS256-signed; accept nothing else
 const JWT_VERIFY_OPTIONS = { algorithms: ["HS256"] };
 
@@ -2695,6 +2698,17 @@ app.post("/api/login", authLimiter, express.json(), async (req, res) => {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
+    // A password printed in this project's own setup instructions (the sample
+    // webmaster account in data/users.example.json) is public: anyone could
+    // log in with it, so it's never accepted, whichever account has it.
+    if (PUBLISHED_PASSWORDS.has(password)) {
+      noteSuspicious(req, 3, "password");
+      return res.status(403).json({
+        error: "This account still uses the sample password published in the setup instructions, so it can't be used. " +
+          "Use \"Forgot password\" to set a new one, or ask the site administrator to reset it.",
+      });
+    }
+
     // Only said once the password has been proven, so it can't be used to
     // find out which usernames exist (or which are awaiting approval).
     if (user.status !== "active") {
@@ -3285,7 +3299,18 @@ const DUMMY_PASSWORD_HASH = bcrypt.hashSync("no-such-account", process.env.NODE_
 // getAllowedStatesForUser) - looked up fresh per request (not cached in the
 // JWT) so a webmaster revoking/granting a state takes effect immediately,
 // not after the member's session happens to expire and they log in again.
-app.get("/api/cave-database", authenticateToken, (req, res) => {
+// Per-account limits on taking the cave data. Each login needs one copy of the
+// database; nobody needs hundreds an hour, or hundreds of exports a day.
+const perAccount = (windowMs, max, message) => rateLimit({
+  windowMs, max, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.user.username}`,
+  message: { error: message },
+  skip: () => process.env.NODE_ENV === "test",
+});
+const databaseDownloadLimiter = perAccount(60 * 60 * 1000, 60, "Too many downloads of the cave database. Please try again in an hour.");
+const exportLimiter = perAccount(24 * 60 * 60 * 1000, 50, "That's the most exports one account can make in a day. Please try again tomorrow.");
+
+app.get("/api/cave-database", authenticateToken, databaseDownloadLimiter, (req, res) => {
   const users = loadUsers();
   const user = users.find((u) => u.username === req.user.username);
   const allowed = getAllowedStatesForUser(user);
@@ -3310,6 +3335,22 @@ try {
   const raw = JSON.parse(fs.readFileSync(DOWNLOAD_LOG_FILE, "utf8"));
   if (Array.isArray(raw)) downloadLog = raw;
 } catch { downloadLog = []; }
+// When the log is full, the oldest routine entries (database copies, map files)
+// go first; exports and backups - the ones a leak would be traced by - are only
+// dropped once there are more than MAX_KEPT_EXPORTS of them. So nobody can
+// push their own export out of the log by downloading over and over.
+const MAX_KEPT_EXPORTS = 20000;
+const isTraceEntry = (r) => r.kind === "backup" || String(r.kind).startsWith("export-");
+function trimDownloadLog() {
+  let routine = downloadLog.filter((r) => !isTraceEntry(r)).length;
+  let traced = downloadLog.length - routine;
+  if (routine <= MAX_DOWNLOAD_LOG && traced <= MAX_KEPT_EXPORTS) return;
+  downloadLog = downloadLog.filter((r) => {
+    if (isTraceEntry(r)) { if (traced > MAX_KEPT_EXPORTS) { traced--; return false; } return true; }
+    if (routine > MAX_DOWNLOAD_LOG) { routine--; return false; }
+    return true;
+  });
+}
 function logDownload(req, entry) {
   const record = {
     at: new Date().toISOString(),
@@ -3320,7 +3361,7 @@ function logDownload(req, entry) {
     ...entry,
   };
   downloadLog.push(record);
-  if (downloadLog.length > MAX_DOWNLOAD_LOG) downloadLog.splice(0, downloadLog.length - MAX_DOWNLOAD_LOG);
+  trimDownloadLog();
   try { writeFileAtomicSync(DOWNLOAD_LOG_FILE, JSON.stringify(downloadLog)); } catch (err) { console.error("Could not save the download log:", err.message); }
   return record;
 }
@@ -3340,7 +3381,7 @@ function logFileDownloads(kind) {
 }
 
 const EXPORT_KINDS = { csv: "CSV export", excel: "Excel export", gpx: "GPX export", databasejs: "Database file (.js)", profile: "Cave Profile" };
-app.post("/api/exports", authenticateToken, express.json(), (req, res) => {
+app.post("/api/exports", authenticateToken, exportLimiter, express.json(), (req, res) => {
   const { kind, caves, caveId } = req.body || {};
   if (!Object.prototype.hasOwnProperty.call(EXPORT_KINDS, kind)) return res.status(400).json({ error: "Unknown export type." });
   if (!Number.isInteger(caves) || caves < 0 || caves > 1000000) return res.status(400).json({ error: "caves must be a whole number." });
@@ -3497,7 +3538,15 @@ try {
 }
 
 // Middleware
-app.use(express.json({ limit: "10mb" }));
+// JSON bodies: 100 KB everywhere, which is plenty for every form on the site.
+// The two routes that genuinely send more (saving the whole cave database;
+// a narrative with pasted pictures) parse their own, larger bodies - and only
+// after the login and role checks, so nobody can make the server read and
+// parse megabytes of JSON without being signed in.
+const LARGE_JSON_PATHS = new Set(["/api/save-cave-database", "/save-narrative"]);
+const smallJson = express.json({ limit: "100kb" });
+const largeJson = express.json({ limit: "10mb" });
+app.use((req, res, next) => (LARGE_JSON_PATHS.has(req.path) ? next() : smallJson(req, res, next)));
 app.use(
   "/tiles/sqlite-hillshades",
   authenticateToken,
@@ -3905,6 +3954,7 @@ app.post(
   "/api/save-cave-database",
   authenticateToken,
   requireRole("admin", "webmaster"),
+  largeJson,
   (req, res) => {
     const requestData = req.body;
 
@@ -5231,7 +5281,7 @@ function sanitizeNarrativeImages(images, reqUser, alreadyAttached) {
   return kept;
 }
 
-app.post("/save-narrative", authenticateToken, requireNotReadOnly, narrativeLimiter, express.json(), (req, res) => {
+app.post("/save-narrative", authenticateToken, requireNotReadOnly, narrativeLimiter, largeJson, (req, res) => {
   const { id, isEditing, originalTimestamp } = req.body;
   // The author is always the authenticated user, never a client-supplied
   // value - otherwise anyone could save a narrative "as" another member.
@@ -6308,8 +6358,9 @@ app.get("/api/sqlite-hillshades/bounds/:filename", authenticateToken, (req, res)
     });
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     // Get coordinate ranges and sample tile
     const ranges = db
@@ -6381,6 +6432,7 @@ app.get("/api/sqlite-hillshades/bounds/:filename", authenticateToken, (req, res)
     db.close();
     res.json(boundsData);
   } catch (error) {
+    if (db && db.open) db.close(); // also when something went wrong part-way
     console.error(`Error getting bounds for ${filename}:`, error);
     res.status(500).json({
       error: error.message,
@@ -6409,8 +6461,9 @@ app.get("/api/sqlite-hillshades/tiles/:filename/:z/:x/:y", authenticateToken, (r
     return res.status(404).send("Database file not found");
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     // Get the highest zoom level and tile bounds
     const maxZoom = db.prepare(`SELECT MAX(z) as maxZ FROM tiles`).get().maxZ;
@@ -6507,7 +6560,7 @@ app.get("/api/sqlite-hillshades/tiles/:filename/:z/:x/:y", authenticateToken, (r
 
     if (row && row.image) {
       res.set("Content-Type", "image/png");
-      res.set("Cache-Control", "public, max-age=3600");
+      res.set("Cache-Control", "private, max-age=3600"); // signed-in content: not for shared caches
       res.send(row.image);
     } else {
       res.status(404).send("No tiles found");
@@ -6515,8 +6568,9 @@ app.get("/api/sqlite-hillshades/tiles/:filename/:z/:x/:y", authenticateToken, (r
 
     db.close();
   } catch (error) {
+    if (db && db.open) db.close(); // also when something went wrong part-way
     console.error(`Database error:`, error);
-    res.status(500).send(`Database error: ${error.message}`);
+    res.status(500).send("Could not read this hillshade.");
   }
 });
 
@@ -6529,8 +6583,9 @@ app.get("/api/sqlite-hillshades/calibrate/:filename", authenticateToken, require
     return res.status(404).json({ error: "Database not found" });
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     const maxZoom = db.prepare(`SELECT MAX(z) as maxZ FROM tiles`).get().maxZ;
 
@@ -6583,7 +6638,8 @@ app.get("/api/sqlite-hillshades/calibrate/:filename", authenticateToken, require
       ],
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (db && db.open) db.close(); // also when something went wrong part-way
+    res.status(500).json({ error: "Could not read this hillshade." });
   }
 });
 
@@ -6596,8 +6652,9 @@ app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, requireRole
     return res.status(404).json({ error: "Database not found" });
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     // Check column names
     const columns = db.prepare("PRAGMA table_info(tiles)").all();
@@ -6625,7 +6682,8 @@ app.get("/api/sqlite-hillshades/debug/:filename", authenticateToken, requireRole
       sampleData: sampleInfo,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (db && db.open) db.close(); // also when something went wrong part-way
+    res.status(500).json({ error: "Could not read this hillshade." });
   }
 });
 
@@ -6638,8 +6696,9 @@ app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, requireR
     return res.status(404).json({ error: "Database not found" });
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     // Get all tables
     const tables = db
@@ -6683,7 +6742,8 @@ app.get("/api/sqlite-hillshades/debug-db/:filename", authenticateToken, requireR
       }),
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (db && db.open) db.close(); // also when something went wrong part-way
+    res.status(500).json({ error: "Could not read this hillshade." });
   }
 });
 
@@ -6696,8 +6756,9 @@ app.get("/api/sqlite-hillshades/test-coords/:filename", authenticateToken, requi
     return res.status(404).json({ error: "Database not found" });
   }
 
+  let db = null;
   try {
-    const db = new Database(dbPath, { readonly: true });
+    db = new Database(dbPath, { readonly: true });
 
     // Get coordinate ranges
     const ranges = db
@@ -6736,7 +6797,8 @@ app.get("/api/sqlite-hillshades/test-coords/:filename", authenticateToken, requi
       ),
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (db && db.open) db.close(); // also when something went wrong part-way
+    res.status(500).json({ error: "Could not read this hillshade." });
   }
 });
 
@@ -8085,6 +8147,12 @@ app.use((req, res) => {
 // those here automatically), that wasn't already handled closer to where
 // it happened.
 app.use((err, req, res, next) => {
+  if (!res.headersSent && err && err.type === "entity.too.large") {
+    return res.status(413).json({ error: "That request is too large." });
+  }
+  if (!res.headersSent && err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "That request isn't valid JSON." });
+  }
   console.error(`Unhandled error on ${req.method} ${req.path}:`, err);
   if (res.headersSent) return next(err);
   res.status(500).json({ error: "An unexpected server error occurred." });

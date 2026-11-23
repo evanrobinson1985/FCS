@@ -394,3 +394,42 @@ register. Webmasters look an Export ID (or a username or IP address) up in
 Website Management > Data Downloads, which also totals each account's
 downloads over the last 30 days. Members are told by the export buttons that
 exports are marked and logged.
+
+## Security review, second pass (November 2026)
+
+Fixed:
+
+- **One anonymous request could freeze the site for ~30 seconds.** Every
+  route after the global JSON parser accepted 10 MB bodies before any login
+  check, and one attack-detection pattern (`<[^>]*\bon...=`) was quadratic on
+  text full of `<`. A 4 MB body of such fields took 29 s of CPU on the
+  single-threaded server. The pattern is now bounded, the body scan reads at
+  most 100,000 characters per request, and JSON bodies are capped at 100 KB
+  except for the two signed-in routes that need more (saving the cave
+  database; a narrative with pasted pictures), which parse their own 10 MB
+  bodies after the login and role checks. Oversized or malformed bodies get
+  413 / 400 instead of a 500.
+- **The setup instructions publish a webmaster password**
+  (`sample-webmaster` / `ChangeMe123!Now` in `data/README.md`, and told people
+  to copy `users.example.json` into place). That password is now refused at
+  login for any account, and the instructions say to create your own
+  webmaster with `scripts/create-user.js`.
+- **The download log could be flooded** to push an export record out of it.
+  Exports and backups are now kept ahead of routine entries, and each account
+  is limited to 60 cave database downloads an hour and 50 exports a day.
+- **Hillshade routes** leaked their database handle when something failed and
+  sent internal error text (file paths) to the browser; now closed on every
+  path, with a generic message. Tiles are `Cache-Control: private`.
+
+Checked and found sound in this pass: the Map Georeferencer, Cave Jump and
+maintenance pages (escaped output); every file path built from a cave ID
+(`isSafeRecordId`); the hillshade SQL (bound parameters); the automatic
+restriction never locking out a webmaster; members seeing only their own
+feedback; the "who's online" list carrying no IP addresses; no secrets in the
+git history (only blank placeholders in `.env.example`).
+
+To check once the site is deployed: open `/api/debug-headers` as a webmaster
+and confirm `ip` is your own public address. If it's `127.0.0.1` or the
+server's own address, Plesk's proxy chain has an extra hop and
+`app.set("trust proxy", 1)` needs adjusting - otherwise rate limits, lockouts
+and logs treat every visitor as one address.

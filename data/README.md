@@ -29,21 +29,18 @@ cp data/users.example.json data/users.json
   or by deleting individual sample records via the app and adding real
   ones through the Edit Cave Data tab.
 
-- **`users.example.json`** - one dummy `webmaster` account so you have a
-  way to log in at all and approve/manage everyone else from there:
+- **`users.example.json`** - one dummy `webmaster` account, as an example
+  of a user record:
 
   | Username           | Password           |
   |---------------------|---------------------|
   | `sample-webmaster`  | `ChangeMe123!Now`   |
 
-  **Change this password immediately after your first login** - use the
-  "Change Password" button in the dashboard header (top right, next to
-  Log Out). This password is sitting in plain sight in git history the
-  moment this file is copied into place, so treat it as already
-  compromised.
+  **That password can't be used to log in.** It's published here and in
+  git history, so the server refuses it outright (whichever account has it).
+  The sample account only shows what a user record looks like.
 
-  For a real deployment, prefer creating your own webmaster account
-  outright instead of relying on this one - see `scripts/create-user.js`
+  Create your own webmaster account instead - see `scripts/create-user.js`
   and the "Before you deploy" checklist in `SECURITY.md`:
   ```
   node scripts/create-user.js <your-username> <your-password> webmaster <your-email>
